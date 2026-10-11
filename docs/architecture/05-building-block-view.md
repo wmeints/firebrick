@@ -44,6 +44,7 @@ C4Component
         Component(secret, "secret", "Rust", "Secrets")
         Component(network, "network", "Rust", "Network rules")
         Component(port, "port", "Rust", "Port forwards")
+        Component(approval, "approval", "serde_yaml", "Approved spec settings")
         Component(table, "table", "ratatui", "Tables")
         Component(progress, "progress", "indicatif", "Image pull progress")
         Component(client, "client", "Tonic client", "Daemon client")
@@ -73,6 +74,9 @@ C4Component
     Rel(network, spec, "Edits .firebrick.yml")
     Rel(network, validate, "Reports invalid spec")
     Rel(network, manage, "Names a new spec")
+    Rel(manage, approval, "Approves new sandbox settings")
+    Rel(network, approval, "Approves network section")
+    Rel(approval, utils, "Finds approved.yml")
     Rel(init, utils, "Sanitizes name")
     Rel(client, utils, "Finds socket")
     Rel(client, fbkd, "gRPC")
@@ -85,14 +89,19 @@ C4Component
   command. The argument of `port forward` is parsed with `PortMapping`'s parser,
   and that of `port rm` as a port from 1 to 65535. `validate`, `init` and
   `--version`, which prints the package version, run without the daemon.
+  `start`, `run` and every `network` subcommand take `--yes`, which approves
+  changed mounts and network settings without asking. `run` takes the command
+  and its arguments as one trailing list, so options after the command, such as
+  `--yes`, go to the command.
 - `client` - Connects to the daemon socket. When nobody listens, it removes a
   stale socket, spawns `fbkd` from next to the `fbk` binary (or from `PATH`) and
   waits at most 5 seconds for the socket.
 - `manage` - Resolves the sandbox spec for the working directory and starts,
   stops, lists and removes sandboxes. Without `.firebrick.yml`, it names the
-  sandbox after the full working directory path. `ls` prints the name, status
-  and host name of each sandbox as a table, or as a JSON array with `--format
-  json`.
+  sandbox after the full working directory path. Before it creates a sandbox, it
+  has `approval` check the resolved mounts and the network section. `ls` prints
+  the name, status and host name of each sandbox as a table, or as a JSON array
+  with `--format json`.
 - `session` - Runs a command in the sandbox through the `Attach` stream. It
   makes sure the sandbox runs first, puts the terminal in raw mode and forwards
   input, output and window resizes.
@@ -119,8 +128,15 @@ C4Component
   name, plus the change. An invalid file is reported like `validate` reports it,
   and nothing changes. When the network section didn't change, it leaves the
   file alone but still asks the daemon, so the sandbox catches up with the file.
+  Before it sends the section, it has `approval` compare it with the approved
+  section with the change applied, and asks about any other difference.
   `NOT_FOUND` from the daemon means the sandbox doesn't exist yet, so the file
   alone is enough. It warns when `allow` or `deny` leave `enforce` off.
+- `approval` - Keeps the `mounts` and `network` settings the user approved per
+  workspace in `approved.yml` in the config directory, prints the difference
+  with the settings a command is about to apply and asks `Apply these changes?
+  [y/N]` (see
+  [Approving spec changes](08-crosscutting-concepts.md#approving-spec-changes)).
 - `port` - Forwards a host port to the working directory's sandbox with
   `ForwardPort`, or removes a forward with `RemovePort`, and records the change
   in `.firebrick.yml` with `firebrick_spec::add_port` and `remove_port`. It

@@ -1,3 +1,4 @@
+pub mod approval;
 pub mod client;
 pub mod init;
 pub mod manage;

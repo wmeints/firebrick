@@ -25,6 +25,10 @@ enum Commands {
     Start {
         /// Name of the sandbox as listed by `fbk ls`. Defaults to the sandbox for the working directory
         name: Option<String>,
+
+        /// Apply changed mounts and network settings in .firebrick.yml without asking
+        #[arg(long, short)]
+        yes: bool,
     },
     /// Stop a running sandbox
     Stop {
@@ -60,8 +64,7 @@ enum Commands {
     #[command(subcommand)]
     Secret(SecretCommands),
     /// Change the network settings in .firebrick.yml and apply them to the sandbox
-    #[command(subcommand)]
-    Network(NetworkCommands),
+    Network(NetworkArgs),
     /// Forward host ports to the working directory's sandbox and record them in .firebrick.yml
     #[command(subcommand)]
     Port(PortCommands),
@@ -92,6 +95,16 @@ enum SecretCommands {
         #[arg(long, value_enum, default_value_t = Scope::Global)]
         scope: Scope,
     },
+}
+
+#[derive(Args, Debug)]
+struct NetworkArgs {
+    #[command(subcommand)]
+    command: NetworkCommands,
+
+    /// Apply unapproved network settings in .firebrick.yml without asking
+    #[arg(long, short, global = true)]
+    yes: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -168,12 +181,21 @@ struct SetSecretArgs {
 
 #[derive(Args, Debug)]
 struct RunArgs {
-    /// Command to execute in the session
-    command: String,
+    /// Apply changed mounts and network settings in .firebrick.yml without asking when the
+    /// sandbox is created
+    #[arg(long, short)]
+    yes: bool,
 
-    /// Arguments for the command
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    args: Vec<String>,
+    /// Command to execute in the session, followed by its arguments. Options after the command
+    /// go to the command, so `fbk run claude --yes` doesn't approve anything
+    #[arg(
+        required = true,
+        num_args = 1..,
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "COMMAND"
+    )]
+    command: Vec<String>,
 }
 
 #[tokio::main]
@@ -187,7 +209,9 @@ async fn main() -> Result<()> {
         Commands::Init { force } => init_spec(&working_dir, force),
         Commands::Secret(SecretCommands::Set(args)) => set_secret(args, &working_dir).await,
         // Changes the spec file first and only needs the daemon to apply it.
-        Commands::Network(command) => network::update(network_change(command)?, &working_dir).await,
+        Commands::Network(args) => {
+            network::update(network_change(args.command)?, &working_dir, args.yes).await
+        }
         command => run_with_daemon(command, working_dir).await,
     }
 }
@@ -231,8 +255,8 @@ async fn run_with_daemon(command: Commands, working_dir: PathBuf) -> Result<()> 
     let client_instance = &mut client_instance;
 
     match command {
-        Commands::Start { name } => {
-            manage::start_sandbox(name, &working_dir, client_instance).await
+        Commands::Start { name, yes } => {
+            manage::start_sandbox(name, &working_dir, yes, client_instance).await
         }
         Commands::Stop { name } => manage::stop_sandbox(name, &working_dir, client_instance).await,
         Commands::Ls { format } => manage::list_sandboxes(client_instance, format).await,
@@ -275,13 +299,8 @@ async fn run_command(
     run_args: RunArgs,
     client_instance: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
-    let code = session::attach(
-        working_dir,
-        run_args.command,
-        run_args.args,
-        client_instance,
-    )
-    .await?;
+    let code =
+        session::attach(working_dir, run_args.command, run_args.yes, client_instance).await?;
 
     std::process::exit(code);
 }
@@ -353,7 +372,7 @@ mod tests {
 
         assert!(matches!(
             parse(&["start"]).command,
-            Commands::Start { name: None }
+            Commands::Start { name: None, .. }
         ));
         assert!(matches!(
             parse(&["stop"]).command,
@@ -368,7 +387,7 @@ mod tests {
         ));
         assert!(matches!(
             parse(&["start", "dev"]).command,
-            Commands::Start { name: Some(name) } if name == "dev"
+            Commands::Start { name: Some(name), .. } if name == "dev"
         ));
         assert!(matches!(
             parse(&["stop", "dev"]).command,
@@ -556,9 +575,61 @@ mod tests {
         let cli = Cli::try_parse_from(["fbk", "network"].iter().chain(args))?;
 
         match cli.command {
-            Commands::Network(command) => Ok(command),
+            Commands::Network(args) => Ok(args.command),
             command => panic!("unexpected command {command:?}"),
         }
+    }
+
+    #[test]
+    fn start_takes_a_yes_flag() {
+        let parse = |args: &[&str]| Cli::try_parse_from(["fbk"].iter().chain(args)).unwrap();
+
+        for (args, expected) in [(["start"].as_slice(), false), (&["start", "--yes"], true)] {
+            assert!(matches!(
+                parse(args).command,
+                Commands::Start { yes, .. } if yes == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn run_takes_a_yes_flag_only_before_the_command() {
+        let parse = |args: &[&str]| Cli::try_parse_from(["fbk"].iter().chain(args)).unwrap();
+
+        assert!(matches!(
+            parse(&["run", "-y", "claude", "--yes"]).command,
+            Commands::Run(RunArgs { yes: true, command }) if command == ["claude", "--yes"]
+        ));
+        assert!(matches!(
+            parse(&["run", "claude", "-y", "--model", "opus"]).command,
+            Commands::Run(RunArgs { yes: false, command }) if command == ["claude", "-y", "--model", "opus"]
+        ));
+        assert!(Cli::try_parse_from(["fbk", "run"]).is_err());
+    }
+
+    #[test]
+    fn every_network_subcommand_takes_a_yes_flag() {
+        let parse = |args: &[&str]| Cli::try_parse_from(["fbk"].iter().chain(args)).unwrap();
+
+        for args in [
+            ["network", "--yes", "allow", "example.org"].as_slice(),
+            &["network", "allow", "example.org", "--yes"],
+            &["network", "policy", "disable", "-y"],
+            &["network", "enable", "--yes"],
+            &["network", "deny", "--yes", "example.org"],
+        ] {
+            assert!(
+                matches!(
+                    parse(args).command,
+                    Commands::Network(NetworkArgs { yes: true, .. })
+                ),
+                "{args:?}"
+            );
+        }
+        assert!(matches!(
+            parse(&["network", "disable"]).command,
+            Commands::Network(NetworkArgs { yes: false, .. })
+        ));
     }
 
     #[test]

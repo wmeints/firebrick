@@ -94,6 +94,37 @@ start` applies `ports` to an existing sandbox, also while it runs, and `fbk
 network` changes the network rules without removing the sandbox. See
 [Networking](/docs/networking/).
 
+### Approving mounts and network changes
+
+The agent in the sandbox can edit `.firebrick.yml`, because it's part of the
+project. To keep it from giving itself more access, `fbk` remembers the `mounts`
+and `network` settings you approved for each project, and asks before it creates
+a sandbox with other ones:
+
+```console
+$ fbk start
+.firebrick.yml changes settings you haven't approved for this workspace:
+  + mount /home/me -> /mnt/home (read/write)
+  ~ network.enforce: true -> false
+  + network.allow: *.attacker.example
+Apply these changes? [y/N] n
+Error: aborted: the changes to mounts and network in .firebrick.yml weren't approved
+```
+
+Each line shows an added (`+`) or removed (`-`) mount, with the real directory a
+symlink points to, or rule, or a changed (`~`) network switch. Answer `y` to
+create the sandbox and remember the settings, so the next `fbk start` with the
+same settings doesn't ask. Any other answer creates nothing. A project starts
+out approved for no mounts and no `network` section, so a new project with
+mounts or network rules asks once.
+
+Review the changes before you approve them: when you didn't make them, the agent
+did. Pass `--yes` to `fbk start` or `fbk run` to approve them without asking,
+for example in a script; `fbk` still prints them. Without a terminal and without
+`--yes`, the command fails. Starting an existing sandbox never asks, because it
+doesn't apply `mounts` or `network`. The other settings, such as `image` and
+`resources`, apply without asking.
+
 ## Extra mounts
 
 The project directory is mounted read/write at `/workspaces/<leaf>`, where
@@ -116,6 +147,11 @@ and `fbk run` refuse to create the sandbox when a `host` isn't an existing
 directory, or when a `guest` is the workspace path (`/workspaces/<leaf>`) or
 `/var/lib/docker`. A `guest` must not contain `..`, `:`, `;` or `,`. The agent
 user owns the mounted files, like the workspace.
+
+Before they create a sandbox with new or changed mounts, `fbk start` and `fbk
+run` show them with the directories they resolve to and ask you to approve them.
+See
+[Approving mounts and network changes](#approving-mounts-and-network-changes).
 
 ## mise tools
 
@@ -142,13 +178,14 @@ until you recreate them.
 Firebrick follows the XDG base directories. When an `XDG_*` variable isn't set,
 it uses the default under your home directory:
 
-| Path                                                            | Contents                                                                                                     |
-| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `$XDG_RUNTIME_DIR/fbkd.sock`                                    | The socket the CLI and daemon talk over; `fbkd.sock` in the temp directory when `XDG_RUNTIME_DIR` isn't set. |
-| `$XDG_STATE_HOME/firebrick/` (`~/.local/state/firebrick`)       | The daemon's logs, one `fbkd.log.<date>` file per day.                                                       |
-| `~/.local/state/firebrick/msb`                                  | Firebrick's microsandbox home: the runtime, images and sandbox disks. `MSB_HOME` overrides it.               |
-| `$XDG_DATA_HOME/firebrick/ssh` (`~/.local/share/firebrick/ssh`) | The SSH keys, `known_hosts` and the generated SSH config. See [Editor support](/docs/editor-support/).       |
-| `~/.local/share/firebrick/secrets.yml`                          | The secrets. See [Secrets](/docs/secrets/).                                                                  |
+| Path                                                                           | Contents                                                                                                                                     |
+| ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `$XDG_RUNTIME_DIR/fbkd.sock`                                                   | The socket the CLI and daemon talk over; `fbkd.sock` in the temp directory when `XDG_RUNTIME_DIR` isn't set.                                 |
+| `$XDG_STATE_HOME/firebrick/` (`~/.local/state/firebrick`)                      | The daemon's logs, one `fbkd.log.<date>` file per day.                                                                                       |
+| `~/.local/state/firebrick/msb`                                                 | Firebrick's microsandbox home: the runtime, images and sandbox disks. `MSB_HOME` overrides it.                                               |
+| `$XDG_DATA_HOME/firebrick/ssh` (`~/.local/share/firebrick/ssh`)                | The SSH keys, `known_hosts` and the generated SSH config. See [Editor support](/docs/editor-support/).                                       |
+| `~/.local/share/firebrick/secrets.yml`                                         | The secrets. See [Secrets](/docs/secrets/).                                                                                                  |
+| `$XDG_CONFIG_HOME/firebrick/approved.yml` (`~/.config/firebrick/approved.yml`) | The mounts and network settings you approved per project. See [Approving mounts and network changes](#approving-mounts-and-network-changes). |
 
 The daemon logs at the `info` level. Set `RUST_LOG` in the environment that
 starts `fbkd` to change it, for example `RUST_LOG=debug`. The CLI starts `fbkd`

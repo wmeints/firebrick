@@ -76,6 +76,13 @@
   still opens, so the browser sends the OAuth callback, with its code, to
   whatever listens on the host's port
   ([ADR 0030](decisions/0030-forward-oauth-callback-ports-when-opening-a-url.md)).
+- **Only mounts and network changes need approval:** the agent can edit
+  `.firebrick.yml`, and `fbk` only asks before it applies changed `mounts` or
+  `network` settings. A changed `image`, `init`, `mise`, `resources`, `volumes`,
+  `ports` or `name` applies the next time the sandbox is created, or for `ports`
+  the next time it starts, without asking. `--yes` approves whatever the file
+  contains
+  ([ADR 0037](decisions/0037-approve-mounts-and-network-changes-in-the-spec.md)).
 - **Ageing Linux build runners:** Linux releases build on the `ubuntu-22.04`
   runners to support glibc 2.35. GitHub retires runner images before their
   Ubuntu release reaches end of support (April 2027), after which the release

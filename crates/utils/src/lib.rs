@@ -72,6 +72,22 @@ pub fn secrets_path() -> PathBuf {
     data_dir().join("secrets.yml")
 }
 
+/// Returns the file `fbk` records the approved mounts and network settings of each workspace
+/// in: `$XDG_CONFIG_HOME/firebrick/approved.yml`, falling back to
+/// `$HOME/.config/firebrick/approved.yml`.
+///
+/// Returns `None` when neither variable is an absolute path. Sandboxes mount the workspace, so
+/// the file must never end up in the current directory or a temp directory, where an agent
+/// could write it.
+pub fn approvals_path() -> Option<PathBuf> {
+    approvals_path_from(&env_var)
+}
+
+/// Returns the approvals file for the environment that `var` describes.
+fn approvals_path_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    base_dir(var, "XDG_CONFIG_HOME", ".config").map(|config| config.join("firebrick/approved.yml"))
+}
+
 /// Returns the directory holding the daemon's persistent data.
 fn data_dir() -> PathBuf {
     base_dir(&env_var, "XDG_DATA_HOME", ".local/share")
@@ -160,6 +176,34 @@ mod tests {
         if let Some(home) = msb_home() {
             assert_eq!(home, log_dir().join("msb"));
         }
+    }
+
+    #[test]
+    fn approvals_path_is_under_xdg_config_home() {
+        let var = env(&[("XDG_CONFIG_HOME", "/config"), ("HOME", "/home/user")]);
+        assert_eq!(
+            approvals_path_from(&var),
+            Some(PathBuf::from("/config/firebrick/approved.yml"))
+        );
+    }
+
+    #[test]
+    fn approvals_path_falls_back_to_config_in_home() {
+        for config in ["", "config"] {
+            let vars = [("XDG_CONFIG_HOME", config), ("HOME", "/home/user")];
+            assert_eq!(
+                approvals_path_from(&env(&vars)),
+                Some(PathBuf::from("/home/user/.config/firebrick/approved.yml")),
+                "XDG_CONFIG_HOME={config:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn approvals_path_is_none_without_absolute_home() {
+        assert_eq!(approvals_path_from(&env(&[])), None);
+        let var = env(&[("XDG_CONFIG_HOME", "config"), ("HOME", "home")]);
+        assert_eq!(approvals_path_from(&var), None);
     }
 
     fn label(path: &str) -> String {
