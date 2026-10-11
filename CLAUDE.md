@@ -172,7 +172,8 @@ A change is done when:
 These checks enforce the rules above, so don't try to bypass them:
 
 - `mise install` provides the Rust toolchain, Node, pnpm, `buf`, `protoc`,
-  `dprint`, `actionlint`, `lefthook`, the GitHub CLI (`gh`) and Claude Code.
+  `dprint`, `actionlint`, `shellcheck` (which actionlint runs on workflow
+  scripts), `lefthook`, the GitHub CLI (`gh`) and Claude Code.
 - `.cargo/config.toml` sets `MSB_HOME=/tmp/firebrick-msb` for every cargo
   command, so builds and the `vm-tests` use their own microsandbox runtime,
   database and images instead of `~/.microsandbox`. A `msb` that migrated the

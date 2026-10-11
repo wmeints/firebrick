@@ -9,6 +9,7 @@ node = "24.21.0"
 pnpm = "12.10.1"
 protoc = "36.2"
 rust = { version = "1.99.0", components = "rustfmt,clippy,rust-src,rust-analyzer" }
+shellcheck = "0.11.0"
 
 [hooks]
 # Install the git hooks from lefthook.yml after `mise install`.
