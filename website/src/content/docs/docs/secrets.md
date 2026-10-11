@@ -41,8 +41,9 @@ These names have default allowed hosts:
 
 Other names need `--allow-host`, which you can repeat. It takes an exact host
 name such as `api.example.com`, or `*.example.com` for the subdomains of
-`example.com`. `--allow-host` replaces the defaults of a well-known name rather
-than adding to them.
+`example.com`. A `*.` needs at least two labels after it, so `*.com` isn't
+allowed, and neither is an IP address. `--allow-host` replaces the defaults of a
+well-known name rather than adding to them.
 
 When the sandbox's network rules are enforced, a secret's allowed hosts must be
 allowed by those rules too. See [Networking](/docs/networking/).

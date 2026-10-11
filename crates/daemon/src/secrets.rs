@@ -5,6 +5,7 @@
 //! `$MSB_GH_TOKEN` in the secret's environment variable, and microsandbox's TLS proxy on the
 //! host replaces the placeholder with the real value in requests to the secret's allowed hosts.
 
+use firebrick_spec::NetworkRule;
 use microsandbox::MicrosandboxResult;
 use microsandbox::sandbox::{SandboxBuilder, SandboxHandle};
 use serde::{Deserialize, Serialize};
@@ -29,7 +30,9 @@ pub enum SecretError {
     InvalidName(String),
     #[error("the value of secret {0} is empty")]
     EmptyValue(String),
-    #[error("invalid allowed host {0:?}: use a host name such as api.example.com or *.example.com")]
+    #[error(
+        "invalid allowed host {0:?}: use a host name such as api.example.com, or *.example.com for its subdomains; a wildcard needs at least two labels after *."
+    )]
     InvalidHost(String),
     #[error("secret {0} has no default allowed hosts, so name the hosts that may receive it")]
     NoAllowedHosts(String),
@@ -176,17 +179,15 @@ pub fn validate_name(name: &str) -> Result<(), SecretError> {
 }
 
 /// Checks that a host is a host name, optionally with a `*.` prefix for its subdomains.
+///
+/// Uses the parser of the network rules, so a secret's hosts follow the same syntax: `*.com`
+/// is rejected because it would match a whole top-level domain. IP addresses are rejected as
+/// well, because microsandbox matches secret hosts against the TLS server name.
 fn is_valid_host(host: &str) -> bool {
-    let name = host.strip_prefix("*.").unwrap_or(host);
-
-    !name.is_empty()
-        && name
-            .split('.')
-            .all(|label| !label.is_empty() && label.chars().all(is_host_char))
-}
-
-fn is_host_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '-'
+    matches!(
+        host.parse(),
+        Ok(NetworkRule::Domain(_) | NetworkRule::DomainSuffix(_))
+    )
 }
 
 /// Returns the hosts the tools that read a well-known secret send it to.
@@ -493,14 +494,22 @@ mod tests {
 
     #[test]
     fn new_rejects_invalid_hosts() {
+        let long_label = format!("{}.example.com", "a".repeat(64));
+
         for host in [
             "*",
             "",
             "*.",
+            "*.com",
+            "*.localhost",
             "https://example.com",
             "a..b",
             "a b",
             "host:443",
+            "-bad-.example.com",
+            "*.-bad.example.com",
+            &long_label,
+            "192.0.2.1",
         ] {
             assert!(
                 matches!(secret("X", &[host]), Err(SecretError::InvalidHost(_))),
@@ -510,8 +519,15 @@ mod tests {
     }
 
     #[test]
-    fn new_accepts_wildcard_subdomains() {
-        assert!(secret("X", &["*.example.com"]).is_ok());
+    fn new_keeps_valid_hosts() {
+        for host in [
+            "*.example.com",
+            "*.githubcopilot.com",
+            "api.example.com",
+            "localhost",
+        ] {
+            assert_eq!(secret("X", &[host]).unwrap().allowed_hosts, [host]);
+        }
     }
 
     #[test]
