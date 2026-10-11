@@ -128,3 +128,38 @@ checks and end-to-end tests pass, and its `deploy` job deploys it with
 Pages source must be set to "GitHub Actions" and its custom domain to
 `firebrick-sandbox.dev` before the first deployment. See
 [ADR 0032](decisions/0032-publish-the-website-on-github-pages.md).
+
+## Continuous integration
+
+Each workflow runs on pull requests and pushes to `main` only when the files it
+checks, or the workflow file itself, changed. `workflow_dispatch` runs a
+workflow by hand. See
+[ADR 0036](decisions/0036-run-each-ci-workflow-only-for-the-changes-it-checks.md).
+
+| Change                                                                                      | Workflow          | Checks                                               |
+| ------------------------------------------------------------------------------------------- | ----------------- | ---------------------------------------------------- |
+| `crates/**`, `Cargo.toml`, `Cargo.lock`, `.cargo/**`, `clippy.toml`, `mise.toml`, `ci.yaml` | `ci.yaml`         | `cargo fmt`, clippy, unit tests, then the `vm-tests` |
+| `website/**`, `mise.toml`, `website.yaml`                                                   | `website.yaml`    | The website's checks, build and end-to-end tests     |
+| `**/*.md`, `dprint.json`, `mise.toml`, `markdown.yaml`                                      | `markdown.yaml`   | `dprint check`                                       |
+| `.github/workflows/**`, `mise.toml`                                                         | `actionlint.yaml` | `actionlint`, with `shellcheck` on the `run` steps   |
+| `Dockerfile`, `image.yaml`                                                                  | `image.yaml`      | Builds the `firebrick-base` image                    |
+
+`mise.toml` pins the Rust toolchain, Node, pnpm, dprint, actionlint and
+shellcheck, so it runs every workflow except `image.yaml`. A pull request that
+changes only the website or the docs runs no `CI` jobs. `main` has no required
+status checks, so a workflow that its filter skipped doesn't block a merge.
+
+The `check` job of `ci.yaml` runs clippy and then the unit tests; there's no
+separate build step, because both compile every target. The `integration` job
+restores the dependencies the `check` job cached (`Swatinem/rust-cache` with a
+shared key) and compiles only `firebrick-daemon` again, for its `vm-tests`
+feature.
+
+Both jobs restore the microsandbox runtime in `/tmp/firebrick-msb/bin` and
+`/tmp/firebrick-msb/lib` from an `actions/cache` entry keyed on `Cargo.lock`,
+and date its files back before the first cargo command. The `microsandbox` build
+script installs the runtime into `MSB_HOME` and reruns when the runtime's files
+change. Cargo dates a build script run to when the run started, so a runtime the
+script installed looks changed to the next cargo command, which recompiles
+`microsandbox` and every crate that depends on it. Without the cached runtime,
+every step of a job recompiled them.

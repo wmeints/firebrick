@@ -1,10 +1,29 @@
 name: CI
 
+# Build and test the crates when the Rust sources, the Cargo configuration, the
+# pinned toolchain or this workflow change. markdown.yaml and actionlint.yaml
+# check the rest of the repository.
 on:
   push:
     branches: [main]
+    paths:
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - .cargo/**
+      - clippy.toml
+      - mise.toml
+      - .github/workflows/ci.yaml
   pull_request:
     branches: [main]
+    paths:
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - .cargo/**
+      - clippy.toml
+      - mise.toml
+      - .github/workflows/ci.yaml
   workflow_dispatch:
 
 # Cancel superseded PR runs, but build every commit on main.
@@ -20,7 +39,7 @@ env:
 
 jobs:
   check:
-    name: Build, lint and unit tests
+    name: Format, lint and unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,20 +47,37 @@ jobs:
       # Installs the Rust toolchain, protoc and the other tools pinned in mise.toml.
       - uses: jdx/mise-action@v2
 
+      # One cache for both jobs, so the integration tests reuse the
+      # dependencies this job compiled.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace
+
+      # The microsandbox build script installs the msb runtime into MSB_HOME
+      # (/tmp/firebrick-msb, see .cargo/config.toml) and reruns when the
+      # runtime's files change. Cargo dates a build script run to when it
+      # started, so a runtime installed during the run looks changed to the
+      # next cargo command, which then recompiles microsandbox and every crate
+      # that depends on it. Restoring the runtime and dating it before any
+      # build keeps the cached microsandbox fresh.
+      - name: Restore the microsandbox runtime
+        id: msb-runtime
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/firebrick-msb/bin
+            /tmp/firebrick-msb/lib
+          key: msb-runtime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Date the microsandbox runtime before the cached builds
+        if: steps.msb-runtime.outputs.cache-hit == 'true'
+        run: find /tmp/firebrick-msb/bin /tmp/firebrick-msb/lib -exec touch -h -d 2000-01-01 {} +
 
       - name: Check formatting
         run: cargo fmt --all --check
 
-      - name: Check markdown formatting
-        run: dprint check
-
-      - name: Lint workflows
-        run: actionlint
-
-      - name: Build
-        run: cargo build --workspace --all-targets
-
+      # Clippy checks every target and the unit tests build them, so there's no
+      # separate build step.
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -65,10 +101,27 @@ jobs:
 
       - uses: jdx/mise-action@v2
 
+      # Restores the cache the check job saved; only firebrick-daemon compiles
+      # again, for the vm-tests feature.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: vm-tests
+          shared-key: workspace
+          save-if: false
 
-      # The microsandbox build script installs the msb runtime into MSB_HOME (/tmp/firebrick-msb, see .cargo/config.toml).
+      # See the check job: a runtime installed by the build script would
+      # recompile microsandbox.
+      - name: Restore the microsandbox runtime
+        id: msb-runtime
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            /tmp/firebrick-msb/bin
+            /tmp/firebrick-msb/lib
+          key: msb-runtime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Date the microsandbox runtime before the cached builds
+        if: steps.msb-runtime.outputs.cache-hit == 'true'
+        run: find /tmp/firebrick-msb/bin /tmp/firebrick-msb/lib -exec touch -h -d 2000-01-01 {} +
+
       - name: Integration tests
         run: cargo test -p firebrick-daemon --features vm-tests

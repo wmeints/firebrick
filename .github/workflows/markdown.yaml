@@ -1,0 +1,34 @@
+name: Markdown
+
+# Check the formatting of the Markdown files when they, the dprint
+# configuration, the pinned dprint version or this workflow change.
+on:
+  push:
+    branches: [main]
+    paths: ["**/*.md", dprint.json, mise.toml, .github/workflows/markdown.yaml]
+  pull_request:
+    branches: [main]
+    paths: ["**/*.md", dprint.json, mise.toml, .github/workflows/markdown.yaml]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  dprint:
+    name: Check Markdown formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs only the dprint version pinned in mise.toml.
+      - uses: jdx/mise-action@v2
+        with:
+          install_args: dprint
+
+      - name: Check formatting
+        run: dprint check

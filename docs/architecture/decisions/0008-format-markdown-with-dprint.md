@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Accepted. Since
+[ADR 0036](0036-run-each-ci-workflow-only-for-the-changes-it-checks.md), CI runs
+it only on pull requests and pushes that change its inputs.
 
 ## Context
 
