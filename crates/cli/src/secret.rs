@@ -225,7 +225,7 @@ pub fn read_value(mut reader: impl Read) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fake_daemon;
+    use crate::fake_daemon::{self, OTHER_WORKSPACE};
     use std::fs;
     use tempfile::TempDir;
 
@@ -257,33 +257,27 @@ mod tests {
     async fn sandbox_scope_refuses_sandbox_of_other_workspace() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(manage::SPEC_FILE_NAME), "name: dev\n").unwrap();
-        let mut client = fake_daemon::serve("dev", "/home/user/other-project").await;
+        let mut client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
 
-        let set_error = set(sandbox_secret(), dir.path(), &mut client)
-            .await
-            .unwrap_err();
-        let remove_error = remove("TOKEN".to_string(), Scope::Sandbox, dir.path(), &mut client)
-            .await
-            .unwrap_err();
+        let set_result = set(sandbox_secret(), dir.path(), &mut client).await;
+        let remove_result =
+            remove("TOKEN".to_string(), Scope::Sandbox, dir.path(), &mut client).await;
 
-        assert!(set_error.to_string().contains("belongs to"), "{set_error}");
-        assert!(
-            remove_error.to_string().contains("belongs to"),
-            "{remove_error}"
-        );
+        fake_daemon::assert_dev_belongs_to_other(set_result);
+        fake_daemon::assert_dev_belongs_to_other(remove_result);
     }
 
     #[tokio::test]
     async fn sandbox_scope_accepts_sandbox_that_does_not_exist_yet() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(manage::SPEC_FILE_NAME), "name: dev\n").unwrap();
-        let mut client = fake_daemon::serve("other", "/home/user/other-project").await;
+        let mut client = fake_daemon::serve("other", OTHER_WORKSPACE).await;
 
         let error = set(sandbox_secret(), dir.path(), &mut client)
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains(fake_daemon::REFUSED), "{error}");
+        assert_eq!(error.to_string(), fake_daemon::refusal("set_secret", "dev"));
     }
 
     #[test]

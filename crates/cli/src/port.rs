@@ -180,7 +180,7 @@ impl<'a> SpecFile<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fake_daemon;
+    use crate::fake_daemon::{self, OTHER_WORKSPACE};
     use tempfile::TempDir;
 
     const SPEC: &str = "name: dev\nports:\n  - 8080:80\n";
@@ -199,30 +199,24 @@ mod tests {
     #[tokio::test]
     async fn forward_and_remove_refuse_sandbox_of_other_workspace() {
         let dir = workspace();
-        let mut client = fake_daemon::serve("dev", "/home/user/other-project").await;
+        let mut client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
         let port = PortMapping {
             host: 3000,
             guest: 3000,
         };
 
-        let forward_error = forward(port, dir.path(), &mut client).await.unwrap_err();
-        let remove_error = remove(8080, dir.path(), &mut client).await.unwrap_err();
+        let forward_result = forward(port, dir.path(), &mut client).await;
+        let remove_result = remove(8080, dir.path(), &mut client).await;
 
-        assert!(
-            forward_error.to_string().contains("belongs to"),
-            "{forward_error}"
-        );
-        assert!(
-            remove_error.to_string().contains("belongs to"),
-            "{remove_error}"
-        );
+        fake_daemon::assert_dev_belongs_to_other(forward_result);
+        fake_daemon::assert_dev_belongs_to_other(remove_result);
         assert_eq!(spec_text(&dir), SPEC);
     }
 
     #[tokio::test]
     async fn remove_changes_spec_of_sandbox_that_does_not_exist_yet() {
         let dir = workspace();
-        let mut client = fake_daemon::serve("other", "/home/user/other-project").await;
+        let mut client = fake_daemon::serve("other", OTHER_WORKSPACE).await;
 
         remove(8080, dir.path(), &mut client).await.unwrap();
 

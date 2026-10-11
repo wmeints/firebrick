@@ -25,8 +25,11 @@ use crate::api::{
 
 type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
 
-/// Message of the status the fake daemon answers every request with that changes a sandbox.
-pub(crate) const REFUSED: &str = "the fake daemon doesn't change sandboxes";
+/// Returns the message of the status the fake daemon answers the request `rpc` with, which
+/// would change `sandbox`.
+pub(crate) fn refusal(rpc: &str, sandbox: &str) -> String {
+    format!("refused {rpc} for {sandbox}")
+}
 
 /// A daemon with one sandbox, `name`, that mounts `workspace_host_path`.
 struct FakeDaemon {
@@ -46,11 +49,16 @@ pub(crate) async fn serve(
         workspace_host_path: workspace_host_path.to_string(),
     };
 
-    tokio::spawn(
-        Server::builder()
+    tokio::spawn(async move {
+        let result = Server::builder()
             .add_service(SandboxManagementServiceServer::new(daemon))
-            .serve_with_incoming(TcpIncoming::from(listener)),
-    );
+            .serve_with_incoming(TcpIncoming::from(listener))
+            .await;
+
+        if let Err(err) = result {
+            panic!("the fake daemon stopped serving: {err}");
+        }
+    });
 
     let channel = Channel::from_shared(format!("http://{address}"))
         .unwrap()
@@ -59,8 +67,8 @@ pub(crate) async fn serve(
     SandboxManagementServiceClient::new(channel)
 }
 
-fn refused<T>() -> Result<T, Status> {
-    Err(Status::permission_denied(REFUSED))
+fn refused<T>(rpc: &str, sandbox: &str) -> Result<T, Status> {
+    Err(Status::permission_denied(refusal(rpc, sandbox)))
 }
 
 #[tonic::async_trait]
@@ -71,16 +79,16 @@ impl SandboxManagementService for FakeDaemon {
 
     async fn start_sandbox(
         &self,
-        _: Request<StartSandboxRequest>,
+        request: Request<StartSandboxRequest>,
     ) -> Result<Response<Self::StartSandboxStream>, Status> {
-        refused()
+        refused("start_sandbox", &request.into_inner().name)
     }
 
     async fn stop_sandbox(
         &self,
-        _: Request<StopSandboxRequest>,
+        request: Request<StopSandboxRequest>,
     ) -> Result<Response<StopSandboxResponse>, Status> {
-        refused()
+        refused("stop_sandbox", &request.into_inner().name)
     }
 
     async fn list_sandboxes(
@@ -107,30 +115,33 @@ impl SandboxManagementService for FakeDaemon {
 
     async fn remove_sandbox(
         &self,
-        _: Request<RemoveSandboxRequest>,
+        request: Request<RemoveSandboxRequest>,
     ) -> Result<Response<RemoveSandboxResponse>, Status> {
-        refused()
+        refused("remove_sandbox", &request.into_inner().name)
     }
 
     async fn attach(
         &self,
         _: Request<Streaming<AttachRequest>>,
     ) -> Result<Response<Self::AttachStream>, Status> {
-        refused()
+        refused("attach", "")
     }
 
     async fn ssh_tunnel(
         &self,
         _: Request<Streaming<SshTunnelRequest>>,
     ) -> Result<Response<Self::SshTunnelStream>, Status> {
-        refused()
+        refused("ssh_tunnel", "")
     }
 
     async fn set_secret(
         &self,
-        _: Request<SetSecretRequest>,
+        request: Request<SetSecretRequest>,
     ) -> Result<Response<SetSecretResponse>, Status> {
-        refused()
+        refused(
+            "set_secret",
+            &request.into_inner().sandbox.unwrap_or_default(),
+        )
     }
 
     async fn list_secrets(
@@ -142,29 +153,45 @@ impl SandboxManagementService for FakeDaemon {
 
     async fn remove_secret(
         &self,
-        _: Request<RemoveSecretRequest>,
+        request: Request<RemoveSecretRequest>,
     ) -> Result<Response<RemoveSecretResponse>, Status> {
-        refused()
+        refused(
+            "remove_secret",
+            &request.into_inner().sandbox.unwrap_or_default(),
+        )
     }
 
     async fn update_network(
         &self,
-        _: Request<UpdateNetworkRequest>,
+        request: Request<UpdateNetworkRequest>,
     ) -> Result<Response<UpdateNetworkResponse>, Status> {
-        refused()
+        refused("update_network", &request.into_inner().name)
     }
 
     async fn forward_port(
         &self,
-        _: Request<ForwardPortRequest>,
+        request: Request<ForwardPortRequest>,
     ) -> Result<Response<ForwardPortResponse>, Status> {
-        refused()
+        refused("forward_port", &request.into_inner().name)
     }
 
     async fn remove_port(
         &self,
-        _: Request<RemovePortRequest>,
+        request: Request<RemovePortRequest>,
     ) -> Result<Response<RemovePortResponse>, Status> {
-        refused()
+        refused("remove_port", &request.into_inner().name)
     }
+}
+
+/// Host directory the fake daemon's sandbox mounts in tests about another workspace.
+pub(crate) const OTHER_WORKSPACE: &str = "/home/user/other-project";
+
+/// Start of the error for the sandbox `dev` when it mounts [`OTHER_WORKSPACE`].
+pub(crate) const DEV_BELONGS_TO_OTHER: &str = "sandbox dev belongs to /home/user/other-project;";
+
+/// Asserts that the command failed because the sandbox `dev` mounts [`OTHER_WORKSPACE`].
+pub(crate) fn assert_dev_belongs_to_other<T: std::fmt::Debug>(result: anyhow::Result<T>) {
+    let error = result.unwrap_err().to_string();
+
+    assert!(error.starts_with(DEV_BELONGS_TO_OTHER), "{error}");
 }

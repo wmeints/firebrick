@@ -66,19 +66,28 @@ followed by the first 6 characters of the SHA-256 hash of the full path of the
 working directory, such as `firebrick-d9f287`. A sandbox created by an older
 version keeps its name, such as `home_user_my_project`.
 
-Two directories can, rarely, hash to the same name, and a `.firebrick.yml` can
-name another directory's sandbox. `fbk start`, `fbk run` and the other commands
-that act on the working directory's sandbox, such as `fbk stop` and `fbk rm`
-without a name, `fbk network`, `fbk port` and `fbk secret --scope sandbox`, then
-refuse to use the first directory's sandbox from the second one, so an agent
-can't reach or change the other project's sandbox:
+Two directories can, rarely, hash to the same name. `fbk start` and `fbk run`
+then refuse to use the first directory's sandbox from the second one, so an
+agent can't reach the other project's files:
 
 ```text
-Error: sandbox firebrick-d9f287 belongs to /home/user/my-project; add a .firebrick.yml with its own name to give this directory a separate sandbox
+Error: sandbox firebrick-d9f287 belongs to /home/user/my-project; give this directory its own name in .firebrick.yml to use a separate sandbox
 ```
 
 Add a `.firebrick.yml` with its own `name` to the second directory to give it a
 separate sandbox.
+
+## One sandbox per directory
+
+A sandbox belongs to the directory it was created in. The commands that act on
+the working directory's sandbox check this before they change anything: `fbk
+start` and `fbk run`, `fbk stop` and `fbk rm` without a name, `fbk network`,
+`fbk port`, and `fbk secret set` and `fbk secret rm` with `--scope sandbox`.
+When `.firebrick.yml` names another directory's sandbox, for example because an
+agent changed its `name`, they refuse with the error above, so the agent can't
+remove or reconfigure the other project's sandbox. Change `name` back to give
+the directory its own sandbox. `fbk stop <name>` and `fbk rm <name>` act on the
+sandbox you name and aren't checked.
 
 ## Applying changes
 

@@ -28,7 +28,7 @@ starting or stopped. When they differ, for example because two paths share a
 hashed name, the command fails without starting or attaching:
 
 ```text
-Error: sandbox firebrick-d9f287 belongs to /home/user/my-project; add a .firebrick.yml with its own name to give this directory a separate sandbox
+Error: sandbox firebrick-d9f287 belongs to /home/user/my-project; give this directory its own name in .firebrick.yml to use a separate sandbox
 ```
 
 The other commands that take the sandbox name from the working directory run the

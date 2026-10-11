@@ -205,7 +205,11 @@ pub(crate) async fn check_workspace_owner(
     let host_path = match client.get_sandbox(request).await {
         Ok(response) => response.into_inner().workspace_host_path,
         Err(status) if status.code() == Code::NotFound => return Ok(()),
-        Err(status) => return Err(status.into()),
+        Err(status) => {
+            return Err(anyhow::Error::from(status).context(format!(
+                "failed to look up sandbox {name} to check its workspace"
+            )));
+        }
     };
 
     if host_path.is_empty() {
@@ -231,8 +235,8 @@ fn ensure_same_workspace(name: &str, host_path: &str, working_dir: &Path) -> Res
     }
 
     bail!(
-        "sandbox {name} belongs to {host_path}; add a {SPEC_FILE_NAME} with its own name to give \
-         this directory a separate sandbox"
+        "sandbox {name} belongs to {host_path}; give this directory its own name in \
+         {SPEC_FILE_NAME} to use a separate sandbox"
     )
 }
 
@@ -686,7 +690,7 @@ fn format_status(status: SandboxStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fake_daemon;
+    use crate::fake_daemon::{self, OTHER_WORKSPACE};
     use std::fs;
     use tempfile::TempDir;
 
@@ -861,22 +865,15 @@ mod tests {
         dir
     }
 
-    const OTHER_WORKSPACE: &str = "/home/user/other-project";
-
     #[tokio::test]
     async fn without_name_refuses_sandbox_of_other_workspace() {
         let dir = workspace_named("dev");
         let mut client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
 
-        let error = sandbox_name(None, dir.path(), &mut client)
-            .await
-            .unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .starts_with("sandbox dev belongs to /home/user/other-project;"),
-            "{error}"
+        fake_daemon::assert_dev_belongs_to_other(sandbox_name(None, dir.path(), &mut client).await);
+        fake_daemon::assert_dev_belongs_to_other(stop_sandbox(None, dir.path(), &mut client).await);
+        fake_daemon::assert_dev_belongs_to_other(
+            remove_sandbox(None, true, dir.path(), &mut client).await,
         );
     }
 
@@ -912,39 +909,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remove_without_name_refuses_sandbox_of_other_workspace() {
+    async fn stop_and_remove_with_explicit_name_skip_owner_check() {
         let dir = workspace_named("dev");
         let mut client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
 
-        let error = remove_sandbox(None, true, dir.path(), &mut client)
+        let stop_error = stop_sandbox(Some("dev".to_string()), dir.path(), &mut client)
+            .await
+            .unwrap_err();
+        let remove_error = remove_sandbox(Some("dev".to_string()), true, dir.path(), &mut client)
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("belongs to"), "{error}");
-    }
-
-    #[tokio::test]
-    async fn stop_without_name_refuses_sandbox_of_other_workspace() {
-        let dir = workspace_named("dev");
-        let mut client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
-
-        let error = stop_sandbox(None, dir.path(), &mut client)
-            .await
-            .unwrap_err();
-
-        assert!(error.to_string().contains("belongs to"), "{error}");
-    }
-
-    #[tokio::test]
-    async fn remove_with_explicit_name_skips_owner_check() {
-        let dir = workspace_named("dev");
-        let mut client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
-
-        let error = remove_sandbox(Some("dev".to_string()), true, dir.path(), &mut client)
-            .await
-            .unwrap_err();
-
-        assert!(error.to_string().contains(fake_daemon::REFUSED), "{error}");
+        assert!(
+            stop_error
+                .to_string()
+                .contains(&fake_daemon::refusal("stop_sandbox", "dev")),
+            "{stop_error}"
+        );
+        assert!(
+            remove_error
+                .to_string()
+                .contains(&fake_daemon::refusal("remove_sandbox", "dev")),
+            "{remove_error}"
+        );
     }
 
     #[test]
@@ -1070,8 +1057,8 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "sandbox firebrick-d9f287 belongs to /home/user/my-project; add a .firebrick.yml with \
-             its own name to give this directory a separate sandbox"
+            "sandbox firebrick-d9f287 belongs to /home/user/my-project; give this directory its \
+             own name in .firebrick.yml to use a separate sandbox"
         );
     }
 
