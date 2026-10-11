@@ -69,7 +69,7 @@ All calls live in `crates/daemon/src`. Reuse these before adding new ones:
 
 ## Known behavior
 
-Verified against microsandbox 0.7.7. Recheck an item in the source before you
+Verified against microsandbox 0.7.8. Recheck an item in the source before you
 build on it when `Cargo.lock` has a newer version.
 
 **Lifecycle**
