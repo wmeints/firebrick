@@ -66,9 +66,12 @@ followed by the first 6 characters of the SHA-256 hash of the full path of the
 working directory, such as `firebrick-d9f287`. A sandbox created by an older
 version keeps its name, such as `home_user_my_project`.
 
-Two directories can, rarely, hash to the same name. `fbk start` and `fbk run`
-then refuse to use the first directory's sandbox from the second one, so an
-agent can't reach the other project's files:
+Two directories can, rarely, hash to the same name, and a `.firebrick.yml` can
+name another directory's sandbox. `fbk start`, `fbk run` and the other commands
+that act on the working directory's sandbox, such as `fbk stop` and `fbk rm`
+without a name, `fbk network`, `fbk port` and `fbk secret --scope sandbox`, then
+refuse to use the first directory's sandbox from the second one, so an agent
+can't reach or change the other project's sandbox:
 
 ```text
 Error: sandbox firebrick-d9f287 belongs to /home/user/my-project; add a .firebrick.yml with its own name to give this directory a separate sandbox

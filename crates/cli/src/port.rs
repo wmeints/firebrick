@@ -140,7 +140,8 @@ struct SpecFile<'a> {
 
 impl<'a> SpecFile<'a> {
     /// Reads the spec file, or resolves the sandbox name the way `fbk start` does when there is
-    /// none. Fails with the spec's diagnostic when the file is invalid.
+    /// none. Fails with the spec's diagnostic when the file is invalid, and when the sandbox
+    /// belongs to another directory.
     async fn read(
         working_dir: &'a Path,
         client: &mut SandboxManagementServiceClient<Channel>,
@@ -160,6 +161,8 @@ impl<'a> SpecFile<'a> {
             Err(err) => return Err(err).with_context(|| format!("can't read {}", path.display())),
         };
 
+        manage::check_workspace_owner(&name, working_dir, client).await?;
+
         Ok(Self {
             working_dir,
             name,
@@ -171,5 +174,58 @@ impl<'a> SpecFile<'a> {
         let path = self.working_dir.join(SPEC_FILE_NAME);
 
         fs::write(&path, text).with_context(|| format!("can't write {}", path.display()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fake_daemon;
+    use tempfile::TempDir;
+
+    const SPEC: &str = "name: dev\nports:\n  - 8080:80\n";
+
+    /// Returns a working directory whose spec file names `dev` and forwards port 8080.
+    fn workspace() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(SPEC_FILE_NAME), SPEC).unwrap();
+        dir
+    }
+
+    fn spec_text(dir: &TempDir) -> String {
+        fs::read_to_string(dir.path().join(SPEC_FILE_NAME)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn forward_and_remove_refuse_sandbox_of_other_workspace() {
+        let dir = workspace();
+        let mut client = fake_daemon::serve("dev", "/home/user/other-project").await;
+        let port = PortMapping {
+            host: 3000,
+            guest: 3000,
+        };
+
+        let forward_error = forward(port, dir.path(), &mut client).await.unwrap_err();
+        let remove_error = remove(8080, dir.path(), &mut client).await.unwrap_err();
+
+        assert!(
+            forward_error.to_string().contains("belongs to"),
+            "{forward_error}"
+        );
+        assert!(
+            remove_error.to_string().contains("belongs to"),
+            "{remove_error}"
+        );
+        assert_eq!(spec_text(&dir), SPEC);
+    }
+
+    #[tokio::test]
+    async fn remove_changes_spec_of_sandbox_that_does_not_exist_yet() {
+        let dir = workspace();
+        let mut client = fake_daemon::serve("other", "/home/user/other-project").await;
+
+        remove(8080, dir.path(), &mut client).await.unwrap();
+
+        assert!(!spec_text(&dir).contains("8080"), "{}", spec_text(&dir));
     }
 }

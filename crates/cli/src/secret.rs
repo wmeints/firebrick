@@ -149,7 +149,7 @@ fn ensure_removed(name: &str, scope: Scope, failed_sandboxes: &[String]) -> Resu
 }
 
 /// Returns the sandbox for the working directory with the sandbox scope, or `None` with the
-/// global scope.
+/// global scope. Fails when the sandbox belongs to another directory.
 async fn scoped_sandbox(
     scope: Scope,
     working_dir: &Path,
@@ -157,7 +157,9 @@ async fn scoped_sandbox(
 ) -> Result<Option<String>> {
     match scope {
         Scope::Global => Ok(None),
-        Scope::Sandbox => Ok(Some(manage::resolve_spec(working_dir, client).await?.name)),
+        Scope::Sandbox => Ok(Some(
+            manage::resolve_owned_spec(working_dir, client).await?.name,
+        )),
     }
 }
 
@@ -223,6 +225,9 @@ pub fn read_value(mut reader: impl Read) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake_daemon;
+    use std::fs;
+    use tempfile::TempDir;
 
     fn summary(name: &str, hosts: &[&str]) -> SecretSummary {
         SecretSummary {
@@ -237,6 +242,48 @@ mod tests {
             sandbox: Some(sandbox.to_string()),
             ..summary(name, hosts)
         }
+    }
+
+    fn sandbox_secret() -> NewSecret {
+        NewSecret {
+            name: "TOKEN".to_string(),
+            value: "value".to_string(),
+            allowed_hosts: Vec::new(),
+            scope: Scope::Sandbox,
+        }
+    }
+
+    #[tokio::test]
+    async fn sandbox_scope_refuses_sandbox_of_other_workspace() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(manage::SPEC_FILE_NAME), "name: dev\n").unwrap();
+        let mut client = fake_daemon::serve("dev", "/home/user/other-project").await;
+
+        let set_error = set(sandbox_secret(), dir.path(), &mut client)
+            .await
+            .unwrap_err();
+        let remove_error = remove("TOKEN".to_string(), Scope::Sandbox, dir.path(), &mut client)
+            .await
+            .unwrap_err();
+
+        assert!(set_error.to_string().contains("belongs to"), "{set_error}");
+        assert!(
+            remove_error.to_string().contains("belongs to"),
+            "{remove_error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sandbox_scope_accepts_sandbox_that_does_not_exist_yet() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(manage::SPEC_FILE_NAME), "name: dev\n").unwrap();
+        let mut client = fake_daemon::serve("other", "/home/user/other-project").await;
+
+        let error = set(sandbox_secret(), dir.path(), &mut client)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains(fake_daemon::REFUSED), "{error}");
     }
 
     #[test]

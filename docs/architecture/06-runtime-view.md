@@ -31,10 +31,24 @@ hashed name, the command fails without starting or attaching:
 Error: sandbox firebrick-d9f287 belongs to /home/user/my-project; add a .firebrick.yml with its own name to give this directory a separate sandbox
 ```
 
-A sandbox without a workspace mount, such as one created outside `fbk`, isn't
-checked. `fbk start <name>`, `fbk stop` and `fbk rm` don't check either. The
-check lives in the CLI rather than in `StartSandbox`, because the CLI never
-calls `StartSandbox` for a sandbox that already runs.
+The other commands that take the sandbox name from the working directory run the
+same check before they send a request that changes the sandbox: `fbk stop` and
+`fbk rm` without a name, `fbk secret set` and `fbk secret rm` with `--scope
+sandbox`, every `fbk network` subcommand, and `fbk port forward` and `fbk port
+rm`. Otherwise an agent that changes `name:` in `.firebrick.yml` could make the
+user's next `fbk rm` delete another project's sandbox, or `fbk network` recreate
+it with this workspace's rules. `fbk network` checks before it writes
+`.firebrick.yml`, so a refused command leaves the file unchanged; when it can't
+reach the daemon, it still writes the file, because no request reaches a sandbox
+then.
+
+A sandbox that doesn't exist yet passes, so `fbk secret set --scope sandbox`,
+`fbk network` and `fbk port` work before the first `fbk start`. A sandbox
+without a workspace mount, such as one created outside `fbk`, isn't checked. An
+explicit name, as in `fbk start <name>`, `fbk stop <name>` and `fbk rm <name>`,
+is the user's choice and isn't checked either. The check lives in the CLI rather
+than in the daemon, because the daemon only knows the sandbox name, not the
+directory the command runs in.
 
 ## Running a session
 
