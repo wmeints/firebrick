@@ -6,6 +6,19 @@ request, and the release workflow copies the section into the GitHub release,
 above the generated list of pull requests. Each section starts with a `##
 vX.Y.Z - YYYY-MM-DD` heading.
 
+## v0.6.0 - 2026-10-11
+
+This release makes .NET tools such as the Aspire CLI work in a sandbox out of
+the box, and the docs now explain how to run firebrick on Windows through WSL 2.
+
+### Features
+
+- The `firebrick-base` image includes the ICU library (`libicu78`), so the
+  Aspire CLI and other .NET apps run in a sandbox without installing it first.
+  (#151)
+- The documentation explains how to run firebrick on Windows through WSL 2,
+  including where `fbkd` writes the SSH config. (#145)
+
 ## v0.5.0 - 2026-10-11
 
 This release hardens firebrick against an agent that edits its own workspace:
