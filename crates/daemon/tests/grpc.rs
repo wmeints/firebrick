@@ -264,7 +264,7 @@ async fn remove_stale_sandbox(sb: &SandboxHandle) {
 fn remove_stale_host_files() {
     let dirs = [
         Some(std::env::temp_dir()),
-        Some(firebrick_utils::netlog_socket_dir()),
+        firebrick_utils::netlog_socket_dir(),
         firebrick_utils::network_log_dir(),
     ];
 
@@ -3001,7 +3001,9 @@ async fn forward_port_fails_for_a_stored_port_that_is_still_busy() {
 
 /// Returns the host socket fbkd listens on for the sandbox's network log.
 fn netlog_socket(name: &str) -> PathBuf {
-    firebrick_utils::netlog_socket_dir().join(format!("{name}.sock"))
+    firebrick_utils::netlog_socket_dir()
+        .expect("XDG_RUNTIME_DIR must be an absolute path for the network log tests")
+        .join(format!("{name}.sock"))
 }
 
 /// Returns the file fbkd records the sandbox's network activity in.

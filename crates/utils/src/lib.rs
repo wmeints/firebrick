@@ -23,15 +23,18 @@ pub fn socket_path() -> PathBuf {
 }
 
 /// Returns the directory holding the unix sockets that sandboxes report their network activity
-/// to: `$XDG_RUNTIME_DIR/firebrick/netlog`, falling back to the temp directory like
-/// [`socket_path`].
-pub fn netlog_socket_dir() -> PathBuf {
+/// to: `$XDG_RUNTIME_DIR/firebrick/netlog`.
+///
+/// Returns `None` when `XDG_RUNTIME_DIR` isn't an absolute path. Unlike [`socket_path`], it
+/// never falls back to the temp directory, where another user could create the directory
+/// first and take over the sockets.
+pub fn netlog_socket_dir() -> Option<PathBuf> {
     netlog_socket_dir_from(&env_var)
 }
 
 /// Returns the network activity socket directory for the environment that `var` describes.
-fn netlog_socket_dir_from(var: &impl Fn(&str) -> Option<OsString>) -> PathBuf {
-    runtime_dir_from(var).join("firebrick/netlog")
+fn netlog_socket_dir_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    absolute_var(var, "XDG_RUNTIME_DIR").map(|dir| dir.join("firebrick/netlog"))
 }
 
 /// Returns `$XDG_RUNTIME_DIR`, falling back to the temp directory, for the environment that
@@ -344,16 +347,19 @@ mod tests {
         let var = env(&[("XDG_RUNTIME_DIR", "/run/user/1000")]);
         assert_eq!(
             netlog_socket_dir_from(&var),
-            PathBuf::from("/run/user/1000/firebrick/netlog")
+            Some(PathBuf::from("/run/user/1000/firebrick/netlog"))
         );
     }
 
     #[test]
-    fn netlog_socket_dir_falls_back_to_the_temp_dir() {
-        assert_eq!(
-            netlog_socket_dir_from(&env(&[])),
-            std::env::temp_dir().join("firebrick/netlog")
-        );
+    fn netlog_socket_dir_is_none_without_absolute_xdg_runtime_dir() {
+        for vars in [
+            &[][..],
+            &[("XDG_RUNTIME_DIR", "run")],
+            &[("XDG_RUNTIME_DIR", "")],
+        ] {
+            assert_eq!(netlog_socket_dir_from(&env(vars)), None, "{vars:?}");
+        }
     }
 
     #[test]

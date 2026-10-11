@@ -53,12 +53,14 @@ stops the sandbox from booting.
   route from port `52000` to `$XDG_RUNTIME_DIR/firebrick/netlog/<sandbox>.sock`,
   so created and recreated sandboxes get it. The socket name tells `fbkd` which
   sandbox an event comes from without trusting the guest to say so. When the
-  path is too long for a unix socket, the sandbox gets no route.
+  path is too long for a unix socket, or `XDG_RUNTIME_DIR` isn't set, the
+  sandbox gets no route. The sockets never fall back to the shared temp
+  directory, where another user could take them over.
 - **Treat events as untrusted input.** The agent has root through `sudo`, so it
   can stop the logger or send false events. `fbkd` checks each line, ignores the
-  guest's timestamp, and bounds the record to 10,000 destinations and 64
-  addresses or ports per destination. Network logging never stops a sandbox from
-  starting.
+  guest's timestamp, accepts at most 4 connections per sandbox, and bounds the
+  record to 10,000 destinations and 64 addresses or ports per destination.
+  Network logging never stops a sandbox from starting.
 - **Aggregate per destination.** `fbkd` keeps one entry per DNS name and one per
   address and protocol, with counts and first and last seen, in
   `$XDG_STATE_HOME/firebrick/network/<sandbox>.json`, written privately at most

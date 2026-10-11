@@ -123,5 +123,10 @@ jobs:
         if: steps.msb-runtime.outputs.cache-hit == 'true'
         run: find /tmp/firebrick-msb/bin /tmp/firebrick-msb/lib -exec touch -h -d 2000-01-01 {} +
 
+      # The network log tests need the per-user runtime directory, which a runner
+      # without a login session may not have.
       - name: Integration tests
-        run: cargo test -p firebrick-daemon --features vm-tests
+        run: |
+          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$RUNNER_TEMP/xdg-runtime}"
+          [ -d "$XDG_RUNTIME_DIR" ] || mkdir -m 700 "$XDG_RUNTIME_DIR"
+          cargo test -p firebrick-daemon --features vm-tests

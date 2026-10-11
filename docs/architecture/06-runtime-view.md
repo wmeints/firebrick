@@ -1037,7 +1037,8 @@ sandbox that kept running while `fbkd` restarted is recorded again. microsandbox
 connects to the host socket each time the guest connects, so the socket doesn't
 have to exist when the VM boots, and the logger reconnects within 5 seconds
 after `fbkd` comes back. Events the logger sends while `fbkd` can't be reached
-are lost. A record looks like this:
+are lost. When `fbkd` shuts down, it writes every record a last time. A record
+looks like this:
 
 ```json
 {

@@ -371,8 +371,9 @@ impl SandboxManager {
 
     /// Starts an existing sandbox or creates a new one when it doesn't exist, installs the
     /// workspace's mise tools when it started, then syncs the SSH config and the editor
-    /// settings, also when starting failed. Listens for the sandbox's network log first. Once the sandbox runs, stores the requested ports,
-    /// opens its forwards and starts its URL relay, also when it was already running.
+    /// settings, also when starting failed. Listens for the sandbox's network log first. Once
+    /// the sandbox runs, stores the requested ports, opens its forwards and starts its URL
+    /// relay, also when it was already running.
     /// `resources` is only called when the sandbox is created, and `on_pull` only gets the
     /// progress of an image that is downloaded for a new sandbox.
     pub async fn start(
@@ -439,13 +440,27 @@ impl SandboxManager {
     /// Listens for the sandbox's network log when it has the route. Sandboxes created before
     /// network logging have none.
     async fn listen_if_routed(&self, sb: &SandboxHandle) {
-        let routed = sb
-            .config()
-            .is_ok_and(|config| self.netlogs.has_route(sb.name(), &config.spec));
+        let config = match sb.config() {
+            Ok(config) => config,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to read the config of sandbox {}; not listening for its network \
+                     log: {err}",
+                    sb.name()
+                );
+                return;
+            }
+        };
 
-        if routed {
+        if self.netlogs.has_route(sb.name(), &config.spec) {
             self.netlogs.listen(sb.name()).await;
         }
+    }
+
+    /// Stops listening for the network logs of the sandboxes, writing their records a last
+    /// time. Used when the daemon shuts down.
+    pub async fn close_network_logs(&self) {
+        self.netlogs.close().await;
     }
 
     /// Stores the ports with the sandbox when they're given, then makes its open forwards
@@ -583,7 +598,7 @@ impl SandboxManager {
         }
 
         sb.remove().await.map_err(|err| remove_failed(name, err))?;
-        self.netlogs.remove(name);
+        self.netlogs.remove(name).await;
 
         sync_ssh_config().await;
 
@@ -671,9 +686,8 @@ impl SandboxManager {
 
     /// Replaces the egress rules of an existing sandbox by recreating it from a disk snapshot,
     /// so it keeps its root disk, Docker disk and settings but not its processes, and gets the
-    /// route of its network log, also when it had none. The sandbox
-    /// ends in the state it was in. Returns whether it was recreated: a sandbox that already
-    /// has the rules is left alone. A paused sandbox is refused, because it can't be paused
+    /// route of its network log, also when it had none. The sandbox ends in the state it was
+    /// in. Returns whether it was recreated: a sandbox that already has the rules is left alone. A paused sandbox is refused, because it can't be paused
     /// again. When the recreate fails, the snapshot is kept so the user can recover the
     /// sandbox, and the error names it.
     pub async fn update_network(

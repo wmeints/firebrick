@@ -539,17 +539,21 @@ fn parse_size_mib(size: &str) -> Result<u32, SandboxError> {
         .map_err(|err| SandboxError::InvalidArgument(err.to_string()))
 }
 
-/// Reopens the port forwards of the sandboxes that are running and listens for the network logs
-/// of the sandboxes, then serves the gRPC API on
-/// the socket until SIGINT or SIGTERM is received, opening the URLs from sandboxes in the
-/// host's browser. The caller makes sure no other daemon serves on the socket, so it doesn't
-/// take that daemon's host ports.
+/// Reopens the port forwards of the sandboxes that are running and listens for the network
+/// logs of the sandboxes, then serves the gRPC API on the socket until SIGINT or SIGTERM is
+/// received, opening the URLs from sandboxes in the host's browser. Writes the network records
+/// a last time after serving. The caller makes sure no other daemon serves on the socket, so
+/// it doesn't take that daemon's host ports.
 pub async fn run(socket_path: &Path, secrets: SecretStore) -> Result<(), ServerError> {
     let service = FirebrickServer::new(secrets, Arc::new(HostOpener));
-    service.sandboxes.restore_forwards().await;
-    service.restore_network_logs().await;
+    let sandboxes = Arc::clone(&service.sandboxes);
+    sandboxes.restore_forwards().await;
+    sandboxes.restore_network_logs().await;
 
-    serve(socket_path, service, shutdown_signal()).await
+    let served = serve(socket_path, service, shutdown_signal()).await;
+    sandboxes.close_network_logs().await;
+
+    served
 }
 
 /// Serves the gRPC API on the socket with `service` until `shutdown` completes, then removes

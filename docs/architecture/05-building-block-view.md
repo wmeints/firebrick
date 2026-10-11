@@ -426,17 +426,25 @@ C4Component
   and
   [Recording network activity](06-runtime-view.md#recording-network-activity)).
   `NetLogs::add_route` adds a stream route from guest vsock port `52000` to
-  `$XDG_RUNTIME_DIR/firebrick/netlog/<sandbox>.sock` (the temp directory without
-  `XDG_RUNTIME_DIR`). When that path doesn't fit in a unix socket address (108
-  bytes), it adds no route and logs a warning, because microsandbox would refuse
-  to boot the sandbox. `NetLogs::listen` binds the socket unless `fbkd` already
-  listens on it: it creates the directory with mode `0700`, leaves a socket that
-  another process answers on alone, and removes a stale socket file first. A
-  socket that can't be bound is logged as an error and the sandbox starts
-  without a record. Each line the guest writes is untrusted: a line longer than
-  4 KiB, invalid JSON, an unknown `kind`, a name that isn't a valid DNS name, an
-  invalid IPv4 address or port 0 is dropped with a warning at most once a minute
-  per sandbox, and the connection stays open. The valid events are aggregated
+  `$XDG_RUNTIME_DIR/firebrick/netlog/<sandbox>.sock`. Without an absolute
+  `XDG_RUNTIME_DIR` there are no sockets: unlike the daemon socket, they never
+  fall back to the shared temp directory, where another user could create the
+  directory first and take them over. `fbkd` logs that once when it starts. When
+  the path doesn't fit in a unix socket address (108 bytes), it adds no route
+  either and logs a warning, because microsandbox would refuse to boot the
+  sandbox. `NetLogs::listen` binds the socket unless `fbkd` already listens on
+  it, replacing a listener that stopped, for example because it panicked: it
+  creates the directory with mode `0700`, leaves a socket that another process
+  answers on alone, and removes a stale socket file first. A socket that can't
+  be bound is logged as an error and the sandbox starts without a record. File
+  reads and writes run off the async runtime. Each line the guest writes is
+  untrusted: a line longer than 4 KiB, invalid JSON, an unknown `kind`, a name
+  that isn't a valid DNS name, an invalid IPv4 address or port 0 is dropped, and
+  the connection stays open. A sandbox gets at most 4 connections at a time;
+  further ones are closed. Warnings about the guest's input and about failures
+  on the host, such as a record that can't be written, are each logged at most
+  once a minute per sandbox, so the guest can't hide host failures. A panicking
+  connection or listener is logged as an error. The valid events are aggregated
   per destination: a DNS entry per name (lowercase, without a trailing dot) with
   its resolved IPv4 addresses, and a connection entry per address and protocol
   with its ports, each with a count and the first and last time `fbkd` received
@@ -445,10 +453,12 @@ C4Component
   ones keep updating, and at most 64 addresses or ports per entry. The record is
   written to `$XDG_STATE_HOME/firebrick/network/<sandbox>.json` (falling back to
   `~/.local/state/firebrick/network`) with `write_private`, at most once a
-  second while it changes. A corrupt record file is logged as a warning and
-  replaced by a new, empty record. `NetLogs::record` returns a sandbox's
-  entries, and `NetLogs::remove` stops listening and deletes the socket and the
-  record.
+  second while it changes, and a last time when `fbkd` shuts down
+  (`NetLogs::close`). A corrupt record file is logged as a warning and replaced
+  by a new, empty record. `NetLogs::record` returns a sandbox's entries.
+  `NetLogs::remove` stops the listener, waits until it can't write anymore, and
+  then deletes the socket and the record, so a removed sandbox's record can't
+  come back.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `fbkd` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,
