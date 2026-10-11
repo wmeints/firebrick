@@ -2304,27 +2304,27 @@ async fn start_curl_sandbox(
 
 #[tokio::test]
 async fn disabled_network_blocks_connections_until_it_is_enabled() {
-    const NAME: &str = "fbk-it-network-disabled";
-    remove_sandbox_and_snapshots(NAME).await;
+    let name: &str = &sandbox_name("network-disabled");
+    remove_sandbox_and_snapshots(name).await;
 
     let dir = tempfile::tempdir().unwrap();
     let store = store_with_test_secret(dir.path());
     let daemon = TestDaemon::start_with_secrets("network-disabled", store).await;
     let mut client = daemon.client().await;
-    start_curl_sandbox(&mut client, NAME, Some(disabled_network())).await;
-    write_markers(&mut client, NAME).await;
-    let before = kept_settings(&mut client, NAME).await;
+    start_curl_sandbox(&mut client, name, Some(disabled_network())).await;
+    write_markers(&mut client, name).await;
+    let before = kept_settings(&mut client, name).await;
 
-    let (_, resolved) = run_command(&mut client, NAME, "getent", &["hosts", "example.com"]).await;
-    let offline = fetch(&mut client, NAME, "http://1.1.1.1").await;
-    let enabled = update_network(&mut client, NAME, NetworkPolicy::default()).await;
-    let after = after_update(&mut client, NAME).await;
-    let markers = read_markers(&mut client, NAME).await;
-    let online = fetch(&mut client, NAME, "https://example.com").await;
-    let secret = print_env(&mut client, NAME, "FIREBRICK_IT_TOKEN").await;
+    let (_, resolved) = run_command(&mut client, name, "getent", &["hosts", "example.com"]).await;
+    let offline = fetch(&mut client, name, "http://1.1.1.1").await;
+    let enabled = update_network(&mut client, name, NetworkPolicy::default()).await;
+    let after = after_update(&mut client, name).await;
+    let markers = read_markers(&mut client, name).await;
+    let online = fetch(&mut client, name, "https://example.com").await;
+    let secret = print_env(&mut client, name, "FIREBRICK_IT_TOKEN").await;
 
     daemon.stop().await;
-    remove_sandbox_and_snapshots(NAME).await;
+    remove_sandbox_and_snapshots(name).await;
 
     assert_ne!(resolved, 0, "example.com resolved without a network");
     assert!(offline.trim_end().ends_with("000"), "{offline:?}");
@@ -2339,19 +2339,19 @@ async fn disabled_network_blocks_connections_until_it_is_enabled() {
 
 #[tokio::test]
 async fn update_network_disables_the_network_once() {
-    const NAME: &str = "fbk-it-network-disable";
-    remove_sandbox_and_snapshots(NAME).await;
+    let name: &str = &sandbox_name("network-disable");
+    remove_sandbox_and_snapshots(name).await;
 
     let daemon = TestDaemon::start("network-disable").await;
     let mut client = daemon.client().await;
-    start_curl_sandbox(&mut client, NAME, None).await;
+    start_curl_sandbox(&mut client, name, None).await;
 
-    let disabled = update_network(&mut client, NAME, disabled_network()).await;
-    let offline = fetch(&mut client, NAME, "http://1.1.1.1").await;
+    let disabled = update_network(&mut client, name, disabled_network()).await;
+    let offline = fetch(&mut client, name, "http://1.1.1.1").await;
     // A disabled network ignores its rules, so changing them doesn't recreate the sandbox.
     let still_disabled = update_network(
         &mut client,
-        NAME,
+        name,
         NetworkPolicy {
             enforce: true,
             ..disabled_network()
@@ -2360,7 +2360,7 @@ async fn update_network_disables_the_network_once() {
     .await;
 
     daemon.stop().await;
-    remove_sandbox_and_snapshots(NAME).await;
+    remove_sandbox_and_snapshots(name).await;
 
     assert!(matches!(disabled, Ok(true)), "{disabled:?}");
     assert!(offline.trim_end().ends_with("000"), "{offline:?}");
@@ -2543,8 +2543,8 @@ async fn forwards_host_port_to_sandbox_and_closes_removed_port() {
 
 #[tokio::test]
 async fn forwards_ports_to_sandbox_without_network() {
-    const NAME: &str = "fbk-it-port-forward-offline";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("port-forward-offline");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("port-forward-offline").await;
     let mut client = daemon.client().await;
@@ -2554,15 +2554,15 @@ async fn forwards_ports_to_sandbox_without_network() {
         image: "alpine:3.22".to_string(),
         network: Some(disabled_network()),
         ports: Some(forward_ports(host, GUEST_PORT)),
-        ..start_request(NAME)
+        ..start_request(name)
     };
 
     let started = start_with_ports(&mut client, request).await;
     // The forwards go through microsandbox's SSH server, which needs no guest network.
-    check_forward_both_ways(&mut client, NAME, host).await;
+    check_forward_both_ways(&mut client, name, host).await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 
     assert!(started.failed_forwards.is_empty());
 }
