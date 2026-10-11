@@ -16,36 +16,25 @@ Firebrick supports two ways of working:
 > [!NOTE]
 > Firebrick is early in development.
 
-The documentation lives at
-**[firebrick-sandbox.dev](https://firebrick-sandbox.dev/docs/)**.
+## Installing and using Firebrick
 
-## Requirements
+The user documentation lives at
+**[firebrick-sandbox.dev](https://firebrick-sandbox.dev/docs/)**. Start with
+[Installation](https://firebrick-sandbox.dev/docs/installation/) to install the
+`fbk` and `fbkd` binaries, then follow the
+[Quickstart](https://firebrick-sandbox.dev/docs/quickstart/) to run an agent in
+a sandbox.
 
-- Linux with KVM, or macOS on Apple Silicon.
-- On Linux, glibc 2.35 or newer for the release binaries.
-- On Windows, WSL 2 with nested virtualization, which runs the Linux release.
-
-See [Installation](https://firebrick-sandbox.dev/docs/installation/) to install
-the `fbk` and `fbkd` binaries from a release or from source.
-
-## Quickstart
-
-In your project directory, start a sandbox, give it an API key and open a shell
-in it:
-
-```sh
-fbk start
-fbk secret set ANTHROPIC_API_KEY --from-stdin < ~/anthropic-key.txt
-fbk stop && fbk start   # a running sandbox gets new secrets after a restart
-fbk run bash
-```
-
-Connect your editor over SSH to the host name `fbk start` prints, such as
-`my-project.fbk`. When you're done, `fbk stop` stops the sandbox and `fbk rm`
-removes it. The [Quickstart](https://firebrick-sandbox.dev/docs/quickstart/)
-walks through these steps.
+The rest of this README is for people who work on the source code.
 
 ## Development
+
+### Setup
+
+Development needs Linux with KVM or macOS on Apple Silicon, like Firebrick
+itself; the integration tests boot real VMs. See
+[Installation](https://firebrick-sandbox.dev/docs/installation/) for the
+details.
 
 Install the toolchain (Rust, Node, pnpm, `buf`, `protoc`, `dprint`,
 `actionlint`, `lefthook`, the GitHub CLI and Claude Code) with
@@ -54,6 +43,8 @@ Install the toolchain (Rust, Node, pnpm, `buf`, `protoc`, `dprint`,
 ```sh
 mise install
 ```
+
+### Commands
 
 | Command                   | Description                                   |
 | ------------------------- | --------------------------------------------- |
@@ -69,6 +60,8 @@ share a runtime or database with an installed `fbkd` or `msb`. Several test
 runs, for example from two worktrees, can use it at the same time: each run
 names its sandboxes after its process id, and removes the sandboxes left behind
 by runs that were killed.
+
+### Running a development build
 
 The default sandbox image is the `firebrick-base` image of the same release, so
 it doesn't exist for a version that hasn't been released yet. To run a
@@ -89,6 +82,8 @@ starts:
 { "registries": { "hosts": { "localhost:5000": { "insecure": true } } } }
 ```
 
+### Workspace layout
+
 The workspace contains five crates:
 
 | Crate              | Folder          | Purpose                                                                                     |
@@ -101,6 +96,8 @@ The workspace contains five crates:
 
 The gRPC contract lives in
 [`crates/proto/proto/daemon.v1.proto`](crates/proto/proto/daemon.v1.proto).
+
+### Website
 
 The website lives in [`website/`](website/), an Astro site with Starlight for
 the docs and Tailwind for styling. Run its commands with pnpm from the

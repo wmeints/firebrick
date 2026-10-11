@@ -90,7 +90,8 @@ each.>
 - [ ] The architecture docs describe the new behavior.
 - [ ] <A decision record in `docs/architecture/decisions/`, when this adds a
       dependency or makes an architectural choice.>
-- [ ] <`README.md` shows the new usage, when user-facing behavior changes.>
+- [ ] <The user docs in `website/src/content/docs/docs/` show the new usage,
+      when user-facing behavior changes.>
 
 ## Out of scope
 

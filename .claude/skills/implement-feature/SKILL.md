@@ -73,8 +73,9 @@ Ask about anything the spec can't answer from the request or the code.
   git fetch origin
   git ls-tree --name-only origin/main docs/architecture/decisions/
   ```
-- Update `README.md` when the usage of the project changes, and the user docs in
-  `website/src/content/docs/` once they exist for that part of Firebrick.
+- Update the user docs in `website/src/content/docs/docs/` when the usage of the
+  project changes, and `README.md` only when the development workflow (setup,
+  build, tests or workspace layout) changes.
 
 ### 6. Verify
 

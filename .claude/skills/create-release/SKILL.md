@@ -123,13 +123,17 @@ It updates the workspace version and the `firebrick-*` dependency versions in
 `Cargo.toml`, and `Cargo.lock`. The release workflow builds with `--locked` and
 checks that the tag matches the version, so both files must change.
 
-Then update the references to the current release in `README.md`: the `VERSION=`
-line of the install steps, the `fbk --version` example and the `FROM
-ghcr.io/wmeints/firebrick-base:` example. Leave sentences about older releases,
-such as "firebrick 0.3.0 and earlier", as they are.
+Then update the references to the current release in the user docs: the
+`VERSION=` line of the install steps and the `fbk --version` example in
+`website/src/content/docs/docs/installation.md`, and the `FROM
+ghcr.io/wmeints/firebrick-base:` example in
+`website/src/content/docs/docs/custom-images.md`. Leave sentences about older
+releases, such as "firebrick 0.3.0 and earlier", as they are.
 
 Run `dprint fmt` and `cargo build`, and check the diff only touches
-`Cargo.toml`, `Cargo.lock`, `CHANGELOG.md` and `README.md`.
+`Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`,
+`website/src/content/docs/docs/installation.md` and
+`website/src/content/docs/docs/custom-images.md`.
 
 ### 5. Confirm with the user
 
@@ -141,7 +145,9 @@ in this conversation, go on.
 ### 6. Open the PR
 
 ```bash
-git add Cargo.toml Cargo.lock CHANGELOG.md README.md
+git add Cargo.toml Cargo.lock CHANGELOG.md \
+  website/src/content/docs/docs/installation.md \
+  website/src/content/docs/docs/custom-images.md
 git commit -m "chore: release <next>"
 git push -u origin release/<next>
 gh pr create --base main --head release/<next> \
