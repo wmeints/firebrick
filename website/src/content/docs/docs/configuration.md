@@ -71,11 +71,23 @@ then refuse to use the first directory's sandbox from the second one, so an
 agent can't reach the other project's files:
 
 ```text
-Error: sandbox firebrick-d9f287 belongs to /home/user/my-project; add a .firebrick.yml with its own name to give this directory a separate sandbox
+Error: sandbox firebrick-d9f287 belongs to /home/user/my-project; give this directory its own name in .firebrick.yml to use a separate sandbox
 ```
 
 Add a `.firebrick.yml` with its own `name` to the second directory to give it a
 separate sandbox.
+
+## One sandbox per directory
+
+A sandbox belongs to the directory it was created in. The commands that act on
+the working directory's sandbox check this before they change anything: `fbk
+start` and `fbk run`, `fbk stop` and `fbk rm` without a name, `fbk network`,
+`fbk port`, and `fbk secret set` and `fbk secret rm` with `--scope sandbox`.
+When `.firebrick.yml` names another directory's sandbox, for example because an
+agent changed its `name`, they refuse with the error above, so the agent can't
+remove or reconfigure the other project's sandbox. Change `name` back to give
+the directory its own sandbox. `fbk stop <name>` and `fbk rm <name>` act on the
+sandbox you name and aren't checked.
 
 ## Applying changes
 
@@ -93,6 +105,10 @@ Docker data; your project files stay on the host. There are two exceptions: `fbk
 start` applies `ports` to an existing sandbox, also while it runs, and `fbk
 network` changes the network rules without removing the sandbox. See
 [Networking](/docs/networking/).
+
+The agent can edit `.firebrick.yml` like any other file in the workspace, so
+review changes you didn't make before you apply them. See
+[What the agent can change](/docs/#what-the-agent-can-change).
 
 ### Approving mounts and network changes
 
@@ -189,6 +205,11 @@ it uses the default under your home directory:
 | `$XDG_DATA_HOME/firebrick/ssh` (`~/.local/share/firebrick/ssh`)                | The SSH keys, `known_hosts` and the generated SSH config. See [Editor support](/docs/editor-support/).                                       |
 | `~/.local/share/firebrick/secrets.yml`                                         | The secrets. See [Secrets](/docs/secrets/).                                                                                                  |
 | `$XDG_CONFIG_HOME/firebrick/approved.yml` (`~/.config/firebrick/approved.yml`) | The mounts and network settings you approved per project. See [Approving mounts and network changes](#approving-mounts-and-network-changes). |
+
+`fbkd` never falls back to the temp directory for its data, logs and
+microsandbox home: it refuses to start when neither `HOME` nor the matching
+`XDG_*` variable is an absolute path (or `MSB_HOME` is set, for the microsandbox
+home). `fbk` only uses a socket served by your own user or by root.
 
 The daemon logs at the `info` level. Set `RUST_LOG` in the environment that
 starts `fbkd` to change it, for example `RUST_LOG=debug`. The CLI starts `fbkd`

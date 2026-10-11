@@ -88,6 +88,14 @@
   with the removed sandbox, and `GetSandbox` doesn't return a running sandbox's
   policy
   ([ADR 0037](decisions/0037-approve-mounts-and-network-changes-in-the-spec.md)).
+- **Workspace files can run code on the host:** the workspace is mounted
+  read/write, so the agent can plant files that run on the host when the user
+  works on the project there, such as git hooks, `.git/config` settings like
+  `core.fsmonitor`, editor tasks, `.envrc` files and mise configs. Firebrick
+  doesn't detect or block them; the user documentation lists the common ones and
+  tells users to review the workspace, including `.git/`, before they use it on
+  the host
+  ([ADR 0017](decisions/0017-trust-the-workspaces-mise-config-inside-the-sandbox.md)).
 - **Ageing Linux build runners:** Linux releases build on the `ubuntu-22.04`
   runners to support glibc 2.35. GitHub retires runner images before their
   Ubuntu release reaches end of support (April 2027), after which the release

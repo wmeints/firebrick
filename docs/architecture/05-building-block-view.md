@@ -50,7 +50,7 @@ C4Component
         Component(client, "client", "Tonic client", "Daemon client")
     }
     Component_Ext(spec, "firebrick-spec", "serde_yaml", "Sandbox spec")
-    Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names")
+    Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names, text")
     Container_Ext(fbkd, "fbkd")
 
     Rel(main, manage, "Uses")
@@ -184,7 +184,7 @@ C4Component
         Component(open, "open", "Rust", "URL relays")
         Component(pull, "pull", "Rust", "Image pull progress")
     }
-    Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names")
+    Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names, text")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
     System_Ext(sshconfig, "~/.ssh/config", "OpenSSH config")
     System_Ext(editors, "settings.json", "VS Code-family user settings")
@@ -525,9 +525,15 @@ C4Component
   (`$XDG_RUNTIME_DIR/fbkd.sock`), the log directory
   (`$XDG_STATE_HOME/firebrick`), the SSH directory
   (`$XDG_DATA_HOME/firebrick/ssh`) and the secrets file
-  (`$XDG_DATA_HOME/firebrick/secrets.yml`). It also holds `sanitize_label`,
+  (`$XDG_DATA_HOME/firebrick/secrets.yml`), each falling back to `HOME`. The
+  log, SSH and secrets paths are `None` when neither variable is an absolute
+  path, never the temp dir, and `missing_dir` returns the error the daemon would
+  exit with. It also holds `is_trusted_peer`, the rule that only the same user
+  and root may be on the other end of the daemon socket, and `sanitize_label`,
   which turns a directory's leaf into a lowercase DNS label (or `sandbox` when
-  nothing is left), so the SSH host names and the name `fbk init` writes match.
+  nothing is left), so the SSH host names and the name `fbk init` writes match,
+  and `strip_control`, which removes terminal control characters from guest
+  output before the daemon puts it in an error message or a log line.
 
 The image, init, mise setting, resources, network rules and mounts apply when a
 sandbox is created. Changing them in `.firebrick.yml` doesn't change an existing

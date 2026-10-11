@@ -28,10 +28,12 @@ sandbox its own kernel behind a hardware virtualization boundary, and is light
 enough to run one per project.
 
 Inside the sandbox the agent sees the project directory, and nothing else from
-your home directory: no SSH keys, no cloud credentials, no browser profile.
-Tokens the agent needs reach it as placeholders that only work for the hosts you
-allow (see [Secrets](/docs/secrets/)), and you can limit where the sandbox may
-connect to (see [Networking](/docs/networking/)).
+your home directory unless you mount it (see
+[Extra mounts](/docs/configuration/#extra-mounts)): no SSH keys, no cloud
+credentials, no browser profile. Tokens the agent needs reach it as placeholders
+that only work for the hosts you allow (see [Secrets](/docs/secrets/)), and you
+can limit where the sandbox may connect to (see
+[Networking](/docs/networking/)).
 
 ## How it works
 
@@ -53,6 +55,33 @@ first start. It never touches `~/.microsandbox`, so a separately installed `msb`
 keeps its own runtime and database. Set `MSB_HOME` to use another directory.
 Sandboxes created by firebrick 0.3.0 and earlier stay in `~/.microsandbox`;
 remove them with `msb` if you no longer need them.
+
+## What the agent can change
+
+The workspace is mounted read/write, so the agent can change any file in it,
+including `.firebrick.yml`. `fbk` asks before it applies changes to `mounts` or
+`network` that you haven't approved (see
+[Approving mounts and network changes](/docs/configuration/#approving-mounts-and-network-changes)).
+Changes to the other settings, such as `image`, `init`, `mise`, `resources`,
+`volumes` and `ports`, apply without asking, so review them before you start or
+recreate the sandbox.
+
+Files in the workspace can also run code on the host when you use the project
+there. Common ones are:
+
+- `.git/hooks/*`, which git runs on commits, checkouts and merges.
+- `.git/config` settings such as `core.fsmonitor`, `core.hooksPath`,
+  `core.sshCommand` and `core.pager`, which make git run commands during `git
+  status`, `git log` or `git fetch`.
+- `.vscode/tasks.json` tasks with `runOn: folderOpen`, and
+  `.vscode/settings.json`.
+- `.envrc`, which direnv loads when you enter the directory.
+- `mise.toml` and `.tool-versions`, when mise trusts the directory on the host.
+- Run configurations in `.idea/`.
+
+`git status` and `git diff` don't show changes inside `.git/`. Check
+`.git/config` and `.git/hooks/` yourself before you run git or open the project
+in an editor on the host.
 
 ## Supported platforms
 

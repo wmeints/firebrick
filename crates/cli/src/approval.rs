@@ -57,18 +57,6 @@ pub struct Approvals {
 }
 
 impl Approvals {
-    /// Returns the approvals of the workspace in the user's config directory.
-    pub fn open(workspace: &Path) -> Result<Self> {
-        let path = firebrick_utils::approvals_path().ok_or_else(|| {
-            anyhow!(
-                "can't find the firebrick config directory: set HOME or XDG_CONFIG_HOME to an \
-                 absolute path"
-            )
-        })?;
-
-        Self::at(path, workspace)
-    }
-
     /// Returns the approvals of the workspace stored in the file at `path`. They're stored under
     /// the canonical workspace path, so a symlink to the workspace shares them.
     pub fn at(path: PathBuf, workspace: &Path) -> Result<Self> {
@@ -169,22 +157,55 @@ impl Approvals {
     }
 }
 
-/// Runs `approve` with the approvals of the workspace and a prompt on the terminal, off the
-/// async runtime because reading the answer blocks. `assume_yes` approves without asking.
-pub async fn on_terminal<F>(workspace: &Path, assume_yes: bool, approve: F) -> Result<()>
-where
-    F: FnOnce(&Approvals, &mut Prompt<io::StdinLock<'static>, io::Stderr>) -> Result<()>
-        + Send
-        + 'static,
-{
-    let workspace = workspace.to_path_buf();
+/// Gets approval on the terminal, with the approvals stored in a file.
+#[derive(Debug, Clone)]
+pub struct Approver {
+    path: Option<PathBuf>,
+    assume_yes: bool,
+}
 
-    tokio::task::spawn_blocking(move || {
-        let approvals = Approvals::open(&workspace)?;
-        approve(&approvals, &mut Prompt::terminal(assume_yes))
-    })
-    .await
-    .context("failed to ask for approval of the mounts and network settings")?
+impl Approver {
+    /// Returns an approver for the approvals in the user's config directory. `assume_yes`
+    /// approves without asking.
+    pub fn new(assume_yes: bool) -> Self {
+        Self {
+            path: firebrick_utils::approvals_path(),
+            assume_yes,
+        }
+    }
+
+    /// Returns an approver for the approvals in the file at `path`.
+    pub fn at(path: PathBuf, assume_yes: bool) -> Self {
+        Self {
+            path: Some(path),
+            assume_yes,
+        }
+    }
+
+    /// Runs `approve` with the approvals of the workspace and a prompt on the terminal, off
+    /// the async runtime because reading the answer blocks.
+    pub async fn run<F>(self, workspace: &Path, approve: F) -> Result<()>
+    where
+        F: FnOnce(&Approvals, &mut Prompt<io::StdinLock<'static>, io::Stderr>) -> Result<()>
+            + Send
+            + 'static,
+    {
+        let path = self.path.ok_or_else(|| {
+            anyhow!(
+                "can't find the firebrick config directory: set HOME or XDG_CONFIG_HOME to an \
+                 absolute path"
+            )
+        })?;
+        let workspace = workspace.to_path_buf();
+        let assume_yes = self.assume_yes;
+
+        tokio::task::spawn_blocking(move || {
+            let approvals = Approvals::at(path, &workspace)?;
+            approve(&approvals, &mut Prompt::terminal(assume_yes))
+        })
+        .await
+        .context("failed to ask for approval of the mounts and network settings")?
+    }
 }
 
 /// Returns a line per added or removed mount and per changed network field between the

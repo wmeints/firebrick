@@ -28,13 +28,27 @@ starting or stopped. When they differ, for example because two paths share a
 hashed name, the command fails without starting or attaching:
 
 ```text
-Error: sandbox firebrick-d9f287 belongs to /home/user/my-project; add a .firebrick.yml with its own name to give this directory a separate sandbox
+Error: sandbox firebrick-d9f287 belongs to /home/user/my-project; give this directory its own name in .firebrick.yml to use a separate sandbox
 ```
 
-A sandbox without a workspace mount, such as one created outside `fbk`, isn't
-checked. `fbk start <name>`, `fbk stop` and `fbk rm` don't check either. The
-check lives in the CLI rather than in `StartSandbox`, because the CLI never
-calls `StartSandbox` for a sandbox that already runs.
+The other commands that take the sandbox name from the working directory run the
+same check before they send a request that changes the sandbox: `fbk stop` and
+`fbk rm` without a name, `fbk secret set` and `fbk secret rm` with `--scope
+sandbox`, every `fbk network` subcommand, and `fbk port forward` and `fbk port
+rm`. Otherwise an agent that changes `name:` in `.firebrick.yml` could make the
+user's next `fbk rm` delete another project's sandbox, or `fbk network` recreate
+it with this workspace's rules. `fbk network` checks before it writes
+`.firebrick.yml`, so a refused command leaves the file unchanged; when it can't
+reach the daemon, it still writes the file, because no request reaches a sandbox
+then.
+
+A sandbox that doesn't exist yet passes, so `fbk secret set --scope sandbox`,
+`fbk network` and `fbk port` work before the first `fbk start`. A sandbox
+without a workspace mount, such as one created outside `fbk`, isn't checked. An
+explicit name, as in `fbk start <name>`, `fbk stop <name>` and `fbk rm <name>`,
+is the user's choice and isn't checked either. The check lives in the CLI rather
+than in the daemon, because the daemon only knows the sandbox name, not the
+directory the command runs in.
 
 ## Running a session
 
@@ -775,6 +789,12 @@ file only. The `firebrick.network` label makes that cheap: a sandbox that
 already has the rules isn't recreated, and neither is one whose rules aren't
 enforced, because they don't change it, nor one without a network device whose
 rules change, because it ignores them.
+
+microsandbox refuses to delete a snapshot while another operation reads it, for
+example a snapshot listing by `msb` or another sandbox's update, and doesn't
+wait for that reader. `fbkd` tries the delete again every 100 ms for up to 10
+seconds, then logs a warning and leaves the snapshot behind; a leftover snapshot
+only takes up disk space, so it doesn't fail the update.
 
 Between removing and creating the sandbox, it briefly doesn't exist, so an SSH
 connection to its host name fails during that time. Other requests for the

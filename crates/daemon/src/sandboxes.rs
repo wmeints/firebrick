@@ -27,9 +27,16 @@ use std::sync::{Arc, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::sync::OwnedMutexGuard;
+use tokio::time::{Instant, sleep};
 
 /// How long a sandbox gets to shut down gracefully before it is killed.
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long deleting a snapshot waits for the operations that still read it.
+const SNAPSHOT_IN_USE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long deleting a snapshot that's in use waits before it tries again.
+const SNAPSHOT_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Guest path of the disk that holds Docker's data.
 const DOCKER_DATA_PATH: &str = "/var/lib/docker";
@@ -1063,10 +1070,31 @@ fn snapshot_name(sandbox: &str) -> String {
 
 /// Deletes the snapshot, logging a warning when that fails. A leftover snapshot only takes up
 /// disk space, so it doesn't fail the update.
+///
+/// microsandbox refuses to delete a snapshot while another operation reads it, such as a
+/// concurrent snapshot listing, and doesn't wait for that reader. So the delete is tried again
+/// until [`SNAPSHOT_IN_USE_TIMEOUT`] has passed.
 async fn remove_snapshot(snapshot: &str) {
-    if let Err(err) = Snapshot::remove(snapshot, false).await {
-        tracing::warn!(error = ?err, "failed to remove snapshot {snapshot}");
+    let deadline = Instant::now() + SNAPSHOT_IN_USE_TIMEOUT;
+
+    loop {
+        match Snapshot::remove(snapshot, false).await {
+            Ok(()) => return,
+            Err(err) if is_in_use(&err) && Instant::now() < deadline => {
+                sleep(SNAPSHOT_RETRY_INTERVAL).await;
+            }
+            Err(err) => {
+                tracing::warn!(error = ?err, "failed to remove snapshot {snapshot}");
+                return;
+            }
+        }
     }
+}
+
+/// Returns whether microsandbox refused to delete a snapshot because another operation uses it.
+/// microsandbox reports that only as a `Custom` error with this message.
+fn is_in_use(err: &MicrosandboxError) -> bool {
+    matches!(err, MicrosandboxError::Custom(message) if message.starts_with("snapshot is in use"))
 }
 
 /// Logs why updating the network rules failed and returns the error the client sees.
@@ -2186,5 +2214,18 @@ mod tests {
             Err(SandboxError::NotFound("secret B doesn't exist".into()))
         );
         assert_eq!(SecretStore::new(&path).load().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn is_in_use_matches_only_microsandbox_in_use_error() {
+        let in_use = MicrosandboxError::Custom(
+            "snapshot is in use by an active operation: /msb/snapshots/demo/snap_1".to_string(),
+        );
+
+        assert!(is_in_use(&in_use));
+        assert!(!is_in_use(&MicrosandboxError::Custom("boom".to_string())));
+        assert!(!is_in_use(&MicrosandboxError::SnapshotNotFound(
+            "snap_1".to_string()
+        )));
     }
 }

@@ -20,6 +20,17 @@ carry secret values anywhere in its chain. serde_yaml quotes the values it can't
 parse, so a parse error of the secrets file only keeps the line and column of
 the error, not the serde_yaml error itself.
 
+Text that a sandbox printed is untrusted: a workspace file controls it. Before
+such guest output ends up in a gRPC status message or a log line, such as the
+tail of mise's stderr in a failed `fbk start` or the URL relay's stderr when it
+exits, the daemon removes every control character except newline and tab with
+`firebrick_utils::strip_control`. That covers C0 controls, DEL and C1 controls,
+so a workspace can't make `fbk` write terminal escape sequences, such as OSC 52
+to set the user's clipboard. The text around the removed characters stays, so
+the message still shows what the guest printed. The output of `fbk run` is the
+exception: like `ssh`, the CLI passes it to the terminal unchanged, so TUIs keep
+working.
+
 Listing sandboxes is the one call where a missing sandbox isn't an error of the
 request. microsandbox reloads each sandbox after it reads a page of them, so a
 sandbox that another process removes in between fails the whole listing with
@@ -122,4 +133,29 @@ user it runs as, in two layers:
 
 Root is allowed on purpose: root can bypass the check anyway, for example by
 reading the daemon's memory, so rejecting it adds no security and only gets in
-the way of an administrator.
+the way of an administrator. The rule lives in
+`firebrick_utils::is_trusted_peer`, which the daemon and the CLI share.
+
+The CLI checks the other direction. Where the socket falls back to the shared
+temp dir, another user can bind `fbkd.sock` first and receive every request,
+including the values of `fbk secret set`. After `client` connects to the socket,
+also to a daemon it just spawned, it reads the peer's credentials with tokio's
+`UnixStream::peer_cred` and uses the connection only when the peer's UID is the
+effective UID of `fbk` or `0`, for the same reason the daemon allows root.
+Otherwise it fails with `refusing to use <socket path>: it's served by UID
+<uid>, not by you` before it sends a request. On macOS the temp dir is a private
+per-user directory, so the check matters on Linux without `XDG_RUNTIME_DIR`.
+
+The daemon's data and logs never fall back to the temp dir. A user who creates
+`/tmp/firebrick` first could read the secrets and SSH keys or plant an SSH
+config with a `ProxyCommand`, which `~/.ssh/config` includes. `firebrick-utils`
+returns no data directory when neither `XDG_DATA_HOME` nor `HOME` is an absolute
+path, and no log directory when neither `XDG_STATE_HOME` nor `HOME` is, and
+`fbkd` then exits at startup with `can't choose a data directory: set HOME or
+XDG_DATA_HOME to an absolute path` or the matching message for the logs, as it
+does for the microsandbox home
+([ADR 0023](decisions/0023-keep-a-firebrick-microsandbox-home-in-the-xdg-state-directory.md)).
+The CLI starts the daemon with its stderr discarded, so that message would never
+reach the user. Before it starts the daemon, `client` asks
+`firebrick_utils::missing_dir` whether the same environment has a data and a log
+directory, and fails with the daemon's message instead.

@@ -37,7 +37,7 @@ pub async fn connect() -> Result<SandboxManagementServiceClient<Channel>> {
 /// Connects to the daemon socket, spawning the daemon and waiting for it when it isn't running.
 pub async fn ensure_daemon(socket_path: &Path) -> Result<UnixStream> {
     if let Ok(stream) = UnixStream::connect(socket_path).await {
-        return Ok(stream);
+        return verify_owner(socket_path, stream);
     }
 
     // The socket file may be left behind by a daemon that didn't shut down cleanly.
@@ -45,6 +45,11 @@ pub async fn ensure_daemon(socket_path: &Path) -> Result<UnixStream> {
     if socket_path.exists() {
         std::fs::remove_file(socket_path)
             .with_context(|| format!("failed to remove stale socket {}", socket_path.display()))?;
+    }
+
+    // The daemon's stderr is discarded, so report the errors it would exit with here.
+    if let Some(err) = firebrick_utils::missing_dir() {
+        bail!("can't start the firebrick daemon: {err}");
     }
 
     let child = Command::new(daemon_binary())
@@ -55,7 +60,25 @@ pub async fn ensure_daemon(socket_path: &Path) -> Result<UnixStream> {
         .spawn()
         .context("failed to start the firebrick daemon")?;
 
-    wait_for_daemon(socket_path, child).await
+    let stream = wait_for_daemon(socket_path, child).await?;
+    verify_owner(socket_path, stream)
+}
+
+/// Returns the stream when the process serving it runs as the current user or root, so `fbk`
+/// never sends secrets or requests to a daemon another user planted on the socket path, for
+/// example in the shared temp dir when `XDG_RUNTIME_DIR` isn't set.
+fn verify_owner(socket_path: &Path, stream: UnixStream) -> Result<UnixStream> {
+    let peer_uid = stream
+        .peer_cred()
+        .with_context(|| format!("failed to read the owner of {}", socket_path.display()))?
+        .uid();
+    if !firebrick_utils::is_trusted_peer(peer_uid, nix::unistd::geteuid().as_raw()) {
+        bail!(
+            "refusing to use {}: it's served by UID {peer_uid}, not by you",
+            socket_path.display()
+        );
+    }
+    Ok(stream)
 }
 
 /// Waits until the spawned daemon listens on the socket, failing when it exits or times out.
@@ -89,4 +112,20 @@ fn daemon_binary() -> PathBuf {
         .and_then(|exe| exe.parent().map(|dir| dir.join(DAEMON_BINARY)))
         .filter(|path| path.is_file())
         .unwrap_or_else(|| PathBuf::from(DAEMON_BINARY))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn accepts_a_socket_served_by_the_current_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fbkd.sock");
+        let _listener = tokio::net::UnixListener::bind(&path).unwrap();
+
+        let stream = UnixStream::connect(&path).await.unwrap();
+
+        verify_owner(&path, stream).unwrap();
+    }
 }
