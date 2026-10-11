@@ -14,11 +14,18 @@ pub fn socket_path() -> PathBuf {
         .join("fbkd.sock")
 }
 
-/// Returns the directory the daemon writes its log files to.
-pub fn log_dir() -> PathBuf {
-    base_dir(&env_var, "XDG_STATE_HOME", ".local/state")
-        .unwrap_or_else(std::env::temp_dir)
-        .join("firebrick")
+/// Returns the directory the daemon writes its log files to: `$XDG_STATE_HOME/firebrick`,
+/// falling back to `$HOME/.local/state/firebrick`.
+///
+/// Returns `None` when neither variable is an absolute path, so the logs never end up in a
+/// temp directory that other users can create first.
+pub fn log_dir() -> Option<PathBuf> {
+    log_dir_from(&env_var)
+}
+
+/// Returns the log directory for the environment that `var` describes.
+fn log_dir_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    base_dir(var, "XDG_STATE_HOME", ".local/state").map(|state| state.join("firebrick"))
 }
 
 /// Returns the microsandbox home the daemon uses when `MSB_HOME` isn't set, so it never shares
@@ -35,7 +42,7 @@ pub fn msb_home() -> Option<PathBuf> {
 
 /// Returns the firebrick microsandbox home for the environment that `var` describes.
 fn msb_home_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
-    base_dir(var, "XDG_STATE_HOME", ".local/state").map(|state| state.join("firebrick/msb"))
+    log_dir_from(var).map(|dir| dir.join("msb"))
 }
 
 /// Returns the XDG base directory in `xdg_var`, falling back to `home_subdir` in `$HOME`, with
@@ -62,21 +69,30 @@ fn env_var(key: &str) -> Option<OsString> {
     std::env::var_os(key)
 }
 
-/// Returns the directory holding the SSH keys and config the daemon provisions for sandboxes.
-pub fn ssh_dir() -> PathBuf {
-    data_dir().join("ssh")
+/// Returns the directory holding the SSH keys and config the daemon provisions for sandboxes,
+/// or `None` when there's no data directory (see `data_dir`).
+pub fn ssh_dir() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join("ssh"))
 }
 
-/// Returns the file the daemon stores the secrets for sandboxes in.
-pub fn secrets_path() -> PathBuf {
-    data_dir().join("secrets.yml")
+/// Returns the file the daemon stores the secrets for sandboxes in, or `None` when there's no
+/// data directory (see `data_dir`).
+pub fn secrets_path() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join("secrets.yml"))
 }
 
-/// Returns the directory holding the daemon's persistent data.
-fn data_dir() -> PathBuf {
-    base_dir(&env_var, "XDG_DATA_HOME", ".local/share")
-        .unwrap_or_else(std::env::temp_dir)
-        .join("firebrick")
+/// Returns the directory holding the daemon's persistent data: `$XDG_DATA_HOME/firebrick`,
+/// falling back to `$HOME/.local/share/firebrick`.
+///
+/// Returns `None` when neither variable is an absolute path, so the secrets and SSH keys never
+/// end up in a temp directory that other users can create first.
+fn data_dir() -> Option<PathBuf> {
+    data_dir_from(&env_var)
+}
+
+/// Returns the data directory for the environment that `var` describes.
+fn data_dir_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    base_dir(var, "XDG_DATA_HOME", ".local/share").map(|data| data.join("firebrick"))
 }
 
 /// Turns the leaf directory of `path` into a DNS label of lowercase ASCII letters, digits and
@@ -156,10 +172,47 @@ mod tests {
     }
 
     #[test]
-    fn msb_home_is_next_to_the_logs() {
-        if let Some(home) = msb_home() {
-            assert_eq!(home, log_dir().join("msb"));
+    fn data_and_log_dirs_are_none_without_absolute_home() {
+        for vars in [
+            &[][..],
+            &[("HOME", "")],
+            &[
+                ("HOME", "home"),
+                ("XDG_DATA_HOME", "data"),
+                ("XDG_STATE_HOME", "state"),
+            ],
+        ] {
+            let var = env(vars);
+            assert_eq!(data_dir_from(&var), None, "{vars:?}");
+            assert_eq!(log_dir_from(&var), None, "{vars:?}");
         }
+    }
+
+    #[test]
+    fn data_dir_is_under_xdg_data_home_or_home() {
+        let var = env(&[("XDG_DATA_HOME", "/data"), ("HOME", "/home/user")]);
+        assert_eq!(data_dir_from(&var), Some(PathBuf::from("/data/firebrick")));
+        let var = env(&[("HOME", "/home/user")]);
+        assert_eq!(
+            data_dir_from(&var),
+            Some(PathBuf::from("/home/user/.local/share/firebrick"))
+        );
+    }
+
+    #[test]
+    fn log_dir_is_under_xdg_state_home_or_home() {
+        let var = env(&[("XDG_STATE_HOME", "/state"), ("HOME", "/home/user")]);
+        assert_eq!(log_dir_from(&var), Some(PathBuf::from("/state/firebrick")));
+        let var = env(&[("HOME", "/home/user")]);
+        assert_eq!(
+            log_dir_from(&var),
+            Some(PathBuf::from("/home/user/.local/state/firebrick"))
+        );
+    }
+
+    #[test]
+    fn msb_home_is_next_to_the_logs() {
+        assert_eq!(msb_home(), log_dir().map(|dir| dir.join("msb")));
     }
 
     fn label(path: &str) -> String {

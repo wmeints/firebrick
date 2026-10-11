@@ -37,7 +37,7 @@ pub async fn connect() -> Result<SandboxManagementServiceClient<Channel>> {
 /// Connects to the daemon socket, spawning the daemon and waiting for it when it isn't running.
 pub async fn ensure_daemon(socket_path: &Path) -> Result<UnixStream> {
     if let Ok(stream) = UnixStream::connect(socket_path).await {
-        return Ok(stream);
+        return verify_owner(socket_path, stream);
     }
 
     // The socket file may be left behind by a daemon that didn't shut down cleanly.
@@ -55,7 +55,31 @@ pub async fn ensure_daemon(socket_path: &Path) -> Result<UnixStream> {
         .spawn()
         .context("failed to start the firebrick daemon")?;
 
-    wait_for_daemon(socket_path, child).await
+    let stream = wait_for_daemon(socket_path, child).await?;
+    verify_owner(socket_path, stream)
+}
+
+/// Returns the stream when the process serving it runs as the current user or root, so `fbk`
+/// never sends secrets or requests to a daemon another user planted on the socket path, for
+/// example in the shared temp dir when `XDG_RUNTIME_DIR` isn't set.
+fn verify_owner(socket_path: &Path, stream: UnixStream) -> Result<UnixStream> {
+    let peer_uid = stream
+        .peer_cred()
+        .with_context(|| format!("failed to read the owner of {}", socket_path.display()))?
+        .uid();
+    if !is_trusted(peer_uid, nix::unistd::geteuid().as_raw()) {
+        bail!(
+            "refusing to use {}: it's served by UID {peer_uid}, not by you",
+            socket_path.display()
+        );
+    }
+    Ok(stream)
+}
+
+/// Returns whether a daemon running as `peer_uid` may serve a client running as `own_uid`. Root
+/// is trusted because it can read the client's memory anyway, as the daemon's own check allows.
+fn is_trusted(peer_uid: u32, own_uid: u32) -> bool {
+    peer_uid == own_uid || peer_uid == 0
 }
 
 /// Waits until the spawned daemon listens on the socket, failing when it exits or times out.
@@ -89,4 +113,28 @@ fn daemon_binary() -> PathBuf {
         .and_then(|exe| exe.parent().map(|dir| dir.join(DAEMON_BINARY)))
         .filter(|path| path.is_file())
         .unwrap_or_else(|| PathBuf::from(DAEMON_BINARY))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trusts_only_own_uid_and_root() {
+        let cases = [(1000, true), (0, true), (1001, false), (65534, false)];
+        for (peer_uid, expected) in cases {
+            assert_eq!(is_trusted(peer_uid, 1000), expected, "peer uid {peer_uid}");
+        }
+    }
+
+    #[tokio::test]
+    async fn accepts_a_socket_served_by_the_current_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fbkd.sock");
+        let _listener = tokio::net::UnixListener::bind(&path).unwrap();
+
+        let stream = UnixStream::connect(&path).await.unwrap();
+
+        assert!(verify_owner(&path, stream).is_ok());
+    }
 }

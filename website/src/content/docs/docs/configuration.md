@@ -150,6 +150,10 @@ it uses the default under your home directory:
 | `$XDG_DATA_HOME/firebrick/ssh` (`~/.local/share/firebrick/ssh`) | The SSH keys, `known_hosts` and the generated SSH config. See [Editor support](/docs/editor-support/).       |
 | `~/.local/share/firebrick/secrets.yml`                          | The secrets. See [Secrets](/docs/secrets/).                                                                  |
 
+`fbkd` refuses to start when it can't find a private directory for its data,
+logs and microsandbox home: set `HOME`, or the matching `XDG_*` variable, to an
+absolute path. `fbk` refuses to use a socket that another user serves.
+
 The daemon logs at the `info` level. Set `RUST_LOG` in the environment that
 starts `fbkd` to change it, for example `RUST_LOG=debug`. The CLI starts `fbkd`
 with its own environment, so stop the daemon and run the next `fbk` command with

@@ -25,19 +25,29 @@ const KNOWN_HOSTS_FILE: &str = "known_hosts";
 const CONFIG_FILE: &str = "config";
 const CLI_BINARY: &str = "fbk";
 
+/// Error for when neither `XDG_DATA_HOME` nor `HOME` points to a private data directory.
+pub const NO_DATA_DIR: &str =
+    "can't choose a data directory: set HOME or XDG_DATA_HOME to an absolute path";
+
 /// Returns the host key the sandbox SSH servers identify themselves with.
-pub fn host_key_path() -> PathBuf {
-    firebrick_utils::ssh_dir().join(HOST_KEY_FILE)
+pub fn host_key_path() -> Result<PathBuf> {
+    Ok(ssh_dir()?.join(HOST_KEY_FILE))
 }
 
 /// Returns the public key of the client key that may log in to sandboxes.
-pub fn client_public_key_path() -> PathBuf {
-    firebrick_utils::ssh_dir().join(CLIENT_PUBLIC_KEY_FILE)
+pub fn client_public_key_path() -> Result<PathBuf> {
+    Ok(ssh_dir()?.join(CLIENT_PUBLIC_KEY_FILE))
+}
+
+/// Returns the directory holding the SSH keys and config, failing when there's no data
+/// directory instead of falling back to a shared one.
+fn ssh_dir() -> Result<PathBuf> {
+    firebrick_utils::ssh_dir().context(NO_DATA_DIR)
 }
 
 /// Creates the client and host keys when they're missing and pins the host key for `*.fbk`.
 pub fn ensure_keys() -> Result<()> {
-    let dir = firebrick_utils::ssh_dir();
+    let dir = ssh_dir()?;
 
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
@@ -107,7 +117,7 @@ pub fn pick_hostname(workspace: &str, taken: &HashSet<String>) -> String {
 /// Rewrites the generated SSH config for the given host names and makes sure the user's
 /// `~/.ssh/config` includes it.
 pub fn sync_config(hostnames: &[String]) -> Result<()> {
-    let dir = firebrick_utils::ssh_dir();
+    let dir = ssh_dir()?;
     let config_path = dir.join(CONFIG_FILE);
 
     // Write a temporary file and rename it, so ssh never reads a half-written config.
