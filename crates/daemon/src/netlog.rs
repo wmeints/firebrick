@@ -445,32 +445,68 @@ async fn write_in_background(path: PathBuf, content: String) -> io::Result<()> {
         .unwrap_or_else(|err| Err(io::Error::other(err)))
 }
 
-/// Reads the record file like [`load_record`], on a blocking thread.
-async fn load_record_in_background(sandbox: String, path: PathBuf) -> Record {
-    tokio::task::spawn_blocking(move || load_record(&sandbox, &path))
+/// Why a record file couldn't be read.
+#[derive(Debug, thiserror::Error)]
+pub enum RecordError {
+    /// The file exists but couldn't be read.
+    #[error("failed to read {}: {source}", path.display())]
+    Read {
+        /// The record file.
+        path: PathBuf,
+        /// Why reading failed.
+        source: io::Error,
+    },
+    /// The file isn't a valid record.
+    #[error("{} is corrupt: {source}", path.display())]
+    Corrupt {
+        /// The record file.
+        path: PathBuf,
+        /// Why parsing failed.
+        source: serde_json::Error,
+    },
+}
+
+/// Reads the record file like [`read_record`], on a blocking thread.
+async fn read_record_in_background(path: PathBuf) -> Result<Record, RecordError> {
+    let read_path = path.clone();
+
+    tokio::task::spawn_blocking(move || read_record(&read_path))
         .await
         .unwrap_or_else(|err| {
-            tracing::warn!("failed to read a network record: {err}");
-            Record::default()
+            Err(RecordError::Read {
+                path,
+                source: io::Error::other(err),
+            })
         })
 }
 
-/// Reads the record file, or returns an empty record when there's none or it's corrupt.
-fn load_record(sandbox: &str, path: &Path) -> Record {
+/// Reads the record file like [`read_record`], on a blocking thread, or returns an empty record
+/// with a warning when it can't be read or is corrupt.
+async fn load_record_in_background(sandbox: String, path: PathBuf) -> Record {
+    read_record_in_background(path).await.unwrap_or_else(|err| {
+        tracing::warn!(
+            "the network record of sandbox {sandbox} can't be used; starting a new one: {err}"
+        );
+        Record::default()
+    })
+}
+
+/// Reads the record file. A missing file is an empty record.
+fn read_record(path: &Path) -> Result<Record, RecordError> {
     let content = match std::fs::read(path) {
         Ok(content) => content,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Record::default(),
-        Err(err) => {
-            tracing::warn!("failed to read the network record of sandbox {sandbox}: {err}");
-            return Record::default();
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Record::default()),
+        Err(source) => {
+            return Err(RecordError::Read {
+                path: path.to_path_buf(),
+                source,
+            });
         }
     };
 
-    serde_json::from_slice(&content).unwrap_or_else(|err| {
-        tracing::warn!(
-            "the network record of sandbox {sandbox} is corrupt; starting a new one: {err}"
-        );
-        Record::default()
+    serde_json::from_slice(&content).map_err(|source| RecordError::Corrupt {
+        path: path.to_path_buf(),
+        source,
     })
 }
 
@@ -815,17 +851,18 @@ impl NetLogs {
     }
 
     /// Returns the network activity recorded for the sandbox: the live record while fbkd
-    /// listens for it, otherwise its record file, which is empty when there's none.
-    pub async fn record(&self, sandbox: &str) -> Record {
+    /// listens for it, otherwise its record file, which is empty when there's none. Fails when
+    /// the file can't be read or is corrupt.
+    pub async fn record(&self, sandbox: &str) -> Result<Record, RecordError> {
         let live = self
             .listening()
             .get(sandbox)
             .map(|listening| listening.recorder.record());
 
         match (live, self.record_path(sandbox)) {
-            (Some(record), _) => record,
-            (None, Some(path)) => load_record_in_background(sandbox.to_string(), path).await,
-            (None, None) => Record::default(),
+            (Some(record), _) => Ok(record),
+            (None, Some(path)) => read_record_in_background(path).await,
+            (None, None) => Ok(Record::default()),
         }
     }
 
@@ -1093,17 +1130,43 @@ mod tests {
         assert_eq!(record.connections[0].count, 200);
     }
 
-    #[test]
-    fn corrupt_record_starts_empty() {
+    #[tokio::test]
+    async fn corrupt_record_starts_empty() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sb.json");
         std::fs::write(&path, "{not json").unwrap();
 
-        assert_eq!(load_record("sb", &path), Record::default());
         assert_eq!(
-            load_record("sb", &dir.path().join("missing.json")),
+            load_record_in_background("sb".into(), path).await,
             Record::default()
         );
+        assert_eq!(
+            load_record_in_background("sb".into(), dir.path().join("missing.json")).await,
+            Record::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn record_of_a_corrupt_file_is_an_error_naming_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("network")).unwrap();
+        std::fs::write(dir.path().join("network/sb.json"), "{not json").unwrap();
+
+        let err = netlogs(dir.path()).record("sb").await.unwrap_err();
+
+        assert!(matches!(err, RecordError::Corrupt { .. }), "{err:?}");
+        assert!(err.to_string().contains("sb.json is corrupt"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn record_of_an_unreadable_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory where the file should be can't be read as one, also as root.
+        std::fs::create_dir_all(dir.path().join("network/sb.json")).unwrap();
+
+        let err = netlogs(dir.path()).record("sb").await.unwrap_err();
+
+        assert!(matches!(err, RecordError::Read { .. }), "{err:?}");
     }
 
     #[tokio::test]
@@ -1163,12 +1226,12 @@ mod tests {
     /// Waits up to 5 seconds until the record of the sandbox has the number of destinations.
     async fn wait_for_destinations(logs: &NetLogs, sandbox: &str, expected: usize) -> Record {
         let deadline = Instant::now() + Duration::from_secs(5);
-        let mut record = logs.record(sandbox).await;
+        let mut record = logs.record(sandbox).await.unwrap();
 
         while record.dns.len() + record.connections.len() != expected {
             assert!(Instant::now() < deadline, "record of {sandbox}: {record:?}");
             tokio::time::sleep(Duration::from_millis(10)).await;
-            record = logs.record(sandbox).await;
+            record = logs.record(sandbox).await.unwrap();
         }
 
         record
@@ -1231,7 +1294,7 @@ mod tests {
             DateTime::parse_from_rfc3339(first_seen).is_ok(),
             "{first_seen}"
         );
-        assert_eq!(netlogs(dir.path()).record("sb").await, record);
+        assert_eq!(netlogs(dir.path()).record("sb").await.unwrap(), record);
     }
 
     #[tokio::test]
@@ -1273,7 +1336,7 @@ mod tests {
         logs.listen("sb").await;
 
         assert!(connect_logger(&logs, "sb").await.is_err());
-        assert_eq!(logs.record("sb").await, Record::default());
+        assert_eq!(logs.record("sb").await.unwrap(), Record::default());
     }
 
     #[tokio::test]
@@ -1290,7 +1353,7 @@ mod tests {
 
         assert!(!logs.socket_path("sb").unwrap().exists());
         assert!(!dir.path().join("network/sb.json").exists());
-        assert_eq!(logs.record("sb").await, Record::default());
+        assert_eq!(logs.record("sb").await.unwrap(), Record::default());
     }
 
     #[test]

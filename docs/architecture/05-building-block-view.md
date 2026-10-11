@@ -85,14 +85,15 @@ C4Component
 - `main` - Parses the `start`, `stop`, `ls`, `rm`, `run`, `validate`, `init`,
   `secret set`, `secret ls`, `secret rm`, `network allow`, `network deny`,
   `network policy enable`, `network policy disable`, `network enable`, `network
-  disable`, `port forward` and `port rm` commands, and the hidden `ssh-proxy`
-  command. The argument of `port forward` is parsed with `PortMapping`'s parser,
-  and that of `port rm` as a port from 1 to 65535. `validate`, `init` and
-  `--version`, which prints the package version, run without the daemon.
-  `start`, `run` and every `network` subcommand take `--yes`, which approves
-  changed mounts and network settings without asking. `run` takes the command
-  and its arguments as one trailing list, so options after the command, such as
-  `--yes`, go to the command.
+  disable`, `network log`, `port forward` and `port rm` commands, and the hidden
+  `ssh-proxy` command. The argument of `port forward` is parsed with
+  `PortMapping`'s parser, and that of `port rm` as a port from 1 to 65535.
+  `validate`, `init` and `--version`, which prints the package version, run
+  without the daemon. `start`, `run` and every `network` subcommand that changes
+  the network settings take `--yes`, which approves changed mounts and network
+  settings without asking; `network log` changes nothing and doesn't take it.
+  `run` takes the command and its arguments as one trailing list, so options
+  after the command, such as `--yes`, go to the command.
 - `client` - Connects to the daemon socket. When nobody listens, it removes a
   stale socket, spawns `fbkd` from next to the `fbk` binary (or from `PATH`) and
   waits at most 5 seconds for the socket.
@@ -131,7 +132,18 @@ C4Component
   Before it sends the section, it has `approval` compare it with the approved
   section with the change applied, and asks about any other difference.
   `NOT_FOUND` from the daemon means the sandbox doesn't exist yet, so the file
-  alone is enough. It warns when `allow` or `deny` leave `enforce` off.
+  alone is enough. It warns when `allow` or `deny` leave `enforce` off. `log`
+  only reads: it resolves the working directory's sandbox like `fbk stop`
+  without a name, asks the daemon for its record with `ListNetworkActivity` and
+  prints the entries in the daemon's order as a table with the destination, the
+  kind (`dns`, `tcp` or `udp`, and `unknown` for a kind it doesn't know), the
+  ports, the count, the last time it was seen in the local time zone and the
+  policy (`allowed` or `denied`). It removes control characters from the
+  destinations, because they come from inside the sandbox. It doesn't touch
+  `.firebrick.yml` or `approval`. An empty record prints `No network activity
+  recorded for <sandbox> yet.`, `NOT_FOUND` that the sandbox doesn't exist, and
+  `FAILED_PRECONDITION` that the sandbox was created before network logging and
+  how to turn it on.
 - `approval` - Keeps the `mounts` and `network` settings the user approved per
   workspace in `approved.yml` in the config directory, prints the difference
   with the settings a command is about to apply and asks `Apply these changes?
@@ -241,14 +253,20 @@ C4Component
   a `StartSandbox` or `UpdateNetwork` request with `firebrick-spec` and rejects
   an invalid rule with `INVALID_ARGUMENT`, also when the sandbox already exists.
   It rejects a port outside 1 to 65535 or a host port that is listed twice with
-  `INVALID_ARGUMENT`. `StartSandbox` is a server-streaming RPC: `server` runs
-  the start in a task of its own, so it finishes when the client disconnects,
-  streams the image pull progress and ends the stream with the open and failed
-  forwards, or with the error status. It maps the `SandboxError` of `sandboxes`
-  to gRPC status codes in one place. It refuses to start when the socket already
-  exists, gives the socket mode `0600` after binding it and removes it on
-  shutdown. It only hands a connection to tonic when the peer's UID, read with
-  `SO_PEERCRED`, is the daemon's own UID or root (see
+  `INVALID_ARGUMENT`. `ListNetworkActivity` turns a sandbox's record into one
+  entry per DNS name and per connection address and protocol, sorted by last
+  seen, newest first, and evaluates the sandbox's current rules for each with
+  `network::allows_host`: domain rules for a DNS entry, IP and CIDR rules for a
+  connection, and `allowed` for every entry when the rules aren't enforced. This
+  is `fbkd`'s evaluation, not microsandbox's own decision. `StartSandbox` is a
+  server-streaming RPC: `server` runs the start in a task of its own, so it
+  finishes when the client disconnects, streams the image pull progress and ends
+  the stream with the open and failed forwards, or with the error status. It
+  maps the `SandboxError` of `sandboxes` to gRPC status codes in one place. It
+  refuses to start when the socket already exists, gives the socket mode `0600`
+  after binding it and removes it on shutdown. It only hands a connection to
+  tonic when the peer's UID, read with `SO_PEERCRED`, is the daemon's own UID or
+  root (see
   [Securing the daemon socket](08-crosscutting-concepts.md#securing-the-daemon-socket)).
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
@@ -333,7 +351,10 @@ C4Component
   a sandbox, starts one that has the route (also through `SshTunnel`) or
   recreates one, it makes `netlog` listen on the sandbox's socket; `fbkd` does
   the same for every sandbox with the route when it starts. `RemoveSandbox`
-  deletes the socket and the record.
+  deletes the socket and the record. `SandboxManager::network_activity` returns
+  a sandbox's record from `netlog` with its rules from the `firebrick.network`
+  label (`network::rules_of`), `FAILED_PRECONDITION` when the sandbox has no
+  network log route, or `INTERNAL` when its record can't be read.
 - `pull` - Turns microsandbox's `PullProgress` events into pull updates: it adds
   up the downloaded bytes per layer, takes the total from the manifest, and
   reports at most one update every 100 ms, one for each layer that finishes and
@@ -455,10 +476,11 @@ C4Component
   `~/.local/state/firebrick/network`) with `write_private`, at most once a
   second while it changes, and a last time when `fbkd` shuts down
   (`NetLogs::close`). A corrupt record file is logged as a warning and replaced
-  by a new, empty record. `NetLogs::record` returns a sandbox's entries.
-  `NetLogs::remove` stops the listener, waits until it can't write anymore, and
-  then deletes the socket and the record, so a removed sandbox's record can't
-  come back.
+  by a new, empty record. `NetLogs::record` returns a sandbox's entries, and
+  fails with a `RecordError` when the record file of a sandbox it doesn't listen
+  for can't be read or is corrupt. `NetLogs::remove` stops the listener, waits
+  until it can't write anymore, and then deletes the socket and the record, so a
+  removed sandbox's record can't come back.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `fbkd` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,

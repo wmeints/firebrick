@@ -125,12 +125,36 @@ Attempts that the enforced rules deny are recorded too.
 first and last saw it, in `~/.local/state/firebrick/network/<sandbox>.json`.
 `fbk rm` deletes the record with the sandbox.
 
+Run `fbk network log` in the project directory to see the record of its sandbox,
+newest first:
+
+```sh
+$ fbk network log
+┌──────────────────┬──────┬───────┬───────┬─────────────────────┬─────────┐
+│ DESTINATION      │ KIND │ PORTS │ COUNT │ LAST SEEN           │ POLICY  │
+├──────────────────┼──────┼───────┼───────┼─────────────────────┼─────────┤
+│ evil.example.com │ dns  │       │ 1     │ 2026-10-11 14:03:40 │ denied  │
+│ api.github.com   │ dns  │       │ 12    │ 2026-10-11 14:02:11 │ allowed │
+│ 140.82.112.6     │ tcp  │ 443   │ 12    │ 2026-10-11 14:02:11 │ allowed │
+└──────────────────┴──────┴───────┴───────┴─────────────────────┴─────────┘
+```
+
+`POLICY` tells whether the sandbox's current rules allow the destination: domain
+rules for `dns` entries, IP and CIDR rules for `tcp` and `udp` entries. A
+connection to the address of an allowed domain shows as `denied` unless an IP
+rule allows the address too, and every entry shows `allowed` when the rules
+aren't enforced. It's Firebrick's own reading of the rules, not a report of what
+was blocked, and rules you changed since apply to older entries too. The command
+only reads: it doesn't change `.firebrick.yml` and never asks for approval.
+
 The logger runs inside the sandbox, and `agent` can use `sudo`, so an agent can
-stop it or report made-up traffic. Treat the record as a diagnostic aid, not as
-proof of what the sandbox did. DNS over HTTPS and IPv6 aren't recorded.
-Sandboxes created by an older version of Firebrick have no record until a `fbk
-network` command restarts them, and custom images only have one when they run
-the logger (see [Custom images](/docs/custom-images/)).
+stop it or report made-up traffic, and `fbk network log` shows what it reported.
+Treat the record as a diagnostic aid, not as proof of what the sandbox did. DNS
+over HTTPS and IPv6 aren't recorded. Sandboxes created by an older version of
+Firebrick have no record until you remove and start them again, or a `fbk
+network` command that changes their settings restarts them; `fbk network log`
+tells you so. Custom images only have a record when they run the logger (see
+[Custom images](/docs/custom-images/)).
 
 ## Working offline
 
