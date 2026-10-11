@@ -68,6 +68,11 @@ async function internalUrls(
     .map((url) => url.pathname);
 }
 
+// Returns the content of the Open Graph `property` on the page.
+async function meta(page: Page, property: string): Promise<string | null> {
+  return page.locator(`meta[property="${property}"]`).getAttribute("content");
+}
+
 let visits: Visit[] = [];
 
 test.beforeAll(async ({ browser }) => {
@@ -172,12 +177,24 @@ test("the landing page and the docs share the social card", async ({
     const image = await page
       .locator('meta[property="og:image"]')
       .getAttribute("content");
-    expect(image).toBe("https://firebrick-sandbox.dev/social-card.png");
+    expect(image).toBe(`https://firebrick-sandbox.dev${base}social-card.png`);
     await expect(page.locator('meta[name="twitter:card"]')).toHaveAttribute(
       "content",
       "summary_large_image",
     );
+    await expect(page.locator('meta[property="og:image:alt"]')).toHaveAttribute(
+      "content",
+      /\S/,
+    );
     const response = await page.request.get(new URL(image ?? "").pathname);
     expect(response.headers()["content-type"]).toBe("image/png");
+    // A PNG stores its width and height in the IHDR chunk, at bytes 16 to 23.
+    const png = await response.body();
+    expect(await meta(page, "og:image:width")).toBe(
+      String(png.readUInt32BE(16)),
+    );
+    expect(await meta(page, "og:image:height")).toBe(
+      String(png.readUInt32BE(20)),
+    );
   }
 });

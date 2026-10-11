@@ -6,11 +6,15 @@ import starlightLinksValidator from "starlight-links-validator";
 
 // GitHub Pages serves the site at the root of its custom domain.
 const site = "https://firebrick-sandbox.dev";
+const base = "/";
 
 // The Open Graph image link previews show. Starlight sets the other Open Graph
 // and Twitter tags of the docs pages; the landing page sets its own.
 const socialCard = [
-  ["og:image", new URL("social-card.png", site).href],
+  [
+    "og:image",
+    new URL(`${base}/social-card.png`.replace(/\/+/g, "/"), site).href,
+  ],
   ["og:image:width", "1200"],
   ["og:image:height", "630"],
   ["og:image:alt", "Firebrick: a fireproof room for your coding agent."],
@@ -18,6 +22,7 @@ const socialCard = [
 
 export default defineConfig({
   site,
+  base,
   integrations: [
     starlight({
       title: "Firebrick",

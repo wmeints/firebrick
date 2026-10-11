@@ -10,6 +10,7 @@ import Index from "../../src/pages/index.astro";
 let html = "";
 
 beforeAll(async () => {
+  // The page builds its absolute link-preview URLs from `site`.
   const container = await AstroContainer.create({
     astroConfig: { site: astroConfig.site },
   });
@@ -75,13 +76,4 @@ test("the terminal shows only real fbk commands", () => {
       command,
     );
   }
-});
-
-test("the home page shares the social card in link previews", () => {
-  expect(html).toContain(
-    '<meta property="og:image" content="https://firebrick-sandbox.dev/social-card.png">',
-  );
-  expect(html).toContain(
-    '<meta name="twitter:card" content="summary_large_image">',
-  );
 });
