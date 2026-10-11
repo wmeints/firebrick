@@ -5,12 +5,27 @@ import { defineConfig } from "astro/config";
 import starlightLinksValidator from "starlight-links-validator";
 
 // GitHub Pages serves the site at the root of its custom domain.
+const site = "https://firebrick-sandbox.dev";
+
+// The Open Graph image link previews show. Starlight sets the other Open Graph
+// and Twitter tags of the docs pages; the landing page sets its own.
+const socialCard = [
+  ["og:image", new URL("social-card.png", site).href],
+  ["og:image:width", "1200"],
+  ["og:image:height", "630"],
+  ["og:image:alt", "Firebrick: a fireproof room for your coding agent."],
+];
+
 export default defineConfig({
-  site: "https://firebrick-sandbox.dev",
+  site,
   integrations: [
     starlight({
       title: "Firebrick",
       customCss: ["./src/styles/global.css"],
+      head: socialCard.map(([property, content]) => ({
+        tag: "meta",
+        attrs: { property, content },
+      })),
       // Overrides the parts of Starlight the design changes; global.css
       // themes the rest.
       components: {

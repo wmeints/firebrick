@@ -1,5 +1,6 @@
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, expect, test } from "vitest";
+import astroConfig from "../../astro.config.mjs";
 import Documentation from "../../src/components/landing/Documentation.astro";
 import Index from "../../src/pages/index.astro";
 
@@ -9,7 +10,9 @@ import Index from "../../src/pages/index.astro";
 let html = "";
 
 beforeAll(async () => {
-  const container = await AstroContainer.create();
+  const container = await AstroContainer.create({
+    astroConfig: { site: astroConfig.site },
+  });
   html = await container.renderToString(Index);
 });
 
@@ -72,4 +75,13 @@ test("the terminal shows only real fbk commands", () => {
       command,
     );
   }
+});
+
+test("the home page shares the social card in link previews", () => {
+  expect(html).toContain(
+    '<meta property="og:image" content="https://firebrick-sandbox.dev/social-card.png">',
+  );
+  expect(html).toContain(
+    '<meta name="twitter:card" content="summary_large_image">',
+  );
 });

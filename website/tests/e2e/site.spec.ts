@@ -162,3 +162,22 @@ test("the docs link back to the landing page on a phone", async ({ page }) => {
 
   await expect(page.locator(`header a[href="${base}"]`).first()).toBeVisible();
 });
+
+test("the landing page and the docs share the social card", async ({
+  page,
+}) => {
+  for (const path of [base, `${base}docs/quickstart/`]) {
+    await page.goto(path);
+
+    const image = await page
+      .locator('meta[property="og:image"]')
+      .getAttribute("content");
+    expect(image).toBe("https://firebrick-sandbox.dev/social-card.png");
+    await expect(page.locator('meta[name="twitter:card"]')).toHaveAttribute(
+      "content",
+      "summary_large_image",
+    );
+    const response = await page.request.get(new URL(image ?? "").pathname);
+    expect(response.headers()["content-type"]).toBe("image/png");
+  }
+});

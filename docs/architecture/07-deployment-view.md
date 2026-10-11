@@ -122,6 +122,12 @@ pages through `docsPage` in `website/src/site.ts`, which fails the build for a
 page that doesn't exist. See
 [ADR 0035](decisions/0035-theme-the-website-with-shared-tokens-and-self-hosted-fonts.md).
 
+Link previews of every page show the social card in
+`website/public/social-card.png`, a 1200×630 PNG. The landing page sets its own
+Open Graph and Twitter tags; the docs pages get theirs from Starlight, and the
+`head` setting in `website/astro.config.mjs` adds the image. Open Graph needs an
+absolute image URL, so both build it from the `site` setting.
+
 `.github/workflows/website.yaml` publishes the site to GitHub Pages on pushes to
 `main` that change `website/`, `mise.toml` or the workflow, and on manual runs
 from `main`. Its `check` job uploads `website/dist` as a Pages artifact once the
