@@ -12,11 +12,12 @@ use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementS
 use firebrick_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, ForwardPortRequest,
     ForwardPortResponse, GetSandboxRequest, GetSandboxResponse, ImagePullProgress,
-    ListSandboxesRequest, Mount, NetworkPolicy, PortForward, PortForwards, RemovePortRequest,
-    RemovePortResponse, RemoveSandboxRequest, RemoveSecretRequest, SandboxResources,
-    SandboxStarted, SandboxStatus, SandboxVolumes, SetSecretRequest, StartSandboxRequest,
-    StartSandboxResponse, StopSandboxRequest, UpdateNetworkRequest, attach_request,
-    attach_response, start_sandbox_response,
+    ListNetworkActivityRequest, ListSandboxesRequest, Mount, NetworkActivity, NetworkActivityKind,
+    NetworkPolicy, PortForward, PortForwards, RemovePortRequest, RemovePortResponse,
+    RemoveSandboxRequest, RemoveSecretRequest, SandboxResources, SandboxStarted, SandboxStatus,
+    SandboxVolumes, SetSecretRequest, StartSandboxRequest, StartSandboxResponse,
+    StopSandboxRequest, UpdateNetworkRequest, attach_request, attach_response,
+    start_sandbox_response,
 };
 use firebrick_daemon::open::{self, Opener};
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
@@ -3136,15 +3137,107 @@ async fn update_network_adds_the_network_log_route_to_a_sandbox_without_one() {
 
     let daemon = TestDaemon::start("netlog-update").await;
     let mut client = daemon.client().await;
+    let activity_before = list_network_activity(&mut client, name).await;
     let updated = update_network(&mut client, name, allow_policy(true, &["example.com"])).await;
     let routed_after = has_netlog_route(name).await;
     let listening = UnixStream::connect(netlog_socket(name)).await.is_ok();
+    let activity_after = list_network_activity(&mut client, name).await;
 
     daemon.stop().await;
     remove_sandbox_and_snapshots(name).await;
 
     assert!(!routed_before);
+    let status = activity_before.unwrap_err();
+    assert_eq!(status.code(), Code::FailedPrecondition, "{status:?}");
+    assert_eq!(activity_after.unwrap(), []);
     assert!(updated.unwrap());
     assert!(routed_after, "recreated sandbox has no network log route");
     assert!(listening, "fbkd doesn't listen for the recreated sandbox");
+}
+
+/// Returns the network activity the daemon recorded for the sandbox.
+async fn list_network_activity(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> Result<Vec<NetworkActivity>, Status> {
+    client
+        .list_network_activity(ListNetworkActivityRequest {
+            name: name.to_string(),
+        })
+        .await
+        .map(|response| response.into_inner().entries)
+}
+
+/// Waits until the daemon reports `count` entries of network activity for the sandbox, and
+/// returns them.
+async fn wait_for_activity(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    count: usize,
+) -> Vec<NetworkActivity> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    loop {
+        let entries = list_network_activity(client, name)
+            .await
+            .expect("failed to list the network activity");
+
+        if entries.len() == count {
+            return entries;
+        }
+
+        assert!(Instant::now() < deadline, "activity of {name}: {entries:?}");
+        sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Returns the entry of the kind, failing when there's none.
+fn entry_of_kind(entries: &[NetworkActivity], kind: NetworkActivityKind) -> &NetworkActivity {
+    entries
+        .iter()
+        .find(|entry| entry.kind() == kind)
+        .unwrap_or_else(|| panic!("no {kind:?} entry in {entries:?}"))
+}
+
+#[tokio::test]
+async fn list_network_activity_returns_not_found_for_unknown_sandbox() {
+    let daemon = TestDaemon::start("activity-unknown").await;
+    let mut client = daemon.client().await;
+
+    let status = list_network_activity(&mut client, &sandbox_name("activity-unknown")).await;
+
+    daemon.stop().await;
+    assert_eq!(status.unwrap_err().code(), Code::NotFound);
+}
+
+#[tokio::test]
+async fn list_network_activity_returns_the_recorded_events_with_the_policy() {
+    let name: &str = &sandbox_name("activity");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("activity").await;
+    let mut client = daemon.client().await;
+    let request = StartSandboxRequest {
+        network: Some(allow_policy(true, &["example.com"])),
+        ..start_request(name)
+    };
+    start_and_wait(&mut client, request).await;
+    let empty = list_network_activity(&mut client, name).await;
+    write_netlog_lines(name, &[DNS_LINE, CONNECT_LINE]).await;
+    let entries = wait_for_activity(&mut client, name, 2).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert_eq!(empty.unwrap(), []);
+    let dns = entry_of_kind(&entries, NetworkActivityKind::Dns);
+    let tcp = entry_of_kind(&entries, NetworkActivityKind::Tcp);
+    assert_eq!(dns.destination, "example.com");
+    assert_eq!(dns.addresses, ["93.184.215.14"]);
+    assert_eq!(dns.count, 1);
+    assert!(dns.allowed, "example.com is allowed by a domain rule");
+    assert_eq!(tcp.destination, "93.184.215.14");
+    assert_eq!(tcp.ports, [443]);
+    assert!(!tcp.allowed, "no IP rule allows 93.184.215.14");
+    assert!(entries[0].last_seen >= entries[1].last_seen, "{entries:?}");
 }

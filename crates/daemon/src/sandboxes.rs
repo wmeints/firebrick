@@ -5,7 +5,7 @@
 
 use crate::forward::{self, ForwardReport, Forwards, SshConnector};
 use crate::mise::{self, MiseError};
-use crate::netlog::NetLogs;
+use crate::netlog::{NetLogs, Record};
 use crate::network;
 use crate::open::{Opener, Relays};
 use crate::pull::{self, PullUpdate};
@@ -455,6 +455,31 @@ impl SandboxManager {
         if self.netlogs.has_route(sb.name(), &config.spec) {
             self.netlogs.listen(sb.name()).await;
         }
+    }
+
+    /// Returns the network activity recorded for the sandbox and its current egress rules.
+    /// Fails with `FailedPrecondition` when the sandbox has no network log route, because it
+    /// was created before network logging.
+    pub async fn network_activity(
+        &self,
+        name: &str,
+    ) -> Result<(Record, NetworkSpec), SandboxError> {
+        let sb = get_sandbox(name).await?;
+        let config = sb.config().map_err(|err| {
+            tracing::error!(error = ?err, "failed to read the config of sandbox {name}");
+            SandboxError::internal("failed to read the sandbox config")
+        })?;
+
+        if !self.netlogs.has_route(name, &config.spec) {
+            return Err(SandboxError::failed_precondition(format!(
+                "sandbox {name} has no network log; it was created before network logging"
+            )));
+        }
+
+        Ok((
+            self.netlogs.record(name).await,
+            network::rules_of(&config.spec),
+        ))
     }
 
     /// Stops listening for the network logs of the sandboxes, writing their records a last

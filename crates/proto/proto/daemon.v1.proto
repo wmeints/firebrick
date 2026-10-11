@@ -19,6 +19,9 @@ service SandboxManagementService {
   rpc UpdateNetwork(UpdateNetworkRequest) returns (UpdateNetworkResponse);
   rpc ForwardPort(ForwardPortRequest) returns (ForwardPortResponse);
   rpc RemovePort(RemovePortRequest) returns (RemovePortResponse);
+  // Returns the network activity fbkd recorded for a sandbox. Fails with FAILED_PRECONDITION
+  // when the sandbox has no network log route, because it was created before network logging.
+  rpc ListNetworkActivity(ListNetworkActivityRequest) returns (ListNetworkActivityResponse);
 }
 
 message StartSandboxRequest {
@@ -301,4 +304,44 @@ message RemovePortRequest {
 message RemovePortResponse {
   // Whether the sandbox runs, so the forward was closed now.
   bool running = 1;
+}
+
+message ListNetworkActivityRequest {
+  // Name of the sandbox.
+  string name = 1;
+}
+
+message ListNetworkActivityResponse {
+  // One entry per destination, sorted by last seen, newest first. The logger that reports the
+  // activity runs inside the sandbox, so an agent can stop it or send false events.
+  repeated NetworkActivity entries = 1;
+}
+
+enum NetworkActivityKind {
+  // A DNS lookup of a name.
+  NETWORK_ACTIVITY_KIND_DNS = 0;
+  // TCP connection attempts to an IP address.
+  NETWORK_ACTIVITY_KIND_TCP = 1;
+  // UDP datagrams to an IP address.
+  NETWORK_ACTIVITY_KIND_UDP = 2;
+}
+
+message NetworkActivity {
+  NetworkActivityKind kind = 1;
+  // The DNS name for a lookup, or the IP address for a connection.
+  string destination = 2;
+  // The addresses the answers of a lookup held. Empty for a connection.
+  repeated string addresses = 3;
+  // The destination ports of a connection. Empty for a lookup.
+  repeated uint32 ports = 4;
+  // How often fbkd received the lookup or connection attempt.
+  uint64 count = 5;
+  // When fbkd first received it, in seconds since the Unix epoch.
+  int64 first_seen = 6;
+  // When fbkd last received it, in seconds since the Unix epoch.
+  int64 last_seen = 7;
+  // Whether the sandbox's current rules allow the destination, as fbkd evaluates them: domain
+  // rules for a lookup, IP and CIDR rules for a connection. True for every entry when the rules
+  // aren't enforced. This isn't microsandbox's own decision.
+  bool allowed = 8;
 }

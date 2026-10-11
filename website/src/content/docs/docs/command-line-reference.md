@@ -204,7 +204,8 @@ fbk secret rm GH_TOKEN
 ## `fbk network`
 
 Changes the network settings in `.firebrick.yml` and applies them to the working
-directory's sandbox. See [Networking](/docs/networking/).
+directory's sandbox, or shows the sandbox's network activity. See
+[Networking](/docs/networking/).
 
 | Command                       | Description                                                                                |
 | ----------------------------- | ------------------------------------------------------------------------------------------ |
@@ -214,19 +215,27 @@ directory's sandbox. See [Networking](/docs/networking/).
 | `fbk network policy disable`  | Allow all outgoing traffic; the rules are kept but not enforced.                           |
 | `fbk network disable`         | Remove the sandbox's network device, so it works fully offline (`network.enabled: false`). |
 | `fbk network enable`          | Give the sandbox a network device again (`network.enabled: true`).                         |
+| `fbk network log`             | Show the domains and IP addresses the sandbox contacted, newest first.                     |
 
 A `RULE` is a host name, `*.` plus a domain, an IP address or a CIDR range, such
 as `example.org`, `*.npmjs.org` or `10.0.0.0/8`. `allow` and `deny` need at
 least one rule.
 
-Before it sends the network section, every subcommand asks about changes in it
-that you haven't approved and didn't make with the command. `--yes` (`-y`)
-approves them without asking.
+Before it sends the network section, every subcommand that changes it asks about
+changes in it that you haven't approved and didn't make with the command.
+`--yes` (`-y`) approves them without asking.
 
 ```sh
 fbk network allow example.org "*.npmjs.org"
 fbk network policy enable
 ```
+
+`fbk network log` only reads: it doesn't change `.firebrick.yml` and never asks
+for approval. It prints a table with the destination, the kind (`dns`, `tcp` or
+`udp`), the ports, how often the sandbox contacted it, when it was last seen in
+your local time zone, and whether the sandbox's current rules allow it. The
+record comes from a logger inside the sandbox, so an agent can tamper with it;
+see [Recording network activity](/docs/networking/#recording-network-activity).
 
 ## `fbk port`
 

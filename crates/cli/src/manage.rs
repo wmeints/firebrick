@@ -532,7 +532,7 @@ async fn sandbox_name(
 }
 
 /// Turns a `NotFound` status into an error that names the missing sandbox.
-fn describe_status(name: &str, status: tonic::Status) -> anyhow::Error {
+pub(crate) fn describe_status(name: &str, status: tonic::Status) -> anyhow::Error {
     if status.code() == Code::NotFound {
         return anyhow!("sandbox {name} doesn't exist");
     }

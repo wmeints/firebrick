@@ -15,8 +15,9 @@ use crate::api::sandbox_management_service_server::{
 };
 use crate::api::{
     AttachRequest, AttachResponse, ForwardPortRequest, ForwardPortResponse, GetSandboxRequest,
-    GetSandboxResponse, ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest,
-    ListSecretsResponse, RemovePortRequest, RemovePortResponse, RemoveSandboxRequest,
+    GetSandboxResponse, ListNetworkActivityRequest, ListNetworkActivityResponse,
+    ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse,
+    NetworkActivity, RemovePortRequest, RemovePortResponse, RemoveSandboxRequest,
     RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse, SetSecretRequest,
     SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
     StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, UpdateNetworkRequest,
@@ -31,22 +32,36 @@ pub(crate) fn refusal(rpc: &str, sandbox: &str) -> String {
     format!("refused {rpc} for {sandbox}")
 }
 
-/// A daemon with one sandbox, `name`, that mounts `workspace_host_path`.
+/// A daemon with one sandbox, `name`, that mounts `workspace_host_path` and has recorded the
+/// network activity `activity`, or has no network log when it's `None`.
 struct FakeDaemon {
     name: String,
     workspace_host_path: String,
+    activity: Option<Vec<NetworkActivity>>,
 }
 
-/// Serves a fake daemon with one sandbox on a free local port and returns a client for it.
+/// Serves a fake daemon with one sandbox without network activity on a free local port and
+/// returns a client for it.
 pub(crate) async fn serve(
     name: &str,
     workspace_host_path: &str,
+) -> SandboxManagementServiceClient<Channel> {
+    serve_with_activity(name, workspace_host_path, Some(Vec::new())).await
+}
+
+/// Serves a fake daemon like [`serve`] whose sandbox recorded the network activity, or has no
+/// network log when `activity` is `None`.
+pub(crate) async fn serve_with_activity(
+    name: &str,
+    workspace_host_path: &str,
+    activity: Option<Vec<NetworkActivity>>,
 ) -> SandboxManagementServiceClient<Channel> {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let daemon = FakeDaemon {
         name: name.to_string(),
         workspace_host_path: workspace_host_path.to_string(),
+        activity,
     };
 
     tokio::spawn(async move {
@@ -180,6 +195,22 @@ impl SandboxManagementService for FakeDaemon {
         request: Request<RemovePortRequest>,
     ) -> Result<Response<RemovePortResponse>, Status> {
         refused("remove_port", &request.into_inner().name)
+    }
+
+    async fn list_network_activity(
+        &self,
+        request: Request<ListNetworkActivityRequest>,
+    ) -> Result<Response<ListNetworkActivityResponse>, Status> {
+        if request.into_inner().name != self.name {
+            return Err(Status::not_found("couldn't find specified sandbox"));
+        }
+
+        match &self.activity {
+            Some(entries) => Ok(Response::new(ListNetworkActivityResponse {
+                entries: entries.clone(),
+            })),
+            None => Err(Status::failed_precondition("no network log")),
+        }
     }
 }
 

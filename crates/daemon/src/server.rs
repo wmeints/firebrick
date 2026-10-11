@@ -6,16 +6,19 @@ use crate::api::sandbox_management_service_server::{
 };
 use crate::api::{
     AttachRequest, AttachResponse, AttachStart, ForwardPortRequest, ForwardPortResponse,
-    GetSandboxRequest, GetSandboxResponse, ImagePullProgress, ListSandboxesRequest,
-    ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse, Mount, NetworkPolicy,
-    PortForward, PortForwardFailure, PortForwards, RemovePortRequest, RemovePortResponse,
-    RemoveSandboxRequest, RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse,
-    SandboxResources, SandboxStarted, SandboxStatus, SandboxSummary, SecretSummary,
-    SetSecretRequest, SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
+    GetSandboxRequest, GetSandboxResponse, ImagePullProgress, ListNetworkActivityRequest,
+    ListNetworkActivityResponse, ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest,
+    ListSecretsResponse, Mount, NetworkActivity, NetworkActivityKind, NetworkPolicy, PortForward,
+    PortForwardFailure, PortForwards, RemovePortRequest, RemovePortResponse, RemoveSandboxRequest,
+    RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse, SandboxResources,
+    SandboxStarted, SandboxStatus, SandboxSummary, SecretSummary, SetSecretRequest,
+    SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
     StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, UpdateNetworkRequest,
     UpdateNetworkResponse, attach_request, ssh_tunnel_request, start_sandbox_response,
 };
 use crate::forward::{ForwardFailure, ForwardReport};
+use crate::netlog::{ConnectionEntry, DnsEntry, Protocol, Record};
+use crate::network;
 use crate::open::{HostOpener, Opener};
 use crate::pull::PullUpdate;
 use crate::sandboxes::{
@@ -43,6 +46,7 @@ use tonic::codegen::tokio_stream::wrappers::{ReceiverStream, UnixListenerStream}
 use tonic::codegen::tokio_stream::{Stream, StreamExt};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status, Streaming};
+use url::Host;
 
 /// Errors that can occur while running the gRPC server.
 #[derive(Error, Debug)]
@@ -205,6 +209,58 @@ fn parse_rules(rules: &[String]) -> Result<Vec<NetworkRule>, Status> {
                 .map_err(|err| Status::invalid_argument(err.to_string()))
         })
         .collect()
+}
+
+/// Converts the record of a sandbox to its entries, sorted by last seen, newest first, each
+/// with whether the rules allow its destination: domain rules for a DNS lookup, IP and CIDR
+/// rules for a connection.
+fn network_activity(record: Record, rules: &NetworkSpec) -> Vec<NetworkActivity> {
+    let dns = record
+        .dns
+        .into_iter()
+        .map(|entry| dns_activity(entry, rules));
+    let connections = record
+        .connections
+        .into_iter()
+        .map(|entry| connection_activity(entry, rules));
+    let mut entries: Vec<NetworkActivity> = dns.chain(connections).collect();
+
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.last_seen));
+
+    entries
+}
+
+/// Converts a DNS lookup of the record to its protobuf entry.
+fn dns_activity(entry: DnsEntry, rules: &NetworkSpec) -> NetworkActivity {
+    NetworkActivity {
+        kind: NetworkActivityKind::Dns.into(),
+        allowed: network::allows_host(rules, &Host::Domain(entry.name.as_str())),
+        destination: entry.name,
+        addresses: entry.addresses.iter().map(ToString::to_string).collect(),
+        ports: Vec::new(),
+        count: entry.count,
+        first_seen: entry.first_seen.timestamp(),
+        last_seen: entry.last_seen.timestamp(),
+    }
+}
+
+/// Converts the connection attempts of the record to their protobuf entry.
+fn connection_activity(entry: ConnectionEntry, rules: &NetworkSpec) -> NetworkActivity {
+    let kind = match entry.protocol {
+        Protocol::Tcp => NetworkActivityKind::Tcp,
+        Protocol::Udp => NetworkActivityKind::Udp,
+    };
+
+    NetworkActivity {
+        kind: kind.into(),
+        destination: entry.ip.to_string(),
+        addresses: Vec::new(),
+        ports: entry.ports.into_iter().map(u32::from).collect(),
+        count: entry.count,
+        first_seen: entry.first_seen.timestamp(),
+        last_seen: entry.last_seen.timestamp(),
+        allowed: network::allows_host(rules, &Host::Ipv4(entry.ip)),
+    }
 }
 
 impl From<SandboxError> for Status {
@@ -376,6 +432,22 @@ impl SandboxManagementService for FirebrickServer {
         let running = self.sandboxes.remove_port(&request.name, host).await?;
 
         Ok(Response::new(RemovePortResponse { running }))
+    }
+
+    /// Returns the network activity recorded for a sandbox, with whether its current rules
+    /// allow each destination.
+    async fn list_network_activity(
+        &self,
+        request: Request<ListNetworkActivityRequest>,
+    ) -> Result<Response<ListNetworkActivityResponse>, Status> {
+        let (record, rules) = self
+            .sandboxes
+            .network_activity(&request.into_inner().name)
+            .await?;
+
+        Ok(Response::new(ListNetworkActivityResponse {
+            entries: network_activity(record, &rules),
+        }))
     }
 
     /// Stops a running sandbox.
@@ -1229,6 +1301,145 @@ mod tests {
 
         assert_eq!(status.code(), tonic::Code::NotFound);
         assert_eq!(SecretStore::new(&path).load().unwrap().len(), 1);
+    }
+
+    /// Returns the time `seconds` after 2026-10-11 14:00:00 UTC.
+    fn at(seconds: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(1_791_727_200 + seconds, 0).unwrap()
+    }
+
+    fn dns_entry(name: &str, last_seen: i64) -> DnsEntry {
+        DnsEntry {
+            name: name.to_string(),
+            addresses: ["140.82.112.6".parse().unwrap()].into(),
+            count: 12,
+            first_seen: at(0),
+            last_seen: at(last_seen),
+        }
+    }
+
+    fn connection_entry(ip: &str, protocol: Protocol, last_seen: i64) -> ConnectionEntry {
+        ConnectionEntry {
+            ip: ip.parse().unwrap(),
+            protocol,
+            ports: [443, 80].into(),
+            count: 3,
+            first_seen: at(0),
+            last_seen: at(last_seen),
+        }
+    }
+
+    fn record() -> Record {
+        Record {
+            dns: vec![
+                dns_entry("api.github.com", 131),
+                dns_entry("evil.example.com", 220),
+            ],
+            connections: vec![
+                connection_entry("140.82.112.6", Protocol::Tcp, 130),
+                connection_entry("10.0.0.1", Protocol::Udp, 5),
+            ],
+        }
+    }
+
+    fn enforced(allow: &[&str]) -> NetworkSpec {
+        NetworkSpec {
+            enforce: true,
+            allow: allow.iter().map(|rule| rule.parse().unwrap()).collect(),
+            ..NetworkSpec::default()
+        }
+    }
+
+    /// Describes each entry as `<destination> <allowed>`.
+    fn allowed(entries: &[NetworkActivity]) -> Vec<String> {
+        entries
+            .iter()
+            .map(|entry| format!("{} {}", entry.destination, entry.allowed))
+            .collect()
+    }
+
+    #[test]
+    fn network_activity_sorts_entries_newest_first() {
+        let entries = network_activity(record(), &NetworkSpec::default());
+        let destinations: Vec<&str> = entries.iter().map(|e| e.destination.as_str()).collect();
+
+        assert_eq!(
+            destinations,
+            [
+                "evil.example.com",
+                "api.github.com",
+                "140.82.112.6",
+                "10.0.0.1"
+            ]
+        );
+    }
+
+    #[test]
+    fn network_activity_converts_the_entries() {
+        let entries = network_activity(record(), &NetworkSpec::default());
+
+        assert_eq!(
+            entries[1],
+            NetworkActivity {
+                kind: NetworkActivityKind::Dns.into(),
+                destination: "api.github.com".to_string(),
+                addresses: vec!["140.82.112.6".to_string()],
+                ports: vec![],
+                count: 12,
+                first_seen: 1_791_727_200,
+                last_seen: 1_791_727_331,
+                allowed: true,
+            }
+        );
+        assert_eq!(
+            entries[3],
+            NetworkActivity {
+                kind: NetworkActivityKind::Udp.into(),
+                destination: "10.0.0.1".to_string(),
+                addresses: vec![],
+                ports: vec![80, 443],
+                count: 3,
+                first_seen: 1_791_727_200,
+                last_seen: 1_791_727_205,
+                allowed: true,
+            }
+        );
+        assert_eq!(entries[2].kind(), NetworkActivityKind::Tcp);
+    }
+
+    #[test]
+    fn network_activity_evaluates_domain_rules_for_dns_and_ip_rules_for_connections() {
+        let rules = enforced(&["api.github.com", "140.82.112.0/20"]);
+
+        assert_eq!(
+            allowed(&network_activity(record(), &rules)),
+            [
+                "evil.example.com false",
+                "api.github.com true",
+                "140.82.112.6 true",
+                "10.0.0.1 false"
+            ]
+        );
+    }
+
+    #[test]
+    fn network_activity_allows_every_entry_when_the_rules_are_not_enforced() {
+        let rules = NetworkSpec {
+            enforce: false,
+            ..enforced(&["api.github.com"])
+        };
+
+        let entries = network_activity(record(), &rules);
+
+        assert!(entries.iter().all(|entry| entry.allowed), "{entries:?}");
+    }
+
+    #[test]
+    fn network_activity_of_an_empty_record_is_empty() {
+        assert_eq!(
+            network_activity(Record::default(), &NetworkSpec::default()),
+            []
+        );
     }
 
     #[tokio::test]

@@ -1068,3 +1068,54 @@ can't be bound, `fbkd` logs an error and the sandbox runs without a record.
 Sandboxes created before network logging have no route; `fbk network` commands
 that recreate them add it. Images without the logger, such as images with `init:
 false`, get the route but write nothing.
+
+## Showing network activity
+
+`fbk network log` shows the record of the working directory's sandbox. It only
+reads: it doesn't change `.firebrick.yml`, doesn't ask for approval and doesn't
+need `--yes`.
+
+```mermaid
+sequenceDiagram
+    participant Dev as Developer
+    participant CLI as fbk
+    participant D as fbkd
+    participant R as network/<sandbox>.json
+
+    Dev->>CLI: fbk network log
+    CLI->>CLI: Resolve the sandbox of the working directory
+    CLI->>D: ListNetworkActivity(name)
+    D->>D: Check the sandbox has the network log route
+    D->>R: Read the record, unless fbkd listens for it
+    D->>D: Evaluate the current rules per entry,<br/>sort by last seen, newest first
+    D-->>CLI: entries
+    CLI->>Dev: Table in the local time zone
+```
+
+```text
+$ fbk network log
+┌──────────────────┬──────┬───────┬───────┬─────────────────────┬─────────┐
+│ DESTINATION      │ KIND │ PORTS │ COUNT │ LAST SEEN           │ POLICY  │
+├──────────────────┼──────┼───────┼───────┼─────────────────────┼─────────┤
+│ evil.example.com │ dns  │       │ 1     │ 2026-10-11 14:03:40 │ denied  │
+│ api.github.com   │ dns  │       │ 12    │ 2026-10-11 14:02:11 │ allowed │
+│ 140.82.112.6     │ tcp  │ 443   │ 12    │ 2026-10-11 14:02:11 │ allowed │
+└──────────────────┴──────┴───────┴───────┴─────────────────────┴─────────┘
+```
+
+`fbkd` returns the live record while it listens for the sandbox, so the latest
+events show up before they're written to the file. `POLICY` is `fbkd`'s
+evaluation of the sandbox's current rules, from its `firebrick.network` label,
+with `network::allows_host`: domain rules for DNS entries and IP and CIDR rules
+for connections, so a connection to the address of an allowed domain shows as
+`denied` unless an IP rule allows it. With rules that aren't enforced, every
+entry is `allowed`. It doesn't claim to be microsandbox's own decision, and
+rules that changed since the activity apply to old entries too. `fbk` removes
+control characters from the destinations before it prints them, because the
+logger runs inside the sandbox and an agent can send false events.
+
+An empty record prints `No network activity recorded for <sandbox> yet.` A
+sandbox created before network logging has no route, and `ListNetworkActivity`
+returns `FAILED_PRECONDITION`; `fbk` then explains that changing the sandbox's
+network settings, or removing and starting it again, turns logging on. A sandbox
+that doesn't exist gets `sandbox <name> doesn't exist`.

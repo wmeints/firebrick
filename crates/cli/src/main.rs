@@ -63,7 +63,8 @@ enum Commands {
     /// Manage the secrets sandboxes use without seeing their values
     #[command(subcommand)]
     Secret(SecretCommands),
-    /// Change the network settings in .firebrick.yml and apply them to the sandbox
+    /// Change the network settings in .firebrick.yml and apply them to the sandbox, or show the
+    /// sandbox's network activity
     Network(NetworkArgs),
     /// Forward host ports to the working directory's sandbox and record them in .firebrick.yml
     #[command(subcommand)]
@@ -128,6 +129,9 @@ enum NetworkCommands {
     Enable,
     /// Remove the sandbox's network device, so it works fully offline
     Disable,
+    /// Show the domains and IP addresses the sandbox contacted, newest first. The record comes
+    /// from inside the sandbox, so an agent can tamper with it
+    Log,
 }
 
 #[derive(Subcommand, Debug)]
@@ -209,9 +213,10 @@ async fn main() -> Result<()> {
         Commands::Init { force } => init_spec(&working_dir, force),
         Commands::Secret(SecretCommands::Set(args)) => set_secret(args, &working_dir).await,
         // Changes the spec file first and only needs the daemon to apply it.
-        Commands::Network(args) => {
-            network::update(network_change(args.command)?, &working_dir, args.yes).await
-        }
+        Commands::Network(args) => match network_change(args.command)? {
+            Some(change) => network::update(change, &working_dir, args.yes).await,
+            None => network::log(&working_dir, &mut client::connect().await?).await,
+        },
         command => run_with_daemon(command, working_dir).await,
     }
 }
@@ -316,16 +321,18 @@ async fn ssh_proxy(
     std::process::exit(0);
 }
 
-/// Returns the change to the network section of the spec, validating the rules.
-fn network_change(command: NetworkCommands) -> Result<NetworkChange> {
-    Ok(match command {
+/// Returns the change to the network section of the spec, validating the rules, or `None` for
+/// `log`, which changes nothing.
+fn network_change(command: NetworkCommands) -> Result<Option<NetworkChange>> {
+    Ok(Some(match command {
         NetworkCommands::Allow { rules } => NetworkChange::allow(&rules)?,
         NetworkCommands::Deny { rules } => NetworkChange::deny(&rules)?,
         NetworkCommands::Policy(PolicyCommands::Enable) => NetworkChange::Enforce(true),
         NetworkCommands::Policy(PolicyCommands::Disable) => NetworkChange::Enforce(false),
         NetworkCommands::Enable => NetworkChange::Enable(true),
         NetworkCommands::Disable => NetworkChange::Enable(false),
-    })
+        NetworkCommands::Log => return Ok(None),
+    }))
 }
 
 /// Returns the secret value from the arguments, or from stdin with `--from-stdin`.
@@ -684,24 +691,33 @@ mod tests {
 
         assert_eq!(
             network_change(allow).unwrap(),
-            NetworkChange::allow(&["example.org".to_string()]).unwrap()
+            Some(NetworkChange::allow(&["example.org".to_string()]).unwrap())
         );
         assert_eq!(
             network_change(NetworkCommands::Policy(PolicyCommands::Enable)).unwrap(),
-            NetworkChange::Enforce(true)
+            Some(NetworkChange::Enforce(true))
         );
         assert_eq!(
             network_change(NetworkCommands::Policy(PolicyCommands::Disable)).unwrap(),
-            NetworkChange::Enforce(false)
+            Some(NetworkChange::Enforce(false))
         );
         assert_eq!(
             network_change(NetworkCommands::Enable).unwrap(),
-            NetworkChange::Enable(true)
+            Some(NetworkChange::Enable(true))
         );
         assert_eq!(
             network_change(NetworkCommands::Disable).unwrap(),
-            NetworkChange::Enable(false)
+            Some(NetworkChange::Enable(false))
         );
+    }
+
+    #[test]
+    fn network_log_takes_no_arguments() {
+        assert!(matches!(
+            parse_network(&["log"]).unwrap(),
+            NetworkCommands::Log
+        ));
+        assert!(parse_network(&["log", "example.org"]).is_err());
     }
 
     #[test]
