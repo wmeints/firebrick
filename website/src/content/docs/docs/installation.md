@@ -146,9 +146,10 @@ Then follow the Linux steps above inside the distribution, and keep your
 projects in the distribution's file system, for example under `~/projects`,
 instead of under `/mnt/c`.
 
-`fbkd` writes its SSH config to `~/.ssh/config` in the distribution, so the
-`.fbk` host names from [Editor support](/docs/editor-support/) only resolve for
-`ssh` and editors that run inside WSL. Editors on Windows don't see them.
+`fbkd` generates its SSH config in the distribution and includes it from
+`~/.ssh/config` there, so the `.fbk` host names from
+[Editor support](/docs/editor-support/) only resolve for `ssh` and editors that
+run inside WSL. Editors on Windows don't see them.
 
 ## Upgrading and uninstalling
 
