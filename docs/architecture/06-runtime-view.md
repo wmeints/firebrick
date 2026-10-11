@@ -686,7 +686,7 @@ or prompts. git runs the system helper first, so a helper the user configured,
 for example with `gh auth setup-git`, only answers when the system one has no
 token. When the secret's allowed hosts don't include `github.com`, the proxy
 doesn't put in the token and git fails to authenticate. See
-[ADR 0032](decisions/0032-configure-a-system-git-credential-helper-for-github-tokens.md).
+[ADR 0033](decisions/0033-configure-a-system-git-credential-helper-for-github-tokens.md).
 
 ## Updating the network rules
 

@@ -85,6 +85,26 @@ test("every internal link and asset resolves under the base path", () => {
   );
 });
 
+test("the docs sidebar lists the pages in reading order", async ({ page }) => {
+  await page.goto(`${base}docs/`);
+
+  const titles = await page
+    .locator("#starlight__sidebar ul.top-level a")
+    .evaluateAll((links) => links.map((link) => link.textContent?.trim()));
+
+  expect(titles).toEqual([
+    "Introduction",
+    "Installation",
+    "Quickstart",
+    "Configuration",
+    "Networking",
+    "Secrets",
+    "Editor support",
+    "Custom images",
+    "Command-line reference",
+  ]);
+});
+
 test("no page scrolls horizontally on a 375px wide screen", () => {
   const overflowing = visits.filter((visit) => (visit.overflow ?? 0) > 0);
 

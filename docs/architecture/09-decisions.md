@@ -31,4 +31,5 @@
 - [ADR 0029 - Check the website with ESLint, Prettier, Vitest and Playwright](decisions/0029-check-the-website-with-eslint-prettier-vitest-and-playwright.md)
 - [ADR 0030 - Forward OAuth callback ports when opening a URL](decisions/0030-forward-oauth-callback-ports-when-opening-a-url.md)
 - [ADR 0031 - Publish the crates to crates.io with Trusted Publishing](decisions/0031-publish-the-crates-to-crates-io-with-trusted-publishing.md)
-- [ADR 0032 - Configure a system git credential helper for GitHub tokens](decisions/0032-configure-a-system-git-credential-helper-for-github-tokens.md)
+- [ADR 0032 - Publish the website on GitHub Pages](decisions/0032-publish-the-website-on-github-pages.md)
+- [ADR 0033 - Configure a system git credential helper for GitHub tokens](decisions/0033-configure-a-system-git-credential-helper-for-github-tokens.md)

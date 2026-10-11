@@ -103,8 +103,17 @@ com.apple.quarantine fbk fbkd`.
 ## Website
 
 `website/` builds the product website, a landing page and the user docs, into
-static files in `website/dist`. Its `site` and `base` settings point at the
-repository's GitHub Pages URL, `https://wmeints.github.io/firebrick/`, and the
-end-to-end tests serve the build under that base path. Deploying it to GitHub
-Pages is tracked in #76. See
+static files in `website/dist`. The docs are Markdown pages in
+`website/src/content/docs/docs/`, served under `/docs/`. Its `site` and `base`
+settings point at the repository's GitHub Pages URL,
+`https://wmeints.github.io/firebrick/`, and the end-to-end tests serve the build
+under that base path. See
 [ADR 0027](decisions/0027-build-the-website-with-astro-starlight-and-tailwind.md).
+
+`.github/workflows/website.yaml` publishes the site to GitHub Pages on pushes to
+`main` that change `website/`, `mise.toml` or the workflow, and on manual runs
+from `main`. Its `check` job uploads `website/dist` as a Pages artifact once the
+checks and end-to-end tests pass, and its `deploy` job deploys it with
+`actions/deploy-pages`. Pull requests only check the site. The repository's
+Pages source must be set to "GitHub Actions" before the first deployment. See
+[ADR 0032](decisions/0032-publish-the-website-on-github-pages.md).

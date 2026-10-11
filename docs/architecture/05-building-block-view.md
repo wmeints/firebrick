@@ -567,7 +567,7 @@ images. It builds on `ubuntu:26.04` and adds:
   nothing, and on `store` and `erase` it does nothing. See
   [Git over HTTPS with a secret](06-runtime-view.md#git-over-https-with-a-secret)
   and
-  [ADR 0032](decisions/0032-configure-a-system-git-credential-helper-for-github-tokens.md).
+  [ADR 0033](decisions/0033-configure-a-system-git-credential-helper-for-github-tokens.md).
 
 The release workflow publishes the image as
 `ghcr.io/wmeints/firebrick-base:<tag>` (see

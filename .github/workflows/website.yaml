@@ -1,7 +1,7 @@
 name: Website
 
 # Check the website when it, the pinned Node and pnpm versions, or this workflow
-# change.
+# change, and deploy it to GitHub Pages from main.
 on:
   push:
     branches: [main]
@@ -60,3 +60,31 @@ jobs:
 
       - name: End-to-end tests
         run: pnpm run test:e2e
+
+      # The deploy job publishes this build, so it isn't built twice.
+      - name: Upload the site for GitHub Pages
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/dist
+
+  # Publishes the site checked above on pushes to main, or when run by hand on
+  # main. GitHub Pages must use "GitHub Actions" as its source in the repository
+  # settings.
+  deploy:
+    name: Deploy the website to GitHub Pages
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

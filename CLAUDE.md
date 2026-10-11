@@ -203,7 +203,9 @@ These checks enforce the rules above, so don't try to bypass them:
   on every pull request and every push to `main`.
 - `.github/workflows/website.yaml` runs the website's install, format check,
   lint, type check, unit tests, build and end-to-end tests on pull requests and
-  pushes to `main` that change `website/`, `mise.toml` or the workflow.
+  pushes to `main` that change `website/`, `mise.toml` or the workflow. On
+  pushes to `main` and manual runs from `main` it also deploys the checked build
+  to GitHub Pages, so merging a website change publishes it (ADR 0032).
 - `.github/workflows/image.yaml` builds the `firebrick-base` image for both
   platforms, without pushing it, on pull requests and pushes to `main` that
   change the `Dockerfile`.

@@ -20,6 +20,18 @@ export default defineConfig({
           href: "https://github.com/wmeints/firebrick",
         },
       ],
+      // Lists the docs in reading order. A slug without a page fails the build.
+      sidebar: [
+        "docs",
+        "docs/installation",
+        "docs/quickstart",
+        "docs/configuration",
+        "docs/networking",
+        "docs/secrets",
+        "docs/editor-support",
+        "docs/custom-images",
+        "docs/command-line-reference",
+      ],
       // Fails the build on broken internal links.
       plugins: [starlightLinksValidator()],
     }),

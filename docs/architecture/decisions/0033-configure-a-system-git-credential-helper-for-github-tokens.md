@@ -1,4 +1,4 @@
-# 32. Configure a system git credential helper for GitHub tokens
+# 33. Configure a system git credential helper for GitHub tokens
 
 ## Status
 
