@@ -1,9 +1,11 @@
 //! Sandbox management on top of microsandbox: the sandbox lifecycle, the workspace's mise
-//! tools, the secrets of sandboxes, their port forwards, their URL relays, SSH host names, the
-//! generated SSH config, the editors' Remote-SSH settings and Zed's remote projects.
+//! tools, the secrets of sandboxes, their port forwards, their URL relays, their network logs,
+//! SSH host names, the generated SSH config, the editors' Remote-SSH settings and Zed's remote
+//! projects.
 
 use crate::forward::{self, ForwardReport, Forwards, SshConnector};
 use crate::mise::{self, MiseError};
+use crate::netlog::NetLogs;
 use crate::network;
 use crate::open::{Opener, Relays};
 use crate::pull::{self, PullUpdate};
@@ -222,8 +224,9 @@ impl SandboxSettings {
         })
     }
 
-    /// Returns a builder for a detached sandbox with these settings, without a root filesystem.
-    fn builder(&self) -> SandboxBuilder {
+    /// Returns a builder for a detached sandbox with these settings and the route of its network
+    /// log in `netlogs`, without a root filesystem.
+    fn builder(&self, netlogs: &NetLogs) -> SandboxBuilder {
         let builder = self
             .labels
             .iter()
@@ -233,6 +236,7 @@ impl SandboxSettings {
             .detached(true);
         let builder = with_workspace(builder, self.workspace.as_ref());
         let builder = with_mounts(builder, &self.mounts);
+        let builder = netlogs.add_route(builder, &self.name);
 
         with_init(with_resources(builder, self.resources), self.init)
     }
@@ -280,11 +284,13 @@ fn default_docker_volume_mib() -> u32 {
     firebrick_spec::parse_size_mib(&VolumesSpec::default().docker).unwrap_or(20 * 1024)
 }
 
-/// Manages sandboxes, the secrets they get, their port forwards and their URL relays.
+/// Manages sandboxes, the secrets they get, their port forwards, their URL relays and their
+/// network logs.
 pub struct SandboxManager {
     secrets: SecretStore,
     forwards: Arc<Forwards>,
     relays: Relays,
+    netlogs: NetLogs,
     // Held while secrets are stored or added to sandboxes, so a sandbox that is being created
     // can't miss a secret that is being set, and concurrent sets can't mix up values.
     secrets_lock: tokio::sync::Mutex<()>,
@@ -327,13 +333,15 @@ impl Drop for SandboxGuard<'_> {
 
 impl SandboxManager {
     /// Creates a manager that adds the secrets from `secrets` to sandboxes and opens the URLs
-    /// from sandboxes with `opener`.
+    /// from sandboxes with `opener`. It keeps network logs in the directories the environment
+    /// selects, see [`NetLogs::from_env`].
     pub fn new(secrets: SecretStore, opener: Arc<dyn Opener>) -> Self {
         let forwards = Arc::new(Forwards::new(SshConnector::default()));
 
         Self {
             secrets,
             relays: Relays::new(opener, Arc::clone(&forwards)),
+            netlogs: NetLogs::from_env(),
             forwards,
             secrets_lock: tokio::sync::Mutex::new(()),
             sandbox_locks: std::sync::Mutex::new(HashMap::new()),
@@ -363,8 +371,9 @@ impl SandboxManager {
 
     /// Starts an existing sandbox or creates a new one when it doesn't exist, installs the
     /// workspace's mise tools when it started, then syncs the SSH config and the editor
-    /// settings, also when starting failed. Once the sandbox runs, stores the requested ports,
-    /// opens its forwards and starts its URL relay, also when it was already running.
+    /// settings, also when starting failed. Listens for the sandbox's network log first. Once
+    /// the sandbox runs, stores the requested ports, opens its forwards and starts its URL
+    /// relay, also when it was already running.
     /// `resources` is only called when the sandbox is created, and `on_pull` only gets the
     /// progress of an image that is downloaded for a new sandbox.
     pub async fn start(
@@ -375,8 +384,14 @@ impl SandboxManager {
     ) -> Result<ForwardReport, SandboxError> {
         let _guard = self.lock_sandbox(request.name).await;
         let result = match Sandbox::get(request.name).await {
-            Ok(existing_sb) => start_existing_sandbox(&existing_sb, request).await,
-            Err(_) => self.create_and_install(request, resources, on_pull).await,
+            Ok(existing_sb) => {
+                self.listen_if_routed(&existing_sb).await;
+                start_existing_sandbox(&existing_sb, request).await
+            }
+            Err(_) => {
+                self.netlogs.listen(request.name).await;
+                self.create_and_install(request, resources, on_pull).await
+            }
         };
 
         sync_ssh_config().await;
@@ -404,6 +419,48 @@ impl SandboxManager {
         {
             self.forwards.apply(sb.name(), &stored_ports(sb)).await;
         }
+    }
+
+    /// Listens for the network logs of the sandboxes that have the route, running or not. Used
+    /// when the daemon starts.
+    pub async fn restore_network_logs(&self) {
+        let sandboxes = match list_all_sandboxes().await {
+            Ok(sandboxes) => sandboxes,
+            Err(err) => {
+                tracing::warn!("failed to restore network logs: {err}");
+                return;
+            }
+        };
+
+        for sb in &sandboxes {
+            self.listen_if_routed(sb).await;
+        }
+    }
+
+    /// Listens for the sandbox's network log when it has the route. Sandboxes created before
+    /// network logging have none.
+    async fn listen_if_routed(&self, sb: &SandboxHandle) {
+        let config = match sb.config() {
+            Ok(config) => config,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to read the config of sandbox {}; not listening for its network \
+                     log: {err}",
+                    sb.name()
+                );
+                return;
+            }
+        };
+
+        if self.netlogs.has_route(sb.name(), &config.spec) {
+            self.netlogs.listen(sb.name()).await;
+        }
+    }
+
+    /// Stops listening for the network logs of the sandboxes, writing their records a last
+    /// time. Used when the daemon shuts down.
+    pub async fn close_network_logs(&self) {
+        self.netlogs.close().await;
     }
 
     /// Stores the ports with the sandbox when they're given, then makes its open forwards
@@ -520,9 +577,9 @@ impl SandboxManager {
         Ok(())
     }
 
-    /// Removes a sandbox and closes its forwards, then syncs the SSH config and the editor
-    /// settings. A running sandbox is only removed with `force`, which stops it first like
-    /// [`SandboxManager::stop`].
+    /// Removes a sandbox, closes its forwards and deletes its network log, then syncs the SSH
+    /// config and the editor settings. A running sandbox is only removed with `force`, which
+    /// stops it first like [`SandboxManager::stop`].
     pub async fn remove(&self, name: &str, force: bool) -> Result<(), SandboxError> {
         let _guard = self.lock_sandbox(name).await;
         let sb = self.get_or_close_forwards(name).await?;
@@ -541,6 +598,7 @@ impl SandboxManager {
         }
 
         sb.remove().await.map_err(|err| remove_failed(name, err))?;
+        self.netlogs.remove(name).await;
 
         sync_ssh_config().await;
 
@@ -612,14 +670,13 @@ impl SandboxManager {
         let _guard = self.lock_sandbox(&name).await;
 
         // Get the sandbox again, because it may have been recreated while waiting for the lock.
-        let sb = get_sandbox(&name)
-            .await?
-            .connect_or_start_detached()
-            .await
-            .map_err(|err| {
-                tracing::error!(error = ?err, "failed to start sandbox with host name {hostname}");
-                SandboxError::failed_precondition("failed to start sandbox")
-            })?;
+        let handle = get_sandbox(&name).await?;
+        self.listen_if_routed(&handle).await;
+
+        let sb = handle.connect_or_start_detached().await.map_err(|err| {
+            tracing::error!(error = ?err, "failed to start sandbox with host name {hostname}");
+            SandboxError::failed_precondition("failed to start sandbox")
+        })?;
 
         self.open_forwards(sb.name(), None).await;
         self.relays.ensure(&sb).await;
@@ -628,9 +685,9 @@ impl SandboxManager {
     }
 
     /// Replaces the egress rules of an existing sandbox by recreating it from a disk snapshot,
-    /// so it keeps its root disk, Docker disk and settings but not its processes. The sandbox
-    /// ends in the state it was in. Returns whether it was recreated: a sandbox that already
-    /// has the rules is left alone. A paused sandbox is refused, because it can't be paused
+    /// so it keeps its root disk, Docker disk and settings but not its processes, and gets the
+    /// route of its network log, also when it had none. The sandbox ends in the state it was
+    /// in. Returns whether it was recreated: a sandbox that already has the rules is left alone. A paused sandbox is refused, because it can't be paused
     /// again. When the recreate fails, the snapshot is kept so the user can recover the
     /// sandbox, and the error names it.
     pub async fn update_network(
@@ -652,6 +709,7 @@ impl SandboxManager {
             )));
         }
 
+        self.netlogs.listen(name).await;
         let result = self.replace(&sb, &settings, network).await;
         sync_ssh_config().await;
         self.reopen_forwards_and_relay(name).await;
@@ -749,7 +807,7 @@ impl SandboxManager {
             .map_err(|err| err.to_string())?;
 
         // `image(..)` would discard the pending snapshot, so the builder must not set one.
-        let builder = settings.builder().override_snapshot(snapshot);
+        let builder = settings.builder(&self.netlogs).override_snapshot(snapshot);
 
         // A snapshot has no image to pull, so there's no progress to report.
         create_with(builder, &secrets, network, |_| {})
@@ -920,7 +978,9 @@ impl SandboxManager {
         let secrets = self.load_secrets_for(request.name)?;
 
         let settings = new_sandbox_settings(request, &guest_path, &hostname, resources);
-        let builder = settings.builder().image(sandbox_image(request.image));
+        let builder = settings
+            .builder(&self.netlogs)
+            .image(sandbox_image(request.image));
 
         let sb = match create_with(builder, &secrets, request.network, on_pull).await {
             Ok(sb) => sb,

@@ -51,8 +51,17 @@
   than HTTP(S) on ports 80 and 443, such as SSH, to hosts allowed only by a
   domain rule; they need an IP or CIDR rule. TLS interception breaks clients
   that pin certificates or bring their own CA store. microsandbox has no API for
-  denied connections, so the host can't show them to the user
+  denied connections; the network log records the attempts the guest makes, but
+  not which ones the policy denied
   ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
+- **The agent can tamper with the network record:** the logger that reports a
+  sandbox's DNS lookups and connections runs inside the VM, and the `agent` user
+  has passwordless `sudo`, so an agent can stop it, hide its traffic from it or
+  send false events. `fbkd` treats every event as untrusted input and bounds the
+  record, but the record stays a diagnostic aid, not an audit trail. DNS over
+  TCP, DNS over HTTPS and IPv6 aren't recorded. Replace the logger once
+  microsandbox reports DNS queries and connections itself
+  ([ADR 0038](decisions/0038-record-network-activity-with-a-guest-logger-on-vsock.md)).
 - **Forwarded ports listen on the host:** `fbkd` listens on the loopback ports
   in `.firebrick.yml`, so any process of any user on the host can connect to
   them and reach the sandbox's servers behind them, like a dev server running on

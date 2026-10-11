@@ -51,6 +51,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_yaml = "0.9.34"
 jsonc-parser = { version = "0.34.0", features = ["cst"] }
 url = "2.5.8"
+serde_json = "1.0.152"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
 
 [dev-dependencies]
 hyper-util = { version = "0.1.21", features = ["tokio"] }

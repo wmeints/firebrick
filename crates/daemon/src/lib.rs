@@ -3,6 +3,7 @@ pub use firebrick_proto as api;
 
 pub mod forward;
 pub mod mise;
+pub mod netlog;
 pub mod network;
 pub mod open;
 pub mod pull;

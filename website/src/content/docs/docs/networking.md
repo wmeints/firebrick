@@ -112,6 +112,26 @@ updated the network rules of my-project
   change you asked for never needs approval. See
   [Approving mounts and network changes](/docs/configuration/#approving-mounts-and-network-changes).
 
+## Recording network activity
+
+Firebrick records the domains and IP addresses each sandbox contacts, so you can
+see which `fbk network allow` rules a task needs, or spot an agent that contacts
+hosts it shouldn't. A logger in the `firebrick-base` image watches the sandbox's
+network interface and reports each DNS lookup with the addresses it resolved to,
+and each outgoing TCP connection attempt and UDP destination, to `fbkd`.
+Attempts that the enforced rules deny are recorded too.
+
+`fbkd` keeps one entry per domain and per address, with how often and when it
+first and last saw it, in `~/.local/state/firebrick/network/<sandbox>.json`.
+`fbk rm` deletes the record with the sandbox.
+
+The logger runs inside the sandbox, and `agent` can use `sudo`, so an agent can
+stop it or report made-up traffic. Treat the record as a diagnostic aid, not as
+proof of what the sandbox did. DNS over HTTPS and IPv6 aren't recorded.
+Sandboxes created by an older version of Firebrick have no record until a `fbk
+network` command restarts them, and custom images only have one when they run
+the logger (see [Custom images](/docs/custom-images/)).
+
 ## Working offline
 
 To keep an agent fully offline, for example for code that must not leave your

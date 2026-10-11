@@ -197,8 +197,9 @@ killing it after 30 seconds. When that stop fails, `fbkd` returns `INTERNAL` and
 leaves the sandbox in place. A stopped or crashed sandbox is removed with or
 without `--force`. `fbkd` closes the sandbox's port forwards once the sandbox
 isn't live anymore, before it removes it, so they also close when the removal
-fails. After a removal, `fbkd` syncs the SSH config and the editors' Remote-SSH
-settings, so they drop the sandbox's host.
+fails. After a removal, `fbkd` stops listening for the sandbox's network log,
+deletes its socket and its record, and syncs the SSH config and the editors'
+Remote-SSH settings, so they drop the sandbox's host.
 
 ```mermaid
 sequenceDiagram
@@ -234,6 +235,7 @@ sequenceDiagram
             CLI-->>Dev: Error: sandbox name is running. Stop it with fbk stop, or remove it with fbk rm --force.
         else Sandbox is stopped
             MS-->>D: Removed
+            D->>D: Delete the network log socket and record
             D->>D: Sync SSH config and editor settings
             D-->>CLI: RemoveSandboxResponse
             CLI-->>Dev: Exit 0
@@ -781,14 +783,16 @@ outside the workspace, installed packages and Docker images survive. Running
 processes don't: the sandbox cold-boots, like after `fbk stop` and `fbk start`.
 The new sandbox gets the same name, labels (and so the same SSH host name and
 mise setting and the stored ports), workspace mount, extra mounts, resources and
-`init` setting. When the sandbox doesn't exist, `fbkd` returns `NOT_FOUND` and
-the CLI reports that the rules or the change apply when the sandbox starts. The
-CLI calls the daemon even when the file didn't change, so running the command
-again applies rules that an earlier, failed update or a hand edit left in the
-file only. The `firebrick.network` label makes that cheap: a sandbox that
-already has the rules isn't recreated, and neither is one whose rules aren't
-enforced, because they don't change it, nor one without a network device whose
-rules change, because it ignores them.
+`init` setting. It also gets the vsock route of its network log, also when the
+original sandbox was created before network logging and had none, and `fbkd`
+listens on its socket before it recreates it. When the sandbox doesn't exist,
+`fbkd` returns `NOT_FOUND` and the CLI reports that the rules or the change
+apply when the sandbox starts. The CLI calls the daemon even when the file
+didn't change, so running the command again applies rules that an earlier,
+failed update or a hand edit left in the file only. The `firebrick.network`
+label makes that cheap: a sandbox that already has the rules isn't recreated,
+and neither is one whose rules aren't enforced, because they don't change it,
+nor one without a network device whose rules change, because it ignores them.
 
 microsandbox refuses to delete a snapshot while another operation reads it, for
 example a snapshot listing by `msb` or another sandbox's update, and doesn't
@@ -996,3 +1000,71 @@ sandbox that keeps running while `fbkd` restarts gets its relay back on the next
 such call. When the relay can't start, for example in an image without `sh`, or
 when the host has no `xdg-open`, `fbkd` logs a warning and the request still
 succeeds.
+
+## Recording network activity
+
+`fbkd` records the domains and IP addresses each sandbox contacts, so the user
+can see which `fbk network allow` rules a task needs, or spot an agent that
+contacts hosts it shouldn't. microsandbox doesn't report this, so a logger in
+the `firebrick-base` image watches the guest's network interface and reports to
+`fbkd` over a vsock route
+([ADR 0038](decisions/0038-record-network-activity-with-a-guest-logger-on-vsock.md)).
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant L as firebrick-netlog (guest)
+    participant MS as microsandbox
+    participant D as fbkd
+    participant R as network/<sandbox>.json
+
+    D->>D: Bind netlog/<sandbox>.sock
+    D->>MS: Create the sandbox with a vsock route<br/>from port 52000 to the socket
+    MS->>L: /sbin/init starts the logger
+    A->>A: curl https://example.com
+    L->>L: tcpdump sees the A? query, its answer and the SYN
+    L->>MS: Connect to vsock CID 2, port 52000
+    MS->>D: Connect to netlog/<sandbox>.sock
+    L->>D: {"kind":"dns","name":"example.com","addresses":[...]}
+    L->>D: {"kind":"connect","protocol":"tcp","ip":...,"port":443}
+    D->>D: Check each line, aggregate per destination
+    D->>R: Write the record, at most once a second
+```
+
+`fbkd` binds the socket before it creates, starts or recreates a sandbox, and
+when it starts, for every sandbox that has the route, running or not, so a
+sandbox that kept running while `fbkd` restarted is recorded again. microsandbox
+connects to the host socket each time the guest connects, so the socket doesn't
+have to exist when the VM boots, and the logger reconnects within 5 seconds
+after `fbkd` comes back. Events the logger sends while `fbkd` can't be reached
+are lost. When `fbkd` shuts down, it writes every record a last time. A record
+looks like this:
+
+```json
+{
+  "dns": [{
+    "name": "example.com",
+    "addresses": ["104.20.23.154", "172.66.147.243"],
+    "count": 1,
+    "first_seen": "2026-10-11T17:26:50.918856600Z",
+    "last_seen": "2026-10-11T17:26:50.918856600Z"
+  }],
+  "connections": [{
+    "ip": "172.66.147.243",
+    "protocol": "tcp",
+    "ports": [443],
+    "count": 1,
+    "first_seen": "2026-10-11T17:26:50.919385254Z",
+    "last_seen": "2026-10-11T17:26:50.919385254Z"
+  }]
+}
+```
+
+The logger captures packets as they leave the guest, so connection attempts the
+enforced network policy denies are recorded too, and so are the guest's queries
+to microsandbox's DNS server and the traffic of Docker containers in the
+sandbox. Network logging never stops a sandbox from starting: when the socket
+can't be bound, `fbkd` logs an error and the sandbox runs without a record.
+Sandboxes created before network logging have no route; `fbk network` commands
+that recreate them add it. Images without the logger, such as images with `init:
+false`, get the route but write nothing.

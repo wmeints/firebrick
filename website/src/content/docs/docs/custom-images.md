@@ -16,7 +16,7 @@ repository, for `linux/amd64` and `linux/arm64`:
 
 - Ubuntu 26.04 with `build-essential`, `curl`, `git`, `gpg`, `libicu78` (ICU for
   .NET apps such as the Aspire CLI), `libssl-dev`, `pkg-config`, `procps`,
-  `sudo` and [tini](https://github.com/krallin/tini).
+  `python3`, `sudo`, `tcpdump` and [tini](https://github.com/krallin/tini).
 - [mise](https://mise.jdx.dev), activated for bash, with its shims on the
   `PATH`.
 - The Docker engine with the `buildx` and `compose` plugins.
@@ -24,8 +24,12 @@ repository, for `linux/amd64` and `linux/arm64`:
   passwordless `sudo` and membership of the `docker` group. The image's `ubuntu`
   user is removed.
 - An `/sbin/init` that disables guest IPv6 (see
-  [Networking](/docs/networking/#ipv6)), starts `dockerd` in the background and
-  hands PID 1 to tini, which reaps zombie processes.
+  [Networking](/docs/networking/#ipv6)), starts `dockerd` and the network logger
+  in the background and hands PID 1 to tini, which reaps zombie processes.
+- `firebrick-netlog`, the network logger, which reports the domains and IP
+  addresses the sandbox contacts to `fbkd`. It logs to
+  `/var/log/firebrick-netlog.log`. See
+  [Recording network activity](/docs/networking/#recording-network-activity).
 - `xdg-open` and `$BROWSER` pointing at `firebrick-open`, which opens URLs in
   the browser on your host.
 - `firebrick-git-credential`, the git credential helper for github.com that
@@ -98,6 +102,10 @@ based on `firebrick-base` must:
 - Add `agent` to the `docker` group and start `dockerd` from `/sbin/init`, if
   agents should be able to run `docker` without `sudo`. Firebrick attaches a
   disk for Docker's data at `/var/lib/docker` to every sandbox.
+- Copy `/usr/local/sbin/firebrick-netlog` from the base image's `Dockerfile`,
+  install `python3` and `tcpdump`, and start the logger as root from
+  `/sbin/init`, if Firebrick should record the network activity of the sandbox.
+  Without it, the sandbox's network record stays empty.
 
 The workspace is mounted at `/workspaces/<leaf>`, and its files show up as owned
 by `agent`, whatever the UID of your user on the host is.
@@ -127,7 +135,8 @@ With `init: false`, nothing disables guest IPv6, so on hosts without IPv6
 internet access the sandbox can't download from servers that have an IPv6
 address. Nothing starts `dockerd` either, and `docker` reports `Cannot connect
 to the Docker daemon`; start it in the background with `sudo sh -c
-'dockerd >/var/log/dockerd.log 2>&1 &'`.
+'dockerd >/var/log/dockerd.log 2>&1 &'`. Nothing starts the network logger
+either, so Firebrick records no network activity for the sandbox.
 
 Sandboxes created by an older version of Firebrick run `ubuntu:26.04`, which has
 no `agent` user, so SSH can no longer log in to them. Recreate them with `fbk

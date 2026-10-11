@@ -2010,6 +2010,7 @@ version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "clap",
  "firebrick-proto",
  "firebrick-spec",
@@ -2022,6 +2023,7 @@ dependencies = [
  "oci-client",
  "russh",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tempfile",
  "thiserror",
