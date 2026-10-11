@@ -1,5 +1,6 @@
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, expect, test } from "vitest";
+import astroConfig from "../../astro.config.mjs";
 import Documentation from "../../src/components/landing/Documentation.astro";
 import Index from "../../src/pages/index.astro";
 
@@ -9,7 +10,10 @@ import Index from "../../src/pages/index.astro";
 let html = "";
 
 beforeAll(async () => {
-  const container = await AstroContainer.create();
+  // The page builds its absolute link-preview URLs from `site`.
+  const container = await AstroContainer.create({
+    astroConfig: { site: astroConfig.site },
+  });
   html = await container.renderToString(Index);
 });
 
