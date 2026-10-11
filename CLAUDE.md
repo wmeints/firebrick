@@ -197,8 +197,9 @@ These checks enforce the rules above, so don't try to bypass them:
 - Before each commit, Lefthook runs the checks for the staged files: the format
   checks for Rust and Markdown, `actionlint` for the GitHub workflows, clippy
   and the unit tests for the Rust inputs (`*.rs`, `*.proto`, `Cargo.toml`,
-  `Cargo.lock`, `.cargo/config.toml`), and for `website/` or `mise.toml` the
-  website's install, format check, lint, type check, unit tests and build.
+  `Cargo.lock`, `.cargo/config.toml`, `clippy.toml`, `mise.toml`), and for
+  `website/` or `mise.toml` the website's install, format check, lint, type
+  check, unit tests and build.
 - Each GitHub Actions workflow runs on pull requests and pushes to `main` only
   when the files it checks, or the workflow itself, changed (ADR 0036):
   `.github/workflows/ci.yaml` runs the Rust format check, clippy, the unit tests

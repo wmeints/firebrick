@@ -39,7 +39,8 @@ the script and recompiles `microsandbox`. `MSB_HOME` stays fixed at
   target. The `integration` job restores the `check` job's rust-cache through a
   shared key instead of keeping its own.
 - Lefthook runs clippy and the unit tests only for commits that stage Rust
-  inputs, matching `.claude/hooks/stop-checks.sh`.
+  inputs: the `.rs`, `.proto` and `Cargo` files, `.cargo/config.toml`,
+  `clippy.toml` and `mise.toml`, the same inputs as the `ci.yaml` filter.
 
 ## Consequences
 

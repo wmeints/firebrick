@@ -12,10 +12,10 @@ pre-commit:
     workflows:
       glob: ".github/workflows/*.{yaml,yml}"
       run: actionlint
-    # Clippy and the unit tests run only for the Rust inputs, the same files
-    # .claude/hooks/stop-checks.sh checks them for.
+    # Clippy and the unit tests run only for the Rust inputs that ci.yaml
+    # filters on; mise.toml pins the Rust toolchain.
     clippy:
-      glob: &rust-inputs ["*.rs", "*.proto", "Cargo.toml", "**/Cargo.toml", "Cargo.lock", ".cargo/config.toml"]
+      glob: &rust-inputs ["*.rs", "*.proto", "Cargo.toml", "**/Cargo.toml", "Cargo.lock", ".cargo/config.toml", "clippy.toml", "mise.toml"]
       run: cargo clippy --workspace --all-targets --all-features -- -D warnings
     unit-tests:
       glob: *rust-inputs
