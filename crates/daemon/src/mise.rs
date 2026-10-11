@@ -1,7 +1,7 @@
 //! Trusts and installs the mise tools of a sandbox's workspace, so a sandbox comes up with the
 //! project's tools ready.
 
-use crate::guest_text::strip_control;
+use firebrick_utils::strip_control;
 use microsandbox::protocol::exec::ExecFailureKind;
 use microsandbox::{MicrosandboxError, Sandbox};
 use std::collections::BTreeMap;

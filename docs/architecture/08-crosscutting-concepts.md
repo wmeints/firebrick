@@ -24,10 +24,10 @@ Text that a sandbox printed is untrusted: a workspace file controls it. Before
 such guest output ends up in a gRPC status message or a log line, such as the
 tail of mise's stderr in a failed `fbk start` or the URL relay's stderr when it
 exits, the daemon removes every control character except newline and tab with
-`guest_text::strip_control`. That covers C0 controls, DEL and C1 controls, so a
-workspace can't make `fbk` write terminal escape sequences, such as OSC 52 to
-set the user's clipboard. The text around the removed characters stays, so the
-message still shows what the guest printed. The output of `fbk run` is the
+`firebrick_utils::strip_control`. That covers C0 controls, DEL and C1 controls,
+so a workspace can't make `fbk` write terminal escape sequences, such as OSC 52
+to set the user's clipboard. The text around the removed characters stays, so
+the message still shows what the guest printed. The output of `fbk run` is the
 exception: like `ssh`, the CLI passes it to the terminal unchanged, so TUIs keep
 working.
 

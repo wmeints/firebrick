@@ -14,9 +14,9 @@
 //! host. A URL whose own host is loopback only opens when that forward is open.
 
 use crate::forward::{CALLBACK_IDLE_TIMEOUT, CallbackForwards, Forwards, SshConnector};
-use crate::guest_text::strip_control;
 use crate::network;
 use firebrick_spec::NetworkSpec;
+use firebrick_utils::strip_control;
 use microsandbox::Sandbox;
 use microsandbox::sandbox::exec::{ExecEvent, ExecHandle};
 use std::collections::{HashMap, VecDeque};
