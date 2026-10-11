@@ -14,6 +14,7 @@
 //! host. A URL whose own host is loopback only opens when that forward is open.
 
 use crate::forward::{CALLBACK_IDLE_TIMEOUT, CallbackForwards, Forwards, SshConnector};
+use crate::guest_text::strip_control;
 use crate::network;
 use firebrick_spec::NetworkSpec;
 use microsandbox::Sandbox;
@@ -366,14 +367,15 @@ impl RelayOutput {
         self.stderr.extend_from_slice(&data[..data.len().min(room)]);
     }
 
-    /// Logs the relay's exit, as a warning with its stderr when it failed.
+    /// Logs the relay's exit, as a warning with its stderr, without control characters, when it
+    /// failed.
     fn log_exit(&self, code: i32) {
         let sandbox = &self.sandbox;
 
         if code == 0 {
             tracing::info!("URL relay of sandbox {sandbox} exited");
         } else {
-            let stderr = String::from_utf8_lossy(&self.stderr);
+            let stderr = strip_control(&String::from_utf8_lossy(&self.stderr));
             tracing::warn!("URL relay of sandbox {sandbox} exited with {code}: {stderr}");
         }
     }

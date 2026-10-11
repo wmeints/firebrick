@@ -2,6 +2,7 @@
 pub use firebrick_proto as api;
 
 pub mod forward;
+mod guest_text;
 pub mod mise;
 pub mod network;
 pub mod open;
