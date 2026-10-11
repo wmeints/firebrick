@@ -61,8 +61,9 @@ remaining gain of option B, protection at rest, is small.
 - `fbkd` validates the name (an environment variable name that doesn't start
   with `MSB_`), the value (not empty) and the allowed hosts (host names,
   optionally `*.`-prefixed with at least two labels after it, such as
-  `*.example.com`; `*` and `*.com` aren't allowed). Without `--allow-host`, it
-  uses defaults for well-known names:
+  `*.example.com`; `*`, `*.com` and IP addresses aren't allowed). It parses them
+  with the parser of the network rules, so both accept the same host names.
+  Without `--allow-host`, it uses defaults for well-known names:
 
   | Name                                           | Default allowed hosts                                 |
   | ---------------------------------------------- | ----------------------------------------------------- |
