@@ -652,9 +652,13 @@ mod tests {
 
     #[test]
     fn network_log_takes_no_yes_flag() {
-        assert!(parse_network(&["log", "--yes"]).is_err());
-        assert!(parse_network(&["log", "-y"]).is_err());
-        assert!(parse_network(&["--yes", "log"]).is_err());
+        for args in [["log", "--yes"], ["log", "-y"], ["--yes", "log"]] {
+            assert_eq!(
+                parse_network(&args).unwrap_err().kind(),
+                clap::error::ErrorKind::UnknownArgument,
+                "{args:?}"
+            );
+        }
     }
 
     #[test]

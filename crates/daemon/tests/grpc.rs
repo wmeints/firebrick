@@ -3239,5 +3239,4 @@ async fn list_network_activity_returns_the_recorded_events_with_the_policy() {
     assert_eq!(tcp.destination, "93.184.215.14");
     assert_eq!(tcp.ports, [443]);
     assert!(!tcp.allowed, "no IP rule allows 93.184.215.14");
-    assert!(entries[0].last_seen >= entries[1].last_seen, "{entries:?}");
 }

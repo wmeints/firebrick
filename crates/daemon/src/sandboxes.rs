@@ -459,7 +459,8 @@ impl SandboxManager {
 
     /// Returns the network activity recorded for the sandbox and its current egress rules.
     /// Fails with `FailedPrecondition` when the sandbox has no network log route, because it
-    /// was created before network logging.
+    /// was created before network logging, and with `Internal` when its record file can't be
+    /// read or is corrupt.
     pub async fn network_activity(
         &self,
         name: &str,
@@ -476,10 +477,12 @@ impl SandboxManager {
             )));
         }
 
-        Ok((
-            self.netlogs.record(name).await,
-            network::rules_of(&config.spec),
-        ))
+        let record = self.netlogs.record(name).await.map_err(|err| {
+            tracing::error!("failed to read the network record of sandbox {name}: {err}");
+            SandboxError::internal(format!("failed to read the network record of {name}"))
+        })?;
+
+        Ok((record, network::rules_of(&config.spec)))
     }
 
     /// Stops listening for the network logs of the sandboxes, writing their records a last

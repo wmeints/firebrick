@@ -1116,6 +1116,11 @@ logger runs inside the sandbox and an agent can send false events.
 
 An empty record prints `No network activity recorded for <sandbox> yet.` A
 sandbox created before network logging has no route, and `ListNetworkActivity`
-returns `FAILED_PRECONDITION`; `fbk` then explains that changing the sandbox's
-network settings, or removing and starting it again, turns logging on. A sandbox
-that doesn't exist gets `sandbox <name> doesn't exist`.
+returns `FAILED_PRECONDITION`; `fbk` then explains that removing and starting
+the sandbox again, or changing its network settings, turns logging on. A `fbk
+network` command that leaves the settings as they are doesn't recreate the
+sandbox, so it doesn't add the route. When the record file of a sandbox that
+`fbkd` doesn't listen for can't be read or is corrupt, `ListNetworkActivity`
+returns `INTERNAL` instead of an empty record, so the user doesn't mistake it
+for a sandbox that contacted nothing. A sandbox that doesn't exist gets `sandbox
+<name> doesn't exist`.

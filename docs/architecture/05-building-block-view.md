@@ -136,13 +136,14 @@ C4Component
   only reads: it resolves the working directory's sandbox like `fbk stop`
   without a name, asks the daemon for its record with `ListNetworkActivity` and
   prints the entries in the daemon's order as a table with the destination, the
-  kind (`dns`, `tcp` or `udp`), the ports, the count, the last time it was seen
-  in the local time zone and the policy (`allowed` or `denied`). It removes
-  control characters from the destinations, because they come from inside the
-  sandbox. It doesn't touch `.firebrick.yml` or `approval`. An empty record
-  prints `No network activity recorded for <sandbox> yet.`, `NOT_FOUND` that the
-  sandbox doesn't exist, and `FAILED_PRECONDITION` that the sandbox was created
-  before network logging and how to turn it on.
+  kind (`dns`, `tcp` or `udp`, and `unknown` for a kind it doesn't know), the
+  ports, the count, the last time it was seen in the local time zone and the
+  policy (`allowed` or `denied`). It removes control characters from the
+  destinations, because they come from inside the sandbox. It doesn't touch
+  `.firebrick.yml` or `approval`. An empty record prints `No network activity
+  recorded for <sandbox> yet.`, `NOT_FOUND` that the sandbox doesn't exist, and
+  `FAILED_PRECONDITION` that the sandbox was created before network logging and
+  how to turn it on.
 - `approval` - Keeps the `mounts` and `network` settings the user approved per
   workspace in `approved.yml` in the config directory, prints the difference
   with the settings a command is about to apply and asks `Apply these changes?
@@ -352,8 +353,8 @@ C4Component
   the same for every sandbox with the route when it starts. `RemoveSandbox`
   deletes the socket and the record. `SandboxManager::network_activity` returns
   a sandbox's record from `netlog` with its rules from the `firebrick.network`
-  label (`network::rules_of`), or `FAILED_PRECONDITION` when the sandbox has no
-  network log route.
+  label (`network::rules_of`), `FAILED_PRECONDITION` when the sandbox has no
+  network log route, or `INTERNAL` when its record can't be read.
 - `pull` - Turns microsandbox's `PullProgress` events into pull updates: it adds
   up the downloaded bytes per layer, takes the total from the manifest, and
   reports at most one update every 100 ms, one for each layer that finishes and
@@ -475,10 +476,11 @@ C4Component
   `~/.local/state/firebrick/network`) with `write_private`, at most once a
   second while it changes, and a last time when `fbkd` shuts down
   (`NetLogs::close`). A corrupt record file is logged as a warning and replaced
-  by a new, empty record. `NetLogs::record` returns a sandbox's entries.
-  `NetLogs::remove` stops the listener, waits until it can't write anymore, and
-  then deletes the socket and the record, so a removed sandbox's record can't
-  come back.
+  by a new, empty record. `NetLogs::record` returns a sandbox's entries, and
+  fails with a `RecordError` when the record file of a sandbox it doesn't listen
+  for can't be read or is corrupt. `NetLogs::remove` stops the listener, waits
+  until it can't write anymore, and then deletes the socket and the record, so a
+  removed sandbox's record can't come back.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `fbkd` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,

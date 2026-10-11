@@ -318,8 +318,9 @@ where
         Ok(response) => response.into_inner().entries,
         Err(status) if status.code() == Code::FailedPrecondition => bail!(
             "Network logging isn't available for {name}: it was created before fbk \
-             {NETWORK_LOG_VERSION}. Change its network settings, for example with fbk network \
-             allow or fbk network policy, or remove and start it again to turn it on."
+             {NETWORK_LOG_VERSION}. Remove and start it again to turn it on, or change its \
+             network settings, for example with fbk network allow; a command that leaves them as \
+             they are doesn't restart it."
         ),
         Err(status) => return Err(manage::describe_status(&name, status)),
     };
@@ -363,7 +364,7 @@ where
 
     Ok([
         firebrick_utils::strip_control(&entry.destination),
-        activity_kind(entry.kind()).to_string(),
+        activity_kind(entry.kind).to_string(),
         ports.join(","),
         entry.count.to_string(),
         local_time(entry.last_seen, tz)?,
@@ -371,12 +372,14 @@ where
     ])
 }
 
-/// Returns the name of the kind as the table shows it.
-fn activity_kind(kind: NetworkActivityKind) -> &'static str {
-    match kind {
-        NetworkActivityKind::Dns => "dns",
-        NetworkActivityKind::Tcp => "tcp",
-        NetworkActivityKind::Udp => "udp",
+/// Returns the name of the kind as the table shows it. A kind this version doesn't know, for
+/// example one a newer daemon added, is `unknown`, so it can't pass for another kind.
+fn activity_kind(kind: i32) -> &'static str {
+    match NetworkActivityKind::try_from(kind) {
+        Ok(NetworkActivityKind::Dns) => "dns",
+        Ok(NetworkActivityKind::Tcp) => "tcp",
+        Ok(NetworkActivityKind::Udp) => "udp",
+        Ok(NetworkActivityKind::Unspecified) | Err(_) => "unknown",
     }
 }
 
@@ -1057,9 +1060,9 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "Network logging isn't available for dev: it was created before fbk 0.7.0. Change \
-             its network settings, for example with fbk network allow or fbk network policy, or \
-             remove and start it again to turn it on."
+            "Network logging isn't available for dev: it was created before fbk 0.7.0. Remove \
+             and start it again to turn it on, or change its network settings, for example with \
+             fbk network allow; a command that leaves them as they are doesn't restart it."
         );
     }
 
@@ -1083,6 +1086,26 @@ mod tests {
         let result = activity_log(dir.path(), &mut client, &chrono::Utc).await;
 
         fake_daemon::assert_dev_belongs_to_other(result);
+    }
+
+    #[tokio::test]
+    async fn log_shows_kinds_it_does_not_know_as_unknown() {
+        let entries = vec![
+            activity(NetworkActivityKind::Unspecified, "10.0.0.1", 1),
+            NetworkActivity {
+                kind: 99,
+                ..activity(NetworkActivityKind::Dns, "10.0.0.2", 0)
+            },
+        ];
+        let (dir, _, mut client) = log_workspace(Some(entries)).await;
+
+        let output = activity_log(dir.path(), &mut client, &chrono::Utc)
+            .await
+            .unwrap();
+
+        assert!(output.contains("│ 10.0.0.1    │ unknown │"), "{output}");
+        assert!(output.contains("│ 10.0.0.2    │ unknown │"), "{output}");
+        assert!(!output.contains("dns"), "{output}");
     }
 
     #[tokio::test]
@@ -1115,11 +1138,19 @@ mod tests {
         activity_log(dir.path(), &mut client, &chrono::Utc)
             .await
             .unwrap();
-        let _ = activity_log(empty.path(), &mut other_client, &chrono::Utc).await;
+        let error = activity_log(empty.path(), &mut other_client, &chrono::Utc)
+            .await
+            .unwrap_err()
+            .to_string();
 
         assert_eq!(
             fs::read_to_string(dir.path().join(SPEC_FILE_NAME)).unwrap(),
             content
+        );
+        // Without a spec file, it asks for the sandbox `fbk start` would create.
+        assert!(
+            error.starts_with("sandbox firebrick-") && error.ends_with(" doesn't exist"),
+            "{error}"
         );
         assert_eq!(fs::read_dir(empty.path()).unwrap().count(), 0);
     }

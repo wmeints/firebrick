@@ -151,9 +151,9 @@ The logger runs inside the sandbox, and `agent` can use `sudo`, so an agent can
 stop it or report made-up traffic, and `fbk network log` shows what it reported.
 Treat the record as a diagnostic aid, not as proof of what the sandbox did. DNS
 over HTTPS and IPv6 aren't recorded. Sandboxes created by an older version of
-Firebrick have no record until a `fbk network` command that changes their
-settings restarts them, and `fbk network log` tells you so, and custom images
-only have one when they run the logger (see
+Firebrick have no record until you remove and start them again, or a `fbk
+network` command that changes their settings restarts them; `fbk network log`
+tells you so. Custom images only have a record when they run the logger (see
 [Custom images](/docs/custom-images/)).
 
 ## Working offline
