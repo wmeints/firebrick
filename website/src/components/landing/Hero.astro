@@ -1,0 +1,45 @@
+---
+import Button from "../Button.astro";
+import Icon from "../Icon.astro";
+import Terminal from "./Terminal.astro";
+import { docsPage, links } from "../../site";
+
+const quickstart = docsPage("docs/quickstart");
+---
+
+<section
+  aria-labelledby="hero-heading"
+  class="mx-auto grid max-w-landing items-center gap-12 px-4 py-16 sm:px-6 lg:grid-cols-2 lg:py-24"
+>
+  <div class="min-w-0">
+    <p class="inline-block rounded-full border border-brick/50 bg-brick/10 px-3 py-1 font-mono text-xs text-accent-dark">
+      Agentic sandboxing · microVM isolation
+    </p>
+    <h1
+      id="hero-heading"
+      class="mt-6 font-display text-5xl leading-none font-extrabold tracking-tight text-white sm:text-6xl lg:text-7xl"
+    >
+      A fireproof room for your coding agent.
+    </h1>
+    <p class="mt-6 max-w-xl text-lg text-text-on-dark">
+      Firebrick runs local coding agents inside lightweight microVMs powered by
+      microsandbox. Every agent gets its own kernel, its own filesystem and only
+      the access you grant — so you can let it work on its own without handing
+      it your machine.
+    </p>
+    <div class="mt-8 flex flex-wrap gap-3">
+      <Button href={quickstart.href} variant="primary">
+        Get started <Icon name="arrow-right" class="size-4" />
+      </Button>
+      <Button href={links.repository} variant="outline">
+        View on GitHub
+      </Button>
+    </div>
+    <p class="mt-8 font-mono text-xs text-muted-on-dark">
+      Written in Rust &nbsp;/&nbsp; CLI: fbk &nbsp;/&nbsp; Built on microsandbox
+    </p>
+  </div>
+  <div class="min-w-0">
+    <Terminal />
+  </div>
+</section>

@@ -1,6 +1,246 @@
 /* Shared by the Starlight docs and the landing page. */
 @layer base, starlight, theme, components, utilities;
 
+@import "@fontsource/bricolage-grotesque/latin-700.css";
+@import "@fontsource/bricolage-grotesque/latin-800.css";
+@import "@fontsource/ibm-plex-sans/latin-400.css";
+@import "@fontsource/ibm-plex-sans/latin-500.css";
+@import "@fontsource/ibm-plex-sans/latin-600.css";
+@import "@fontsource/ibm-plex-mono/latin-400.css";
+@import "@fontsource/ibm-plex-mono/latin-500.css";
+
 @import "@astrojs/starlight-tailwind";
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
+
+/*
+ * The design tokens, sampled from the mockups in `designs/`. `static` emits
+ * every token as a custom property on `:root`, so the Starlight variables
+ * below can use them as well as the Tailwind utilities (`bg-ink`,
+ * `font-display`, ...).
+ */
+@theme static {
+  --color-ink: #15110e;
+  --color-ink-raised: #1a1512;
+  --color-card: #1c1713;
+  --color-card-border: #2c241e;
+  --color-terminal: #0d0a08;
+  --color-brick: #b33a22;
+  --color-accent-dark: #ee7a55;
+  --color-accent-light: #a3361f;
+  --color-paper: #fbf8f4;
+  --color-sidebar: #f3ece4;
+  --color-sidebar-active: #ebdccd;
+  --color-inline-code: #f0e6dc;
+  --color-callout: #fff3ea;
+  --color-callout-border: #f2c9b6;
+  --color-hairline: #e6dbd0;
+  --color-text-on-dark: #ece4dc;
+  --color-muted-on-dark: #a99d92;
+  --color-text-on-light: #2a221d;
+  --color-muted-on-light: #6b5f56;
+
+  --font-display: "Bricolage Grotesque", var(--font-sans);
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --container-landing: 68.75rem;
+  --container-prose: 47.5rem;
+
+  --radius-button: 6px;
+  --radius-card: 10px;
+}
+
+/* Maps the tokens to Starlight's light theme, the default (see ThemeProvider). */
+:root[data-theme="light"] {
+  --sl-color-white: var(--color-ink);
+  --sl-color-gray-1: var(--color-text-on-light);
+  --sl-color-gray-2: var(--color-text-on-light);
+  --sl-color-gray-3: var(--color-muted-on-light);
+  --sl-color-gray-4: #9a8d82;
+  --sl-color-gray-5: var(--color-hairline);
+  --sl-color-gray-6: var(--color-sidebar);
+  --sl-color-gray-7: var(--color-paper);
+  --sl-color-black: var(--color-paper);
+  --sl-color-accent-low: var(--color-sidebar-active);
+  --sl-color-accent: var(--color-brick);
+  --sl-color-accent-high: var(--color-accent-light);
+  --sl-color-text-accent: var(--color-accent-light);
+  --sl-color-bg: var(--color-paper);
+  --sl-color-bg-sidebar: var(--color-sidebar);
+  --sl-color-bg-nav: var(--color-sidebar);
+  --sl-color-bg-inline-code: var(--color-inline-code);
+  --sl-color-hairline-light: var(--color-hairline);
+  --sl-color-hairline: var(--color-hairline);
+  --sl-color-hairline-shade: var(--color-hairline);
+  --fb-card-bg: #fff;
+}
+
+/* Maps the tokens to Starlight's dark theme. */
+:root[data-theme="dark"] {
+  --sl-color-white: #fff;
+  --sl-color-gray-1: var(--color-text-on-dark);
+  --sl-color-gray-2: var(--color-text-on-dark);
+  --sl-color-gray-3: var(--color-muted-on-dark);
+  --sl-color-gray-4: #7a6e64;
+  --sl-color-gray-5: var(--color-card-border);
+  --sl-color-gray-6: var(--color-card);
+  --sl-color-black: var(--color-ink);
+  --sl-color-accent-low: #3a1f15;
+  --sl-color-accent: var(--color-brick);
+  --sl-color-accent-high: var(--color-accent-dark);
+  --sl-color-text-accent: var(--color-accent-dark);
+  --sl-color-bg: var(--color-ink);
+  --sl-color-bg-sidebar: var(--color-ink-raised);
+  --sl-color-bg-nav: var(--color-ink-raised);
+  --sl-color-bg-inline-code: var(--color-card);
+  --sl-color-hairline-light: var(--color-card-border);
+  --sl-color-hairline: var(--color-card-border);
+  --sl-color-hairline-shade: var(--color-card-border);
+  --color-sidebar-active: #3a1f15;
+  --color-callout: #2a1a12;
+  --color-callout-border: #6b2d1a;
+  --fb-card-bg: var(--color-card);
+}
+
+:root {
+  --sl-font: var(--font-sans);
+  --sl-font-mono: var(--font-mono);
+  --sl-nav-height: 4rem;
+  --sl-content-width: var(--container-prose);
+}
+
+/* The header is ink in both themes; the mobile table of contents follows the theme. */
+header.header {
+  background-color: var(--color-ink);
+  border-bottom-color: var(--color-card-border);
+}
+
+/* Sidebar links in the regular weight, as in the mockups. */
+.sidebar-content .top-level > li > a:not([aria-current="page"]) {
+  font-weight: 400;
+}
+
+/* Headings and the lead paragraph. */
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6),
+h1#_top {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--sl-color-white);
+}
+
+h1#_top {
+  font-size: clamp(2.25rem, 6vw, 3.25rem);
+  margin-top: 0;
+}
+
+.sl-markdown-content :is(h2, h3) {
+  font-weight: 700;
+}
+
+.sl-markdown-content > p:first-child {
+  font-size: var(--sl-text-xl);
+  line-height: 1.6;
+}
+
+/* Links in the accent color, underlined. */
+.sl-markdown-content a:not(:where(.not-content *)) {
+  color: var(--sl-color-text-accent);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+/* Inline code. */
+.sl-markdown-content :not(pre) > code {
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+
+/* Sidebar: the active page in the accent color on a tinted background. */
+.sidebar-content a[aria-current="page"] {
+  background-color: var(--color-sidebar-active);
+  color: var(--sl-color-text-accent);
+  font-weight: 600;
+  border-radius: var(--radius-button);
+}
+
+.sidebar-content a {
+  border-radius: var(--radius-button);
+}
+
+/* Right rail: "On this page" in mono caps. */
+#starlight__on-this-page {
+  font-family: var(--font-mono);
+  font-size: var(--sl-text-2xs);
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-3);
+}
+
+/* Asides: note and tip as the "Only the project is visible" note. */
+.starlight-aside {
+  border: 0;
+  border-radius: var(--radius-card);
+  color: var(--sl-color-gray-2);
+}
+
+.starlight-aside--note,
+.starlight-aside--tip {
+  --sl-color-asides-text-accent: var(--color-brick);
+  background-color: var(--sl-color-bg-sidebar);
+}
+
+/* Caution and danger as the "What you'll need" callout. */
+.starlight-aside--caution,
+.starlight-aside--danger {
+  --sl-color-asides-text-accent: var(--sl-color-text-accent);
+  background-color: var(--color-callout);
+  border: 1px solid var(--color-callout-border);
+}
+
+/* Pagination: two bordered cards with the title in the accent color. */
+.pagination-links a {
+  background-color: var(--fb-card-bg);
+  border-color: var(--sl-color-hairline);
+  border-radius: var(--radius-card);
+  box-shadow: none;
+  font-size: var(--sl-text-sm);
+  color: var(--sl-color-gray-3);
+}
+
+.pagination-links a:hover {
+  border-color: var(--sl-color-text-accent);
+}
+
+.pagination-links a svg {
+  display: none;
+}
+
+.pagination-links .link-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--sl-text-xl);
+  color: var(--sl-color-text-accent);
+}
+
+.pagination-links [rel="prev"] .link-title::before {
+  content: "← ";
+}
+
+.pagination-links [rel="next"] .link-title::after {
+  content: " →";
+}
+
+/* Code blocks: label untitled terminal frames "Terminal" on the left. */
+.expressive-code .frame.is-terminal .header {
+  justify-content: flex-start;
+  padding-inline: 1rem;
+}
+
+.expressive-code .frame.is-terminal .header .title:empty::before {
+  content: "Terminal" / "";
+  font-size: var(--sl-text-2xs);
+  color: var(--color-muted-on-dark);
+}

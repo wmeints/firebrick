@@ -81,7 +81,11 @@ test("every internal link and asset resolves under the base path", () => {
 
   expect(broken).toEqual([]);
   expect(visits.map((visit) => visit.path)).toEqual(
-    expect.arrayContaining([`${base}docs/`, `${base}favicon.svg`]),
+    expect.arrayContaining([
+      `${base}docs/`,
+      `${base}docs/quickstart/`,
+      `${base}favicon.svg`,
+    ]),
   );
 });
 
@@ -109,4 +113,44 @@ test("no page scrolls horizontally on a 375px wide screen", () => {
   const overflowing = visits.filter((visit) => (visit.overflow ?? 0) > 0);
 
   expect(overflowing).toEqual([]);
+});
+
+test("no code block or terminal scrolls horizontally at desktop width", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const pages = visits.filter((visit) => visit.overflow !== undefined);
+  const scrolling: string[] = [];
+  for (const { path } of pages) {
+    await page.goto(path);
+    const count = await page
+      .locator("pre")
+      .evaluateAll(
+        (blocks) =>
+          blocks.filter((block) => block.scrollWidth > block.clientWidth)
+            .length,
+      );
+    if (count > 0) scrolling.push(path);
+  }
+
+  expect(pages.length).toBeGreaterThan(1);
+  expect(scrolling).toEqual([]);
+});
+
+test("the docs default to the light theme", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+
+  await page.goto(`${base}docs/`);
+
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+});
+
+test("the docs keep a theme the reader chose", async ({ page }) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("starlight-theme", "dark"),
+  );
+
+  await page.goto(`${base}docs/`);
+
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });

@@ -111,6 +111,15 @@ the root too. See
 [ADR 0027](decisions/0027-build-the-website-with-astro-starlight-and-tailwind.md)
 and [ADR 0034](decisions/0034-serve-the-website-from-firebrick-sandbox-dev.md).
 
+The landing page at `/` (`website/src/pages/index.astro`) is built from the
+sections in `website/src/components/landing/`. The landing page and the docs
+share the design tokens and self-hosted fonts in
+`website/src/styles/global.css`, and the docs are themed through the Starlight
+overrides in `website/src/components/starlight/`. The landing page links to docs
+pages through `docsPage` in `website/src/site.ts`, which fails the build for a
+page that doesn't exist. See
+[ADR 0035](decisions/0035-theme-the-website-with-shared-tokens-and-self-hosted-fonts.md).
+
 `.github/workflows/website.yaml` publishes the site to GitHub Pages on pushes to
 `main` that change `website/`, `mise.toml` or the workflow, and on manual runs
 from `main`. Its `check` job uploads `website/dist` as a Pages artifact once the

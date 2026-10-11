@@ -1,24 +1,36 @@
 ---
 import "../styles/global.css";
-
-const withBase = (path: string) =>
-  `${import.meta.env.BASE_URL}/${path}`.replace(/\/+/g, "/");
+import "../styles/landing.css";
+import CallToAction from "../components/landing/CallToAction.astro";
+import Documentation from "../components/landing/Documentation.astro";
+import Hero from "../components/landing/Hero.astro";
+import HowItWorks from "../components/landing/HowItWorks.astro";
+import SiteFooter from "../components/landing/SiteFooter.astro";
+import SiteHeader from "../components/landing/SiteHeader.astro";
+import WhyFirebrick from "../components/landing/WhyFirebrick.astro";
+import { withBase } from "../site";
 ---
 
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Firebrick</title>
+    <title>Firebrick — a microVM sandbox for coding agents</title>
+    <meta
+      name="description"
+      content="Firebrick runs local coding agents inside lightweight microVMs, so you can let them work without handing them your machine."
+    />
     <link rel="icon" type="image/svg+xml" href={withBase("favicon.svg")} />
   </head>
-  <body class="flex min-h-screen items-center justify-center p-4">
-    <main class="max-w-xl text-center">
-      <h1 class="text-4xl font-bold">Firebrick</h1>
-      <p class="mt-4">A microVM sandbox for coding agents.</p>
-      <a class="mt-6 inline-block underline" href={withBase("docs/")}>
-        Read the docs
-      </a>
+  <body class="bg-ink font-sans text-text-on-dark antialiased [&_code]:rounded [&_code]:bg-white/10 [&_code]:px-1 [&_code]:font-mono [&_code]:text-white">
+    <SiteHeader />
+    <main>
+      <Hero />
+      <WhyFirebrick />
+      <HowItWorks />
+      <Documentation />
+      <CallToAction />
     </main>
+    <SiteFooter />
   </body>
 </html>

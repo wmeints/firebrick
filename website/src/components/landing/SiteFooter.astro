@@ -1,0 +1,67 @@
+---
+import Logo from "../Logo.astro";
+import { docsPage, links } from "../../site";
+
+const columns = [
+  {
+    heading: "Documentation",
+    links: [
+      { label: "Introduction", href: docsPage("docs").href },
+      { label: "Quickstart", href: docsPage("docs/quickstart").href },
+      {
+        label: "Command-line reference",
+        href: docsPage("docs/command-line-reference").href,
+      },
+    ],
+  },
+  {
+    heading: "Project",
+    links: [
+      { label: "GitHub repository", href: links.repository },
+      { label: "Releases", href: links.releases },
+      { label: "Report an issue", href: links.newIssue },
+    ],
+  },
+];
+---
+
+<footer class="border-t border-card-border">
+  <div class="mx-auto max-w-landing px-4 py-12 sm:px-6">
+    <div class="flex flex-col justify-between gap-10 sm:flex-row">
+      <div>
+        <p class="flex items-center gap-2 font-display text-lg font-extrabold text-white">
+          <Logo />
+          firebrick
+        </p>
+        <p class="mt-3 text-sm text-muted-on-dark">
+          Agentic sandboxing for coding agents.
+        </p>
+      </div>
+      <div class="flex gap-16">
+        {columns.map((column) => (
+          <nav aria-label={column.heading}>
+            <h2 class="text-sm font-semibold text-white">{column.heading}</h2>
+            <ul class="mt-3 space-y-2 text-sm">
+              {column.links.map((link) => (
+                <li>
+                  <a
+                    href={link.href}
+                    class="text-muted-on-dark hover:text-white"
+                  >
+                    {link.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        ))}
+      </div>
+    </div>
+    <p class="mt-12 text-xs text-muted-on-dark">
+      Firebrick ·{" "}
+      <a href={links.license} class="underline hover:text-white">
+        MIT License
+      </a>
+    </p>
+  </div>
+</footer>

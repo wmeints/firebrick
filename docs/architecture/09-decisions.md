@@ -34,3 +34,4 @@
 - [ADR 0032 - Publish the website on GitHub Pages](decisions/0032-publish-the-website-on-github-pages.md)
 - [ADR 0033 - Configure a system git credential helper for GitHub tokens](decisions/0033-configure-a-system-git-credential-helper-for-github-tokens.md)
 - [ADR 0034 - Serve the website from firebrick-sandbox.dev](decisions/0034-serve-the-website-from-firebrick-sandbox-dev.md)
+- [ADR 0035 - Theme the website with shared tokens and self-hosted fonts](decisions/0035-theme-the-website-with-shared-tokens-and-self-hosted-fonts.md)

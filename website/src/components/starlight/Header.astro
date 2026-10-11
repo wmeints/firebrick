@@ -1,0 +1,134 @@
+---
+import Search from "@astrojs/starlight/components/Search.astro";
+import ThemeSelect from "@astrojs/starlight/components/ThemeSelect.astro";
+import Icon from "../Icon.astro";
+import Logo from "../Logo.astro";
+import { links, withBase } from "../../site";
+---
+
+<div class="fb-header">
+  <a href={withBase("docs/")} class="fb-title">
+    <Logo />
+    <span translate="no">firebrick</span>
+    <span class="fb-pill">docs</span>
+  </a>
+  <div class="fb-search print:hidden">
+    <Search />
+  </div>
+  <nav class="fb-nav print:hidden" aria-label="Site">
+    <a href={withBase("")}>Home</a>
+    <a href={withBase("docs/")} class="fb-current">
+      Docs
+    </a>
+    <a href={links.repository} class="fb-github">
+      <Icon name="git-branch" class="fb-icon" />
+      GitHub
+    </a>
+    <ThemeSelect />
+  </nav>
+</div>
+
+<style>
+  .fb-header {
+    display: flex;
+    gap: var(--sl-nav-gap);
+    align-items: center;
+    justify-content: space-between;
+    height: 100%;
+    color: var(--color-text-on-dark);
+  }
+
+  .fb-title {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    font-family: var(--font-display);
+    font-size: var(--sl-text-xl);
+    font-weight: 800;
+    color: #fff;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .fb-pill {
+    border: 1px solid var(--color-card-border);
+    border-radius: 999px;
+    padding: 0.05rem 0.6rem;
+    font-family: var(--font-mono);
+    font-size: var(--sl-text-2xs);
+    font-weight: 400;
+    color: var(--color-accent-dark);
+  }
+
+  .fb-search {
+    display: flex;
+    flex: 1;
+    justify-content: center;
+  }
+
+  /* Starlight's search button, as the dark search box of the mockup. */
+  .fb-search :global(button[data-open-modal]) {
+    border-color: var(--color-card-border);
+    border-radius: var(--radius-button);
+    background-color: var(--color-card);
+    color: var(--color-muted-on-dark);
+  }
+
+  .fb-search :global(button[data-open-modal]:hover) {
+    border-color: var(--color-muted-on-dark);
+    color: #fff;
+  }
+
+  .fb-nav {
+    display: none;
+    gap: 1.5rem;
+    align-items: center;
+    font-size: var(--sl-text-sm);
+  }
+
+  .fb-nav a {
+    color: var(--color-text-on-dark);
+    text-decoration: none;
+  }
+
+  .fb-nav a:hover,
+  .fb-nav .fb-current {
+    color: #fff;
+  }
+
+  .fb-github {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    border: 1px solid var(--color-card-border);
+    border-radius: var(--radius-button);
+    padding: 0.45rem 0.85rem;
+  }
+
+  .fb-icon {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  .fb-nav :global(starlight-theme-select) {
+    --sl-color-gray-1: var(--color-text-on-dark);
+    --sl-color-gray-2: var(--color-text-on-dark);
+    --sl-color-white: #fff;
+    color: var(--color-text-on-dark);
+  }
+
+  .fb-nav :global(option) {
+    background-color: var(--color-ink);
+  }
+
+  @media (min-width: 50rem) {
+    .fb-search :global(button[data-open-modal]) {
+      width: 100%;
+      max-width: 26rem;
+    }
+
+    .fb-nav {
+      display: flex;
+    }
+  }
+</style>
