@@ -166,6 +166,12 @@ build on it when `Cargo.lock` has a newer version.
 - `RestoreBuilder` also restores a snapshot, but has no setters for init,
   labels, env, workdir or secrets.
 - `Sandbox::remove()` doesn't remove the sandbox's snapshots.
+- `Snapshot::remove` takes an exclusive `flock` on the snapshot's entry in
+  `<group>/.msb-leases/` and fails right away with
+  `MicrosandboxError::Custom("snapshot is in use by an active operation: ..")`
+  while any reader holds it, such as a listing or a create from the snapshot in
+  another task or process (`$M/backend/local/snapshot/store.rs`). It never
+  waits, so `remove_snapshot` in `sandboxes.rs` tries again.
 
 **Secrets**
 

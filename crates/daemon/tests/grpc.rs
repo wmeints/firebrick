@@ -2105,6 +2105,70 @@ async fn update_network_of_running_sandbox_keeps_its_disk_and_settings() {
 }
 
 #[tokio::test]
+async fn update_network_removes_its_snapshot_after_a_reader_releases_it() {
+    let name: &str = &sandbox_name("update-leased");
+    remove_sandbox_and_snapshots(name).await;
+
+    let daemon = TestDaemon::start("update-leased").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, name).await;
+    let reader = hold_snapshot_leases(snapshot_group(name), Duration::from_secs(3));
+
+    let updated = update_network(&mut client, name, allow_policy(true, &["example.com"])).await;
+    let held = reader.join();
+    let snapshots = leftover_snapshots(name).await;
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
+
+    assert!(held.is_ok(), "the reader failed to hold the snapshot");
+    assert!(matches!(updated, Ok(true)), "{updated:?}");
+    assert!(snapshots.is_empty(), "{snapshots:?}");
+}
+
+/// Returns the directory microsandbox keeps the snapshots of the sandbox in.
+fn snapshot_group(name: &str) -> PathBuf {
+    microsandbox::config::config()
+        .unwrap()
+        .home()
+        .join("snapshots")
+        .join(name)
+}
+
+/// Waits in a thread until the snapshot group holds a snapshot, then holds a reader lease on
+/// each of its entries for `hold`, like a concurrent microsandbox operation that reads it.
+fn hold_snapshot_leases(group: PathBuf, hold: Duration) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + STATUS_TIMEOUT;
+
+        while !has_snapshot(&group) {
+            assert!(std::time::Instant::now() < deadline, "no snapshot appeared");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let leases: Vec<std::fs::File> = std::fs::read_dir(group.join(".msb-leases"))
+            .unwrap()
+            .map(|entry| std::fs::File::open(entry.unwrap().path()).unwrap())
+            .collect();
+
+        for lease in &leases {
+            lease.lock_shared().unwrap();
+        }
+
+        std::thread::sleep(hold);
+    })
+}
+
+/// Returns whether the snapshot group holds a snapshot.
+fn has_snapshot(group: &Path) -> bool {
+    std::fs::read_dir(group).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().starts_with("snap_"))
+    })
+}
+
+#[tokio::test]
 async fn update_network_of_stopped_sandbox_keeps_it_stopped() {
     let name: &str = &sandbox_name("update-stopped");
     remove_sandbox_and_snapshots(name).await;
