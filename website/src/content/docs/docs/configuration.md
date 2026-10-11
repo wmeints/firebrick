@@ -45,8 +45,8 @@ existing file; `fbk init --force` overwrites it.
 | `mounts[].readonly` | Mount the directory read-only.                                          | `false`                                     |
 
 When you set `resources`, set both `cpu` and `memory`. The `network` and `ports`
-fields are described in [Networking](/firebrick/docs/networking/), and `image`
-and `init` in [Custom images](/firebrick/docs/custom-images/).
+fields are described in [Networking](/docs/networking/), and `image` and `init`
+in [Custom images](/docs/custom-images/).
 
 Firebrick rejects fields it doesn't know, so a typo such as `memroy` is an error
 rather than a setting that's silently ignored. Check the file with `fbk
@@ -92,7 +92,7 @@ fbk start
 Docker data; your project files stay on the host. There are two exceptions: `fbk
 start` applies `ports` to an existing sandbox, also while it runs, and `fbk
 network` changes the network rules without removing the sandbox. See
-[Networking](/firebrick/docs/networking/).
+[Networking](/docs/networking/).
 
 ## Extra mounts
 
@@ -142,13 +142,13 @@ until you recreate them.
 Firebrick follows the XDG base directories. When an `XDG_*` variable isn't set,
 it uses the default under your home directory:
 
-| Path                                                            | Contents                                                                                                         |
-| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `$XDG_RUNTIME_DIR/fbkd.sock`                                    | The socket the CLI and daemon talk over; `fbkd.sock` in the temp directory when `XDG_RUNTIME_DIR` isn't set.     |
-| `$XDG_STATE_HOME/firebrick/` (`~/.local/state/firebrick`)       | The daemon's logs, one `fbkd.log.<date>` file per day.                                                           |
-| `~/.local/state/firebrick/msb`                                  | Firebrick's microsandbox home: the runtime, images and sandbox disks. `MSB_HOME` overrides it.                   |
-| `$XDG_DATA_HOME/firebrick/ssh` (`~/.local/share/firebrick/ssh`) | The SSH keys, `known_hosts` and the generated SSH config. See [Editor support](/firebrick/docs/editor-support/). |
-| `~/.local/share/firebrick/secrets.yml`                          | The secrets. See [Secrets](/firebrick/docs/secrets/).                                                            |
+| Path                                                            | Contents                                                                                                     |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `$XDG_RUNTIME_DIR/fbkd.sock`                                    | The socket the CLI and daemon talk over; `fbkd.sock` in the temp directory when `XDG_RUNTIME_DIR` isn't set. |
+| `$XDG_STATE_HOME/firebrick/` (`~/.local/state/firebrick`)       | The daemon's logs, one `fbkd.log.<date>` file per day.                                                       |
+| `~/.local/state/firebrick/msb`                                  | Firebrick's microsandbox home: the runtime, images and sandbox disks. `MSB_HOME` overrides it.               |
+| `$XDG_DATA_HOME/firebrick/ssh` (`~/.local/share/firebrick/ssh`) | The SSH keys, `known_hosts` and the generated SSH config. See [Editor support](/docs/editor-support/).       |
+| `~/.local/share/firebrick/secrets.yml`                          | The secrets. See [Secrets](/docs/secrets/).                                                                  |
 
 The daemon logs at the `info` level. Set `RUST_LOG` in the environment that
 starts `fbkd` to change it, for example `RUST_LOG=debug`. The CLI starts `fbkd`

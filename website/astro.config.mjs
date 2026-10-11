@@ -4,11 +4,9 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "astro/config";
 import starlightLinksValidator from "starlight-links-validator";
 
-// The site is served from the repository's GitHub Pages URL, so every link and
-// asset path must include `base`.
+// GitHub Pages serves the site at the root of its custom domain.
 export default defineConfig({
-  site: "https://wmeints.github.io",
-  base: "/firebrick",
+  site: "https://firebrick-sandbox.dev",
   integrations: [
     starlight({
       title: "Firebrick",

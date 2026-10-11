@@ -45,7 +45,7 @@ name such as `api.example.com`, or `*.example.com` for the subdomains of
 than adding to them.
 
 When the sandbox's network rules are enforced, a secret's allowed hosts must be
-allowed by those rules too. See [Networking](/firebrick/docs/networking/).
+allowed by those rules too. See [Networking](/docs/networking/).
 
 ## Global and sandbox secrets
 

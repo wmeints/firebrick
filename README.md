@@ -17,7 +17,7 @@ Firebrick supports two ways of working:
 > Firebrick is early in development.
 
 The documentation lives at
-**[wmeints.github.io/firebrick](https://wmeints.github.io/firebrick/docs/)**.
+**[firebrick-sandbox.dev](https://firebrick-sandbox.dev/docs/)**.
 
 ## Requirements
 
@@ -25,8 +25,8 @@ The documentation lives at
 - On Linux, glibc 2.35 or newer for the release binaries.
 
 Windows isn't supported. See
-[Installation](https://wmeints.github.io/firebrick/docs/installation/) to
-install the `fbk` and `fbkd` binaries from a release or from source.
+[Installation](https://firebrick-sandbox.dev/docs/installation/) to install the
+`fbk` and `fbkd` binaries from a release or from source.
 
 ## Quickstart
 
@@ -42,9 +42,8 @@ fbk run bash
 
 Connect your editor over SSH to the host name `fbk start` prints, such as
 `my-project.fbk`. When you're done, `fbk stop` stops the sandbox and `fbk rm`
-removes it. The
-[Quickstart](https://wmeints.github.io/firebrick/docs/quickstart/) walks through
-these steps.
+removes it. The [Quickstart](https://firebrick-sandbox.dev/docs/quickstart/)
+walks through these steps.
 
 ## Development
 
@@ -107,20 +106,20 @@ The website lives in [`website/`](website/), an Astro site with Starlight for
 the docs and Tailwind for styling. Run its commands with pnpm from the
 repository root:
 
-| Command                                        | Description                                             |
-| ---------------------------------------------- | ------------------------------------------------------- |
-| `pnpm --dir website install --frozen-lockfile` | Install the dependencies.                               |
-| `pnpm --dir website run dev`                   | Preview the site on `http://localhost:4321/firebrick/`. |
-| `pnpm --dir website run build`                 | Build the static site into `website/dist`.              |
-| `pnpm --dir website run lint`                  | Run ESLint.                                             |
-| `pnpm --dir website run check`                 | Type-check the site.                                    |
-| `pnpm --dir website run format`                | Format the code with Prettier.                          |
-| `pnpm --dir website run test`                  | Run the unit tests.                                     |
-| `pnpm --dir website run test:e2e`              | Run the end-to-end tests against the built site.        |
+| Command                                        | Description                                      |
+| ---------------------------------------------- | ------------------------------------------------ |
+| `pnpm --dir website install --frozen-lockfile` | Install the dependencies.                        |
+| `pnpm --dir website run dev`                   | Preview the site on `http://localhost:4321/`.    |
+| `pnpm --dir website run build`                 | Build the static site into `website/dist`.       |
+| `pnpm --dir website run lint`                  | Run ESLint.                                      |
+| `pnpm --dir website run check`                 | Type-check the site.                             |
+| `pnpm --dir website run format`                | Format the code with Prettier.                   |
+| `pnpm --dir website run test`                  | Run the unit tests.                              |
+| `pnpm --dir website run test:e2e`              | Run the end-to-end tests against the built site. |
 
 ## Documentation
 
-- [User documentation](https://wmeints.github.io/firebrick/docs/) - installing,
+- [User documentation](https://firebrick-sandbox.dev/docs/) - installing,
   configuring and using Firebrick. Its source is in
   [`website/src/content/docs/docs/`](website/src/content/docs/docs/).
 - [Architecture](docs/architecture/01-introduction-and-goals.md) - the arc42

@@ -35,7 +35,7 @@ sandbox starts it.
 
 The sandbox's SSH server doesn't support agent forwarding (`ssh -A`), so your
 SSH keys stay on the host. Use git over HTTPS with a secret instead; see
-[Git over HTTPS](/firebrick/docs/secrets/#git-over-https).
+[Git over HTTPS](/docs/secrets/#git-over-https).
 
 ## VS Code, VS Code Insiders, Cursor and VSCodium
 
@@ -102,4 +102,4 @@ them. Set up the connection by hand:
    `/workspaces/my-app`.
 
 The IDE backend runs in the sandbox, so give the sandbox enough memory in
-`resources.memory`; see [Configuration](/firebrick/docs/configuration/).
+`resources.memory`; see [Configuration](/docs/configuration/).

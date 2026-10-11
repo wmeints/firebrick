@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-const base = "/firebrick/";
+const base = "/";
 
 /** What the crawl found on one page or asset. */
 interface Visit {

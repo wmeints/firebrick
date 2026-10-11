@@ -55,7 +55,7 @@ Keep in mind that:
   authority that the sandbox trusts. Tools that pin certificates or bring their
   own CA store fail. HTTP/3 is blocked, so clients fall back to HTTP/2 or 1.1.
 - A secret's allowed hosts must be allowed by the network rules too. See
-  [Secrets](/firebrick/docs/secrets/).
+  [Secrets](/docs/secrets/).
 - `mise install` downloads its tools when the sandbox starts, so allow the hosts
   it needs, or set `mise: false`.
 
@@ -198,7 +198,7 @@ minutes without connections, or when the sandbox stops.
 SSH doesn't use the sandbox's network either. The generated SSH config tunnels
 each connection through `fbk` and the daemon's socket to the SSH server in the
 sandbox; no sshd port is published on the host. See
-[Editor support](/firebrick/docs/editor-support/).
+[Editor support](/docs/editor-support/).
 
 ## IPv6
 

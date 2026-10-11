@@ -39,8 +39,7 @@ For the website, run these from the repository root:
 - `pnpm --dir website install --frozen-lockfile` - installs the dependencies.
   Dependencies may not run install scripts unless `allowBuilds` in
   `website/pnpm-workspace.yaml` approves them.
-- `pnpm --dir website run dev` - previews the site on
-  `http://localhost:4321/firebrick/`.
+- `pnpm --dir website run dev` - previews the site on `http://localhost:4321/`.
 - `pnpm --dir website run build` - builds the static site into `website/dist`
   and fails on broken links in the docs.
 - `pnpm --dir website run format` - formats the code with Prettier;
@@ -102,9 +101,9 @@ The website follows the same rules where they apply:
   `eslint-disable`, `@ts-ignore`, `@ts-expect-error` or `prettier-ignore`
   without a `// HUMAN-APPROVED: <reason>` comment directly above (`<!--
   HUMAN-APPROVED: <reason> -->` in HTML markup).
-- The site is static and served under the `base` path in `astro.config.mjs`.
-  Build links and asset paths from `import.meta.env.BASE_URL`, never as
-  hand-written root-relative paths.
+- The site is static and served at the root of `https://firebrick-sandbox.dev`.
+  Build links and asset paths in `.astro` files from `import.meta.env.BASE_URL`,
+  so they keep working if the site moves under a `base` path again.
 - Make no third-party requests: self-host fonts and assets.
 - Ship no client JavaScript where HTML and CSS do the job.
 - Customize Starlight through `customCss` and component overrides; don't copy

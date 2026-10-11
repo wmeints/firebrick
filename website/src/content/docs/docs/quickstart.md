@@ -5,7 +5,7 @@ description: Go from the installed binaries to an agent running in a sandbox.
 
 This page takes you from the installed `fbk` and `fbkd` binaries to a coding
 agent running in a sandbox. Install them first; see
-[Installation](/firebrick/docs/installation/).
+[Installation](/docs/installation/).
 
 ## 1. Start a sandbox
 
@@ -27,7 +27,7 @@ Open in Zed: zed ssh://my-project.fbk/workspaces/my-project
 
 The project directory is mounted in the sandbox at `/workspaces/my-project`.
 Without a `.firebrick.yml`, the sandbox uses the defaults; see
-[Configuration](/firebrick/docs/configuration/) to change them.
+[Configuration](/docs/configuration/) to change them.
 
 ## 2. Give the agent its API key
 
@@ -47,7 +47,7 @@ fbk stop
 fbk start
 ```
 
-See [Secrets](/firebrick/docs/secrets/) for other tokens and hosts.
+See [Secrets](/docs/secrets/) for other tokens and hosts.
 
 ## 3. Run the agent
 
@@ -76,8 +76,7 @@ You can also connect with SSH, or point your editor at the same host name:
 ssh my-project.fbk
 ```
 
-See [Editor support](/firebrick/docs/editor-support/) for VS Code, Zed and
-JetBrains.
+See [Editor support](/docs/editor-support/) for VS Code, Zed and JetBrains.
 
 ## 5. Stop and remove the sandbox
 
