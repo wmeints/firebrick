@@ -94,6 +94,10 @@ start` applies `ports` to an existing sandbox, also while it runs, and `fbk
 network` changes the network rules without removing the sandbox. See
 [Networking](/docs/networking/).
 
+The agent can edit `.firebrick.yml` like any other file in the workspace, so
+review changes you didn't make before you apply them. See
+[What the agent can change](/docs/#what-the-agent-can-change).
+
 ## Extra mounts
 
 The project directory is mounted read/write at `/workspaces/<leaf>`, where
