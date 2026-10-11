@@ -38,11 +38,17 @@ pub async fn open(
 
 /// Prepares the SSH server of a sandbox for a tunnel.
 async fn ssh_server(sb: &Sandbox) -> Result<SshServer, Status> {
+    let (host_key, client_key) = ssh::host_key_path()
+        .and_then(|host_key| Ok((host_key, ssh::client_public_key_path()?)))
+        .map_err(|err| {
+            tracing::error!(error = ?err, "failed to locate the SSH keys");
+            Status::internal("failed to locate the SSH keys")
+        })?;
     // The proxy process owns the connection, so it decides when the session ends.
     sb.ssh()
         .server_with(|opts| {
-            opts.host_key_path(ssh::host_key_path())
-                .authorized_keys_path(ssh::client_public_key_path())
+            opts.host_key_path(host_key)
+                .authorized_keys_path(client_key)
                 .disable_inactivity_timeout()
         })
         .await

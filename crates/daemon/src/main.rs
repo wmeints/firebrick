@@ -1,6 +1,6 @@
 use std::fs::DirBuilder;
 use std::os::unix::fs::DirBuilderExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -11,14 +11,18 @@ use tracing_subscriber::prelude::*;
 use firebrick_daemon::secrets::{self, SecretStore};
 use firebrick_daemon::{runtime, sandboxes, server, ssh};
 
-/// Picks the microsandbox home, then runs the daemon on a Tokio runtime.
+/// Picks the data, log and microsandbox directories, then runs the daemon on a Tokio runtime.
 fn main() -> Result<()> {
+    // Fail instead of falling back to the shared temp dir, where another user could create
+    // the directories first and read or plant the secrets, SSH keys and SSH config.
+    let secrets_path = firebrick_utils::secrets_path().context(firebrick_utils::NO_DATA_DIR)?;
+    let log_dir = firebrick_utils::log_dir().context(firebrick_utils::NO_LOG_DIR)?;
     use_firebrick_msb_home()?;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("failed to start the Tokio runtime")?
-        .block_on(run())
+        .block_on(run(&log_dir, secrets_path))
 }
 
 /// Points microsandbox at firebrick's own home when `MSB_HOME` is unset or empty, so `fbkd`
@@ -51,10 +55,10 @@ fn use_firebrick_msb_home() -> Result<()> {
     Ok(())
 }
 
-/// Sets up logging and runs the daemon on its unix socket until shutdown.
-async fn run() -> Result<()> {
-    let log_dir = firebrick_utils::log_dir();
-    let _log_guard = init_logging(&log_dir)?;
+/// Sets up logging in `log_dir` and runs the daemon on its unix socket until shutdown, with the
+/// secrets stored in `secrets_path`.
+async fn run(log_dir: &Path, secrets_path: PathBuf) -> Result<()> {
+    let _log_guard = init_logging(log_dir)?;
 
     // Check the socket before touching the runtime, so a second daemon can't replace the
     // runtime under the one that is already serving.
@@ -77,11 +81,7 @@ async fn run() -> Result<()> {
         path = socket_path.to_str().unwrap(),
         "listening on unix socket"
     );
-    Ok(server::run(
-        &socket_path,
-        SecretStore::new(firebrick_utils::secrets_path()),
-    )
-    .await?)
+    Ok(server::run(&socket_path, SecretStore::new(secrets_path)).await?)
 }
 
 /// Logs to stdout and to a daily log file in `log_dir`. Logs are written until the returned guard

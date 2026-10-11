@@ -595,7 +595,7 @@ fn restrict_to_owner(socket_path: &Path) -> Result<u32, ServerError> {
 /// A rejected connection is closed when the caller drops it.
 fn accept(conn: &UnixStream, daemon_uid: u32) -> bool {
     match conn.peer_cred() {
-        Ok(peer) if is_authorized(peer.uid(), daemon_uid) => true,
+        Ok(peer) if firebrick_utils::is_trusted_peer(peer.uid(), daemon_uid) => true,
         Ok(peer) => {
             tracing::warn!(
                 peer_uid = peer.uid(),
@@ -609,12 +609,6 @@ fn accept(conn: &UnixStream, daemon_uid: u32) -> bool {
             false
         }
     }
-}
-
-/// Returns whether a peer may use the daemon: only the daemon's own user and root may. Root is
-/// allowed because it can bypass the check anyway, for example by reading the daemon's memory.
-fn is_authorized(peer_uid: u32, daemon_uid: u32) -> bool {
-    peer_uid == daemon_uid || peer_uid == 0
 }
 
 /// Completes when SIGINT or SIGTERM is received.
@@ -1120,19 +1114,6 @@ mod tests {
         tx.send(()).unwrap();
         handle.await.unwrap().unwrap();
         assert!(result.is_ok(), "request failed: {result:?}");
-    }
-
-    #[test]
-    fn is_authorized_accepts_the_daemon_user_and_root_only() {
-        let cases = [(1000, true), (0, true), (1001, false), (u32::MAX, false)];
-
-        for (peer_uid, expected) in cases {
-            assert_eq!(
-                is_authorized(peer_uid, 1000),
-                expected,
-                "peer uid {peer_uid}"
-            );
-        }
     }
 
     #[tokio::test]
