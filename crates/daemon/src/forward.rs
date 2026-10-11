@@ -694,11 +694,30 @@ mod tests {
         async fn forget(&self, _sandbox: &str) {}
     }
 
-    /// Returns a port that nothing listens on at the moment.
+    /// Returns a port that nothing listens on at the moment. A port picked later, also by a
+    /// server, may be the same one, so pick a test's ports with one [`free_ports`] call and
+    /// start its servers first.
     async fn free_port() -> u16 {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let [port] = free_ports().await;
 
-        listener.local_addr().unwrap().port()
+        port
+    }
+
+    /// Returns `N` distinct ports that nothing listens on at the moment. The listeners stay
+    /// bound until every port is picked, so the system can't hand out a port twice.
+    async fn free_ports<const N: usize>() -> [u16; N] {
+        let mut listeners = Vec::with_capacity(N);
+
+        for _ in 0..N {
+            listeners.push(TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap());
+        }
+
+        let ports: Vec<u16> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap().port())
+            .collect();
+
+        ports.try_into().unwrap()
     }
 
     fn mapping(host: u16, guest: u16) -> PortMapping {
@@ -765,7 +784,8 @@ mod tests {
     #[tokio::test]
     async fn forwards_bytes_both_ways() {
         let forwards = Forwards::new(LocalConnector);
-        let (host, guest) = (free_port().await, upper_case_server().await);
+        let guest = upper_case_server().await;
+        let host = free_port().await;
 
         let report = forwards.apply("dev", &[mapping(host, guest)]).await;
         let mut stream = connect(host).await.unwrap();
@@ -779,7 +799,7 @@ mod tests {
     async fn apply_opens_added_closes_removed_and_keeps_unchanged_ports() {
         let forwards = Forwards::new(LocalConnector);
         let guest = upper_case_server().await;
-        let (kept, removed, added) = (free_port().await, free_port().await, free_port().await);
+        let [kept, removed, added] = free_ports().await;
 
         forwards
             .apply("dev", &[mapping(kept, guest), mapping(removed, guest)])
@@ -805,8 +825,8 @@ mod tests {
     #[tokio::test]
     async fn apply_moves_a_host_port_to_another_guest_port() {
         let forwards = Forwards::new(LocalConnector);
-        let host = free_port().await;
-        let (old_guest, new_guest) = (free_port().await, upper_case_server().await);
+        let new_guest = upper_case_server().await;
+        let [host, old_guest] = free_ports().await;
 
         forwards.apply("dev", &[mapping(host, old_guest)]).await;
         let report = forwards.apply("dev", &[mapping(host, new_guest)]).await;
@@ -822,7 +842,8 @@ mod tests {
         let forwards = Forwards::new(LocalConnector);
         let busy = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let busy_port = busy.local_addr().unwrap().port();
-        let (free, guest) = (free_port().await, upper_case_server().await);
+        let guest = upper_case_server().await;
+        let free = free_port().await;
 
         let report = forwards
             .apply("dev", &[mapping(busy_port, guest), mapping(free, guest)])
@@ -850,7 +871,8 @@ mod tests {
     #[tokio::test]
     async fn host_port_with_open_connections_of_a_closed_forward_can_be_reopened() {
         let forwards = Forwards::new(LocalConnector);
-        let (host, guest) = (free_port().await, upper_case_server().await);
+        let guest = upper_case_server().await;
+        let host = free_port().await;
         forwards.apply("dev", &[mapping(host, guest)]).await;
         let mut stream = connect(host).await.unwrap();
         round_trip(&mut stream, "hello").await;
@@ -865,7 +887,8 @@ mod tests {
     #[tokio::test]
     async fn host_port_of_another_sandbox_is_reported() {
         let forwards = Forwards::new(LocalConnector);
-        let (host, guest) = (free_port().await, upper_case_server().await);
+        let guest = upper_case_server().await;
+        let host = free_port().await;
 
         forwards.apply("first", &[mapping(host, guest)]).await;
         let report = forwards.apply("second", &[mapping(host, guest)]).await;
@@ -891,7 +914,7 @@ mod tests {
     #[tokio::test]
     async fn connection_without_guest_listener_closes_and_listener_stays_up() {
         let forwards = Forwards::new(LocalConnector);
-        let (host, guest) = (free_port().await, free_port().await);
+        let [host, guest] = free_ports().await;
         forwards.apply("dev", &[mapping(host, guest)]).await;
 
         let mut stream = connect(host).await.unwrap();
@@ -917,7 +940,8 @@ mod tests {
     #[tokio::test]
     async fn close_frees_the_host_ports() {
         let forwards = Forwards::new(LocalConnector);
-        let (host, guest) = (free_port().await, upper_case_server().await);
+        let guest = upper_case_server().await;
+        let host = free_port().await;
         forwards.apply("dev", &[mapping(host, guest)]).await;
 
         forwards.close("dev").await;
@@ -1091,7 +1115,7 @@ mod tests {
     #[tokio::test]
     async fn callback_forward_uses_the_configured_forward_of_the_port() {
         let configured = Arc::new(Forwards::new(RefusingConnector));
-        let (same, other) = (free_port().await, free_port().await);
+        let [same, other] = free_ports().await;
         configured
             .apply("dev", &[mapping(same, same), mapping(other, 1)])
             .await;
@@ -1119,7 +1143,8 @@ mod tests {
     #[tokio::test]
     async fn dropping_the_forwards_closes_them() {
         let forwards = Forwards::new(LocalConnector);
-        let (host, guest) = (free_port().await, upper_case_server().await);
+        let guest = upper_case_server().await;
+        let host = free_port().await;
         forwards.apply("dev", &[mapping(host, guest)]).await;
 
         drop(forwards);

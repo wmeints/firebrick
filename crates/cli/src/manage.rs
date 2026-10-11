@@ -193,7 +193,7 @@ fn port_forwards(ports: &[PortMapping]) -> PortForwards {
 /// Fails when the sandbox exists and mounts another host directory than the workspace, so two
 /// directories whose names collide can't share a sandbox. Does nothing when the sandbox doesn't
 /// exist or has no workspace mount.
-async fn check_workspace_owner(
+pub(crate) async fn check_workspace_owner(
     name: &str,
     workspace: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
@@ -205,7 +205,11 @@ async fn check_workspace_owner(
     let host_path = match client.get_sandbox(request).await {
         Ok(response) => response.into_inner().workspace_host_path,
         Err(status) if status.code() == Code::NotFound => return Ok(()),
-        Err(status) => return Err(status.into()),
+        Err(status) => {
+            return Err(anyhow::Error::from(status).context(format!(
+                "failed to look up sandbox {name} to check its workspace"
+            )));
+        }
     };
 
     if host_path.is_empty() {
@@ -231,8 +235,8 @@ fn ensure_same_workspace(name: &str, host_path: &str, working_dir: &Path) -> Res
     }
 
     bail!(
-        "sandbox {name} belongs to {host_path}; add a {SPEC_FILE_NAME} with its own name to give \
-         this directory a separate sandbox"
+        "sandbox {name} belongs to {host_path}; give this directory its own name in \
+         {SPEC_FILE_NAME} to use a separate sandbox"
     )
 }
 
@@ -480,7 +484,8 @@ pub async fn remove_sandbox(
 }
 
 /// Returns the explicit sandbox name, or the name of the sandbox for the working directory.
-/// The spec file is only read without an explicit name.
+/// The spec file is only read, and the sandbox's workspace only checked, without an explicit
+/// name.
 async fn sandbox_name(
     name: Option<String>,
     working_dir: &Path,
@@ -488,7 +493,7 @@ async fn sandbox_name(
 ) -> Result<String> {
     match name {
         Some(name) => Ok(name),
-        None => Ok(resolve_spec(working_dir, client).await?.name),
+        None => Ok(resolve_owned_spec(working_dir, client).await?.name),
     }
 }
 
@@ -606,6 +611,19 @@ pub(crate) async fn resolve_spec(
     )))
 }
 
+/// Loads the spec of the working directory's sandbox like [`resolve_spec`], and fails when the
+/// sandbox it names belongs to another directory, so a command without a sandbox name can't
+/// change another project's sandbox.
+pub(crate) async fn resolve_owned_spec(
+    working_dir: &Path,
+    client: &mut SandboxManagementServiceClient<Channel>,
+) -> Result<SandboxSpec> {
+    let spec = resolve_spec(working_dir, client).await?;
+    check_workspace_owner(&spec.name, working_dir, client).await?;
+
+    Ok(spec)
+}
+
 /// Returns the legacy name when a sandbox with it exists, and the hashed name otherwise.
 fn default_name(working_dir: &Path, legacy_exists: bool) -> String {
     match legacy_name(working_dir) {
@@ -672,6 +690,7 @@ fn format_status(status: SandboxStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake_daemon::{self, OTHER_WORKSPACE};
     use std::fs;
     use tempfile::TempDir;
 
@@ -839,16 +858,80 @@ mod tests {
         assert_eq!(name, "other");
     }
 
-    #[tokio::test]
-    async fn without_name_uses_working_directory() {
+    /// Returns a working directory whose spec file names the sandbox `name`.
+    fn workspace_named(name: &str) -> TempDir {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join(SPEC_FILE_NAME), "name: dev\n").unwrap();
+        fs::write(dir.path().join(SPEC_FILE_NAME), format!("name: {name}\n")).unwrap();
+        dir
+    }
 
-        let name = sandbox_name(None, dir.path(), &mut unreachable_client())
-            .await
-            .unwrap();
+    #[tokio::test]
+    async fn without_name_refuses_sandbox_of_other_workspace() {
+        let dir = workspace_named("dev");
+        let mut client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
+
+        fake_daemon::assert_dev_belongs_to_other(sandbox_name(None, dir.path(), &mut client).await);
+        fake_daemon::assert_dev_belongs_to_other(stop_sandbox(None, dir.path(), &mut client).await);
+        fake_daemon::assert_dev_belongs_to_other(
+            remove_sandbox(None, true, dir.path(), &mut client).await,
+        );
+    }
+
+    #[tokio::test]
+    async fn without_name_accepts_sandbox_of_working_directory() {
+        let dir = workspace_named("dev");
+        let canonical = fs::canonicalize(dir.path()).unwrap();
+        let mut client = fake_daemon::serve("dev", canonical.to_str().unwrap()).await;
+
+        let name = sandbox_name(None, dir.path(), &mut client).await.unwrap();
 
         assert_eq!(name, "dev");
+    }
+
+    #[tokio::test]
+    async fn without_name_accepts_missing_sandbox() {
+        let dir = workspace_named("dev");
+        let mut client = fake_daemon::serve("other", OTHER_WORKSPACE).await;
+
+        let name = sandbox_name(None, dir.path(), &mut client).await.unwrap();
+
+        assert_eq!(name, "dev");
+    }
+
+    #[tokio::test]
+    async fn without_name_accepts_sandbox_without_workspace_mount() {
+        let dir = workspace_named("dev");
+        let mut client = fake_daemon::serve("dev", "").await;
+
+        let name = sandbox_name(None, dir.path(), &mut client).await.unwrap();
+
+        assert_eq!(name, "dev");
+    }
+
+    #[tokio::test]
+    async fn stop_and_remove_with_explicit_name_skip_owner_check() {
+        let dir = workspace_named("dev");
+        let mut client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
+
+        let stop_error = stop_sandbox(Some("dev".to_string()), dir.path(), &mut client)
+            .await
+            .unwrap_err();
+        let remove_error = remove_sandbox(Some("dev".to_string()), true, dir.path(), &mut client)
+            .await
+            .unwrap_err();
+
+        assert!(
+            stop_error
+                .to_string()
+                .contains(&fake_daemon::refusal("stop_sandbox", "dev")),
+            "{stop_error}"
+        );
+        assert!(
+            remove_error
+                .to_string()
+                .contains(&fake_daemon::refusal("remove_sandbox", "dev")),
+            "{remove_error}"
+        );
     }
 
     #[test]
@@ -974,8 +1057,8 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "sandbox firebrick-d9f287 belongs to /home/user/my-project; add a .firebrick.yml with \
-             its own name to give this directory a separate sandbox"
+            "sandbox firebrick-d9f287 belongs to /home/user/my-project; give this directory its \
+             own name in .firebrick.yml to use a separate sandbox"
         );
     }
 

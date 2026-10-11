@@ -5,11 +5,15 @@
 use anyhow::{Context, Result, anyhow};
 use firebrick_spec::{InvalidNetworkRule, NetworkRule, SandboxSpec};
 use std::path::Path;
+use tonic::transport::Channel;
 use tonic::{Code, Status};
 
 use crate::api::UpdateNetworkRequest;
+use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use crate::manage::{self, SPEC_FILE_NAME};
 use crate::{client, validate};
+
+type Client = SandboxManagementServiceClient<Channel>;
 
 /// A change to the network section of a spec.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,16 +48,40 @@ fn parse_rules(rules: &[String]) -> Result<Vec<NetworkRule>, InvalidNetworkRule>
 /// Applies the change to `.firebrick.yml` in the working directory, then sends the network
 /// section to the sandbox when it exists, also when the file didn't change, so a sandbox that
 /// missed an earlier update or a hand edit catches up. Without a spec file, it creates one with
-/// the default settings and the name `fbk start` would use. Warns when rules are added while
-/// enforcement is off.
+/// the default settings and the name `fbk start` would use. Fails before it writes the file
+/// when the sandbox belongs to another directory. Warns when rules are added while enforcement
+/// is off.
 pub async fn update(change: NetworkChange, working_dir: &Path) -> Result<()> {
+    update_with(change, working_dir, client::connect().await).await
+}
+
+/// Runs [`update`] with the result of connecting to the daemon. Without a spec file, the
+/// default spec is named the way `fbk start` names its sandbox, which needs the daemon to keep
+/// the name of an existing legacy sandbox.
+async fn update_with(
+    change: NetworkChange,
+    working_dir: &Path,
+    mut client: Result<Client>,
+) -> Result<()> {
     let spec_path = working_dir.join(SPEC_FILE_NAME);
     let (spec, created) = match read_spec(&spec_path)? {
         Some(spec) => (spec, false),
-        None => (new_spec(working_dir).await?, true),
+        None => {
+            let mut connected = client.with_context(|| {
+                format!(
+                    "failed to connect to the daemon to name the sandbox in a new {SPEC_FILE_NAME}"
+                )
+            })?;
+            let spec = manage::resolve_spec(working_dir, &mut connected).await?;
+            client = Ok(connected);
+            (spec, true)
+        }
     };
+
+    check_owner(&spec, working_dir, &mut client).await?;
+
     let (spec, changed) = edit_spec(&spec_path, spec, &change, created)?;
-    let result = apply_to_sandbox(&change, &spec, changed).await;
+    let result = apply_to_sandbox(&change, &spec, changed, client).await;
 
     if let Some(warning) = enforcement_warning(&change, &spec) {
         eprintln!("{warning}");
@@ -74,14 +102,17 @@ fn read_spec(spec_path: &Path) -> Result<Option<SandboxSpec>> {
         .map_err(|report| anyhow!(report))
 }
 
-/// Returns the default spec for the working directory, named the way `fbk start` names its
-/// sandbox. Picking the name needs the daemon, to keep the name of an existing legacy sandbox.
-async fn new_spec(working_dir: &Path) -> Result<SandboxSpec> {
-    let mut client = client::connect().await.with_context(|| {
-        format!("failed to connect to the daemon to name the sandbox in a new {SPEC_FILE_NAME}")
-    })?;
-
-    manage::resolve_spec(working_dir, &mut client).await
+/// Fails when the spec's sandbox belongs to another directory. Without a connection to the
+/// daemon, nothing can reach the sandbox, so the file may still change.
+async fn check_owner(
+    spec: &SandboxSpec,
+    working_dir: &Path,
+    client: &mut Result<Client>,
+) -> Result<()> {
+    match client {
+        Ok(client) => manage::check_workspace_owner(&spec.name, working_dir, client).await,
+        Err(_) => Ok(()),
+    }
 }
 
 /// Applies the change to the spec and writes the spec file when the network section changed or
@@ -126,14 +157,15 @@ fn apply(change: &NetworkChange, spec: &mut SandboxSpec) -> bool {
 
 /// Sends the network section of the spec to the daemon, which applies it to the sandbox when
 /// the sandbox doesn't have it yet, and prints the outcome. `file_changed` tells whether the
-/// spec file was just written.
+/// spec file was just written, and `client` is the connection to the daemon, if any.
 async fn apply_to_sandbox(
     change: &NetworkChange,
     spec: &SandboxSpec,
     file_changed: bool,
+    client: Result<Client>,
 ) -> Result<()> {
     let name = &spec.name;
-    let mut client = client::connect().await.with_context(|| {
+    let mut client = client.with_context(|| {
         if file_changed {
             format!(
                 "updated {SPEC_FILE_NAME}, but failed to connect to the daemon; run the command \
@@ -224,8 +256,10 @@ fn enforcement_warning(change: &NetworkChange, spec: &SandboxSpec) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake_daemon::{self, OTHER_WORKSPACE};
     use firebrick_spec::NetworkSpec;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn strings(values: &[&str]) -> Vec<String> {
@@ -248,6 +282,79 @@ mod tests {
             enforce,
             ..NetworkSpec::default()
         })
+    }
+
+    /// Returns a working directory whose spec file names the sandbox `dev`, and the path of
+    /// the spec file.
+    fn workspace() -> (TempDir, PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let spec_path = dir.path().join(SPEC_FILE_NAME);
+        fs::write(&spec_path, "name: dev\n").unwrap();
+        (dir, spec_path)
+    }
+
+    #[tokio::test]
+    async fn update_refuses_sandbox_of_other_workspace_before_writing() {
+        let (dir, spec_path) = workspace();
+        let client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
+
+        let result = update_with(rules_change(), dir.path(), Ok(client)).await;
+
+        fake_daemon::assert_dev_belongs_to_other(result);
+        assert_eq!(fs::read_to_string(&spec_path).unwrap(), "name: dev\n");
+    }
+
+    #[tokio::test]
+    async fn update_sends_the_network_of_the_working_directory_sandbox() {
+        let (dir, _) = workspace();
+        let canonical = fs::canonicalize(dir.path()).unwrap();
+        let client = fake_daemon::serve("dev", canonical.to_str().unwrap()).await;
+
+        let error = update_with(rules_change(), dir.path(), Ok(client))
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            fake_daemon::refusal("update_network", "dev")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_without_spec_file_names_and_sends_a_new_sandbox() {
+        let dir = TempDir::new().unwrap();
+        let client = fake_daemon::serve("other", OTHER_WORKSPACE).await;
+
+        let error = update_with(rules_change(), dir.path(), Ok(client))
+            .await
+            .unwrap_err();
+
+        let spec = firebrick_spec::from_file(&dir.path().join(SPEC_FILE_NAME)).unwrap();
+        assert_eq!(
+            error.to_string(),
+            fake_daemon::refusal("update_network", &spec.name)
+        );
+    }
+
+    #[tokio::test]
+    async fn update_without_daemon_still_writes_the_spec_file() {
+        let (dir, spec_path) = workspace();
+
+        let error = update_with(rules_change(), dir.path(), Err(anyhow!("no daemon")))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .starts_with("updated .firebrick.yml, but failed to connect to the daemon"),
+            "{error}"
+        );
+        assert!(
+            fs::read_to_string(&spec_path)
+                .unwrap()
+                .contains("example.org")
+        );
     }
 
     #[test]
