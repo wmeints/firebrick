@@ -163,4 +163,4 @@ cargo install-daemon  # cargo install --locked --path crates/daemon
 
 A build from source that isn't a release defaults to a `firebrick-base` image
 tag that may not exist yet. Set `image` in `.firebrick.yml` to a released tag or
-your own image; see [Custom images](/firebrick/docs/custom-images/).
+your own image; see [Custom images](/docs/custom-images/).

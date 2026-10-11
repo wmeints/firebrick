@@ -14,7 +14,7 @@ Firebrick supports two ways of working:
   [OpenCode](https://opencode.ai) and [Oh-my-pi](https://omp.sh): run them in
   the sandbox with `fbk run`.
 - **IDE-integrated agents** such as GitHub Copilot: connect your editor to the
-  sandbox over SSH. See [Editor support](/firebrick/docs/editor-support/).
+  sandbox over SSH. See [Editor support](/docs/editor-support/).
 
 Firebrick is early in development.
 
@@ -30,8 +30,8 @@ enough to run one per project.
 Inside the sandbox the agent sees the project directory, and nothing else from
 your home directory: no SSH keys, no cloud credentials, no browser profile.
 Tokens the agent needs reach it as placeholders that only work for the hosts you
-allow (see [Secrets](/firebrick/docs/secrets/)), and you can limit where the
-sandbox may connect to (see [Networking](/firebrick/docs/networking/)).
+allow (see [Secrets](/docs/secrets/)), and you can limit where the sandbox may
+connect to (see [Networking](/docs/networking/)).
 
 ## How it works
 
@@ -64,6 +64,5 @@ Windows isn't supported.
 
 ## Next steps
 
-- [Install Firebrick](/firebrick/docs/installation/).
-- Follow the [Quickstart](/firebrick/docs/quickstart/) to run an agent in a
-  sandbox.
+- [Install Firebrick](/docs/installation/).
+- Follow the [Quickstart](/docs/quickstart/) to run an agent in a sandbox.

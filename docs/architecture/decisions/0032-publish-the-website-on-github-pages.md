@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted. The site's URL is changed by
+[ADR 0034](0034-serve-the-website-from-firebrick-sandbox-dev.md).
 
 ## Context
 

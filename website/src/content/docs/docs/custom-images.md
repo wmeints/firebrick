@@ -23,10 +23,13 @@ repository, for `linux/amd64` and `linux/arm64`:
   passwordless `sudo` and membership of the `docker` group. The image's `ubuntu`
   user is removed.
 - An `/sbin/init` that disables guest IPv6 (see
-  [Networking](/firebrick/docs/networking/#ipv6)), starts `dockerd` in the
-  background and hands PID 1 to tini, which reaps zombie processes.
+  [Networking](/docs/networking/#ipv6)), starts `dockerd` in the background and
+  hands PID 1 to tini, which reaps zombie processes.
 - `xdg-open` and `$BROWSER` pointing at `firebrick-open`, which opens URLs in
   the browser on your host.
+- `firebrick-git-credential`, the git credential helper for github.com that
+  hands git the `GH_TOKEN` or `GITHUB_TOKEN` placeholder. See
+  [Git over HTTPS](/docs/secrets/#git-over-https).
 
 Docker runs directly on the sandbox VM and keeps its images and containers on
 the sandbox's own disk at `/var/lib/docker`, so they survive `fbk stop` and `fbk

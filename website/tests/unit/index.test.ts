@@ -10,5 +10,5 @@ test("the home page links to the docs under the base path", async () => {
 
   const html = await container.renderToString(Index);
 
-  expect(html).toContain('href="/firebrick/docs/"');
+  expect(html).toContain('href="/docs/"');
 });

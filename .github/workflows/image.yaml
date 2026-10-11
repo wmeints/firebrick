@@ -35,3 +35,77 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: false
+
+      # Load the amd64 image into the local Docker daemon for the smoke checks.
+      # The layers come from the build above.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: firebrick-base:ci
+
+      # git's credential helper for github.com returns GH_TOKEN, or GITHUB_TOKEN
+      # when GH_TOKEN is unset or empty, and nothing for other hosts, without a
+      # token, or on store and erase. It answers before the agent's own helpers.
+      - name: Check the git credential helper
+        run: |
+          fill() {
+            printf 'protocol=https\nhost=%s\n\n' "$1" > request
+            docker run --rm -i -e GIT_TERMINAL_PROMPT=0 "${@:2}" firebrick-base:ci \
+              git credential fill < request 2>&1 || true
+          }
+          helper() {
+            docker run --rm "${@:2}" firebrick-base:ci sh -c \
+              'printf "protocol=https\nhost=github.com\n\n" | firebrick-git-credential "$1"; echo "exit=$?"' _ "$1"
+          }
+          user_fill() {
+            docker run --rm -e GIT_TERMINAL_PROMPT=0 "$@" firebrick-base:ci sh -c \
+              "git config --global credential.https://github.com.helper '!f() { echo username=me; echo password=from-user; }; f' \
+                && printf 'protocol=https\nhost=github.com\n\n' | git credential fill" 2>&1 || true
+          }
+          expect() {
+            if ! grep -qxF "$1" <<< "$2"; then
+              printf 'expected %s in:\n%s\n' "$1" "$2"
+              exit 1
+            fi
+          }
+          reject() {
+            if grep -qF "$1" <<< "$2"; then
+              printf 'expected no %s in:\n%s\n' "$1" "$2"
+              exit 1
+            fi
+          }
+
+          out=$(fill github.com -e "GH_TOKEN=\$MSB_GH_TOKEN" -e GITHUB_TOKEN=other)
+          expect 'username=x-access-token' "$out"
+          expect "password=\$MSB_GH_TOKEN" "$out"
+
+          out=$(fill github.com -e GITHUB_TOKEN=fallback)
+          expect 'username=x-access-token' "$out"
+          expect 'password=fallback' "$out"
+
+          out=$(fill github.com -e GH_TOKEN= -e GITHUB_TOKEN=fallback)
+          expect 'password=fallback' "$out"
+
+          for action in get store erase; do
+            out=$(helper "$action")
+            expect 'exit=0' "$out"
+            reject 'password=' "$out"
+          done
+          for action in store erase; do
+            out=$(helper "$action" -e GH_TOKEN=token)
+            [ "$out" = "exit=0" ] || { printf 'expected no output from %s, got:\n%s\n' "$action" "$out"; exit 1; }
+          done
+
+          # git fails the usual way for other hosts, so the helper wasn't consulted.
+          out=$(fill gitlab.com -e GH_TOKEN=token)
+          expect "fatal: could not read Username for 'https://gitlab.com': terminal prompts disabled" "$out"
+          reject 'password=' "$out"
+
+          # A helper in the agent's ~/.gitconfig answers when the system one has no
+          # token, and the system one answers first when it has one.
+          out=$(user_fill)
+          expect 'password=from-user' "$out"
+          out=$(user_fill -e GH_TOKEN=token)
+          expect 'password=token' "$out"

@@ -26,12 +26,13 @@ When the diff doesn't touch `website/`, report "no website changes" and stop.
 
 ## Checks
 
-1. **Base path**: the site is served under the `base` in `astro.config.mjs`. A
-   root-relative `href` or `src` written by hand (`href="/docs/"`) breaks on
-   GitHub Pages. Links and assets in `.astro` files must be built from
-   `import.meta.env.BASE_URL` or imported through Astro, and Markdown links must
-   be relative or go through Starlight. The end-to-end tests only catch links on
-   pages they reach, so check every new link.
+1. **Base path**: the site is served at the root of its domain, but a `base` in
+   `astro.config.mjs` would move it. A root-relative `href` or `src` written by
+   hand (`href="/docs/"`) in an `.astro` file breaks when it does. Links and
+   assets in `.astro` files must be built from `import.meta.env.BASE_URL` or
+   imported through Astro, and Markdown links must be relative or go through
+   Starlight. The end-to-end tests only catch links on pages they reach, so
+   check every new link.
 2. **Third-party requests**: fonts, scripts, styles, images or iframes loaded
    from another origin (Google Fonts, a CDN, an analytics snippet). The site
    makes no third-party requests; self-host fonts through `@fontsource` and put

@@ -560,6 +560,14 @@ images. It builds on `ubuntu:26.04` and adds:
   FIFO is missing or no relay reads it within 5 seconds, it exits 1 and prints
   `firebrick-open: couldn't reach the host; open this URL yourself: <url>`. See
   [Opening a URL on the host](06-runtime-view.md#opening-a-url-on-the-host).
+- `/usr/local/bin/firebrick-git-credential` - a git credential helper,
+  registered in `/etc/gitconfig` as `credential.https://github.com.helper`. On
+  `get` it prints `username=x-access-token` and `GH_TOKEN`, or `GITHUB_TOKEN`
+  when `GH_TOKEN` is unset or empty, as the password; without either it prints
+  nothing, and on `store` and `erase` it does nothing. See
+  [Git over HTTPS with a secret](06-runtime-view.md#git-over-https-with-a-secret)
+  and
+  [ADR 0033](decisions/0033-configure-a-system-git-credential-helper-for-github-tokens.md).
 
 The release workflow publishes the image as
 `ghcr.io/wmeints/firebrick-base:<tag>` (see

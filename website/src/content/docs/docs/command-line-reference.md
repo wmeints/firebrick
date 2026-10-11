@@ -121,8 +121,7 @@ fbk validate
 
 Checks the `.firebrick.yml` file in the working directory without starting the
 daemon. Prints `.firebrick.yml is valid`, or each problem with its line and
-column and exits with code 1. See
-[Configuration](/firebrick/docs/configuration/).
+column and exits with code 1. See [Configuration](/docs/configuration/).
 
 ## `fbk init`
 
@@ -144,7 +143,7 @@ fbk init
 ## `fbk secret`
 
 Manages the secrets sandboxes use without seeing their values. See
-[Secrets](/firebrick/docs/secrets/).
+[Secrets](/docs/secrets/).
 
 ### `fbk secret set`
 
@@ -200,7 +199,7 @@ fbk secret rm GH_TOKEN
 ## `fbk network`
 
 Changes the network settings in `.firebrick.yml` and applies them to the working
-directory's sandbox. See [Networking](/firebrick/docs/networking/).
+directory's sandbox. See [Networking](/docs/networking/).
 
 | Command                       | Description                                                                                |
 | ----------------------------- | ------------------------------------------------------------------------------------------ |
@@ -224,7 +223,7 @@ fbk network policy enable
 
 Forwards host ports to the working directory's sandbox and records them in the
 `ports` list of `.firebrick.yml`. See
-[Networking](/firebrick/docs/networking/#forwarding-ports).
+[Networking](/docs/networking/#forwarding-ports).
 
 | Command                   | Description                                                                                                                                                                        |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -240,4 +239,4 @@ fbk port rm 8080
 
 A hidden command that the generated SSH config uses as the `ProxyCommand` of
 each `.fbk` host. You don't run it yourself. See
-[Editor support](/firebrick/docs/editor-support/).
+[Editor support](/docs/editor-support/).

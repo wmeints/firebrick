@@ -94,6 +94,21 @@ EOF
 RUN ln -s /usr/local/bin/firebrick-open /usr/local/bin/xdg-open
 ENV BROWSER=/usr/local/bin/xdg-open
 
+# git over HTTPS to github.com authenticates with GH_TOKEN, or GITHUB_TOKEN when GH_TOKEN is
+# unset or empty. In a sandbox the variable holds a microsandbox placeholder, which the TLS
+# proxy replaces in the Basic Authorization header for the secret's allowed hosts. Without a
+# token the helper answers nothing, so git tries the next helper or prompts. It's registered
+# in /etc/gitconfig, so helpers in the agent's own ~/.gitconfig keep working.
+COPY --chmod=755 <<'EOF' /usr/local/bin/firebrick-git-credential
+#!/bin/sh
+cat >/dev/null
+[ "$1" = get ] || exit 0
+token=${GH_TOKEN:-$GITHUB_TOKEN}
+[ -n "$token" ] || exit 0
+printf 'username=x-access-token\npassword=%s\n' "$token"
+EOF
+RUN git config --system credential.https://github.com.helper /usr/local/bin/firebrick-git-credential
+
 # Replace the default ubuntu user (uid/gid 1000) with the agent user, who can use docker
 # without sudo through the docker group.
 RUN userdel --remove ubuntu \

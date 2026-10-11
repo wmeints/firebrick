@@ -656,6 +656,38 @@ next start.
 microsandbox removed the sandbox. When that fails, `RemoveSandbox` returns
 `INTERNAL` with `removed sandbox <name>, but failed to remove its secrets`.
 
+## Git over HTTPS with a secret
+
+The `firebrick-base` image registers `firebrick-git-credential` as the git
+credential helper for `https://github.com` in `/etc/gitconfig`. git asks it for
+credentials when GitHub answers a clone, fetch or push with 401.
+
+```mermaid
+sequenceDiagram
+    participant G as git
+    participant H as firebrick-git-credential
+    participant P as microsandbox TLS proxy
+    participant GH as github.com
+
+    G->>GH: GET info/refs (through the proxy)
+    GH-->>G: 401
+    G->>H: get (protocol=https, host=github.com)
+    H-->>G: username=x-access-token,<br/>password=$MSB_GH_TOKEN
+    G->>P: Authorization: Basic base64(x-access-token:$MSB_GH_TOKEN)
+    P->>P: Decode, replace the placeholder, encode
+    P->>GH: Authorization: Basic base64(x-access-token:<token>)
+    GH-->>G: 200
+```
+
+The helper prints the value of `GH_TOKEN`, or of `GITHUB_TOKEN` when `GH_TOKEN`
+is unset or empty, which in a sandbox is the secret's placeholder. When neither
+is set it prints nothing, and git tries the helpers in the user's `~/.gitconfig`
+or prompts. git runs the system helper first, so a helper the user configured,
+for example with `gh auth setup-git`, only answers when the system one has no
+token. When the secret's allowed hosts don't include `github.com`, the proxy
+doesn't put in the token and git fails to authenticate. See
+[ADR 0033](decisions/0033-configure-a-system-git-credential-helper-for-github-tokens.md).
+
 ## Updating the network rules
 
 `fbk network allow <rule>...`, `fbk network deny <rule>...`, `fbk network policy

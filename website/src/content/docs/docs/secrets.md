@@ -45,7 +45,7 @@ name such as `api.example.com`, or `*.example.com` for the subdomains of
 than adding to them.
 
 When the sandbox's network rules are enforced, a secret's allowed hosts must be
-allowed by those rules too. See [Networking](/firebrick/docs/networking/).
+allowed by those rules too. See [Networking](/docs/networking/).
 
 ## Global and sandbox secrets
 
@@ -81,6 +81,41 @@ their values. Add `--format json` for JSON:
 sandbox gets the global secret with the same name again. A running sandbox keeps
 using a removed secret until it restarts. `fbk rm` removes the sandbox's own
 secrets too. If a token leaked, revoke it where you created it as well.
+
+## Git over HTTPS
+
+Sandboxes that run `firebrick-base`, or an image built on it, push and pull
+GitHub repositories over HTTPS with `GH_TOKEN`, or `GITHUB_TOKEN` when
+`GH_TOKEN` isn't set, without configuring git. The image's credential helper
+hands git the placeholder as the password; git sends it base64-encoded in a
+Basic `Authorization` header, and the host decodes it, replaces the placeholder
+and encodes it again. This works only when the token's allowed hosts include
+`github.com`, as the defaults do. Without either secret, git prompts for
+credentials as usual, and a helper in your own `~/.gitconfig`, such as the one
+`gh auth setup-git` configures, still works.
+
+The image's helper answers first whenever `GH_TOKEN` or `GITHUB_TOKEN` is set,
+even when its allowed hosts don't include `github.com`, for example for a GitHub
+Enterprise token. git then sends a placeholder that isn't replaced and stops
+looking, so your own helper never answers. Give that token another name, or
+reset the helpers for github.com in the sandbox before adding your own:
+
+```sh
+git config --global credential.https://github.com.helper ''
+git config --global --add credential.https://github.com.helper '!gh auth git-credential'
+```
+
+For a custom image that isn't based on `firebrick-base`, configure an equivalent
+helper in the sandbox:
+
+```sh
+git config --global credential.https://github.com.helper \
+  '!f() { test "$1" = get && echo username=x-access-token && echo "password=${GH_TOKEN:-$GITHUB_TOKEN}"; }; f'
+```
+
+Don't use SSH keys for git: the sandbox's SSH server doesn't support agent
+forwarding (`ssh -A`), and copying a private key into the sandbox puts the real
+key where the agent can read it.
 
 ## Storage
 

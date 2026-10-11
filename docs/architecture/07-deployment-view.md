@@ -104,16 +104,18 @@ com.apple.quarantine fbk fbkd`.
 
 `website/` builds the product website, a landing page and the user docs, into
 static files in `website/dist`. The docs are Markdown pages in
-`website/src/content/docs/docs/`, served under `/docs/`. Its `site` and `base`
-settings point at the repository's GitHub Pages URL,
-`https://wmeints.github.io/firebrick/`, and the end-to-end tests serve the build
-under that base path. See
-[ADR 0027](decisions/0027-build-the-website-with-astro-starlight-and-tailwind.md).
+`website/src/content/docs/docs/`, served under `/docs/`. Its `site` setting
+points at the custom domain `https://firebrick-sandbox.dev`, which serves the
+site at the root, so it has no `base`. The end-to-end tests serve the build at
+the root too. See
+[ADR 0027](decisions/0027-build-the-website-with-astro-starlight-and-tailwind.md)
+and [ADR 0034](decisions/0034-serve-the-website-from-firebrick-sandbox-dev.md).
 
 `.github/workflows/website.yaml` publishes the site to GitHub Pages on pushes to
 `main` that change `website/`, `mise.toml` or the workflow, and on manual runs
 from `main`. Its `check` job uploads `website/dist` as a Pages artifact once the
 checks and end-to-end tests pass, and its `deploy` job deploys it with
 `actions/deploy-pages`. Pull requests only check the site. The repository's
-Pages source must be set to "GitHub Actions" before the first deployment. See
+Pages source must be set to "GitHub Actions" and its custom domain to
+`firebrick-sandbox.dev` before the first deployment. See
 [ADR 0032](decisions/0032-publish-the-website-on-github-pages.md).
