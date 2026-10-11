@@ -19,6 +19,7 @@ use crate::api::{
     StopSandboxRequest, sandbox_management_service_client::SandboxManagementServiceClient,
     start_sandbox_response,
 };
+use crate::approval::{Approver, Settings};
 use crate::progress::PullProgressView;
 use crate::table;
 
@@ -28,14 +29,16 @@ pub const SPEC_FILE_NAME: &str = ".firebrick.yml";
 /// Starts the named sandbox, or the sandbox for the working directory without a name. Does
 /// nothing when it's already running, and waits for it when it's starting. Only the sandbox for
 /// the working directory is created when it doesn't exist, because creating one needs its spec.
+/// `assume_yes` approves changed mounts and network settings without asking.
 pub async fn start_sandbox(
     name: Option<String>,
     working_dir: &Path,
+    assume_yes: bool,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
     let (name, started) = match name {
         Some(name) => start_named_sandbox(name, client).await?,
-        None => start_working_dir_sandbox(working_dir, client).await?,
+        None => start_working_dir_sandbox(working_dir, assume_yes, client).await?,
     };
 
     let sandbox = client
@@ -111,12 +114,13 @@ async fn start_named_sandbox(
 /// with the daemon's response.
 async fn start_working_dir_sandbox(
     working_dir: &Path,
+    assume_yes: bool,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<(String, SandboxStarted)> {
     let spec = resolve_spec(working_dir, client).await?;
     let name = spec.name.clone();
 
-    let started = ensure_running(spec, working_dir, client).await?;
+    let started = ensure_running(spec, working_dir, assume_yes, client).await?;
 
     Ok((name, started))
 }
@@ -127,10 +131,12 @@ const STARTING_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// Makes sure the sandbox exists and is running, creating or starting it when needed, and
 /// sends the spec's ports, also to a running sandbox. Warns about forwards the daemon couldn't
 /// open and returns its response. Fails when an existing sandbox mounts another directory than
-/// the workspace.
+/// the workspace. A new sandbox only gets mounts and network settings the user approved;
+/// `assume_yes` approves them without asking.
 pub(crate) async fn ensure_running(
     spec: SandboxSpec,
     workspace: &Path,
+    assume_yes: bool,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<SandboxStarted> {
     check_workspace_owner(&spec.name, workspace, client).await?;
@@ -140,7 +146,9 @@ pub(crate) async fn ensure_running(
     let started = match start_if_exists(request, client).await? {
         Some(started) => started,
         None => {
+            let network = spec.network.clone().unwrap_or_default();
             let request = build_start_request(spec, workspace)?;
+            approve_new_sandbox(&request, network, workspace, assume_yes).await?;
 
             eprintln!("Creating sandbox {}...", request.name);
             send_start_request(request, client).await?
@@ -150,6 +158,32 @@ pub(crate) async fn ensure_running(
     warn_failed_forwards(&started);
 
     Ok(started)
+}
+
+/// Makes sure the user approved the mounts and network settings of the new sandbox, asking on
+/// the terminal when they changed. `network` is the spec's network section, or its default.
+async fn approve_new_sandbox(
+    request: &StartSandboxRequest,
+    network: NetworkSpec,
+    workspace: &Path,
+    assume_yes: bool,
+) -> Result<()> {
+    let settings = new_sandbox_settings(request, network);
+
+    Approver::new(assume_yes)
+        .run(workspace, move |approvals, prompt| {
+            approvals.approve_sandbox(settings, prompt)
+        })
+        .await
+}
+
+/// Returns the settings a new sandbox needs approval for: the request's mounts, whose host
+/// paths are canonical, so a symlink shows up as the directory it points to.
+fn new_sandbox_settings(request: &StartSandboxRequest, network: NetworkSpec) -> Settings {
+    Settings {
+        mounts: request.mounts.iter().map(MountSpec::from).collect(),
+        network,
+    }
 }
 
 /// Sends the start request and shows the progress of the image pull while the daemon creates
@@ -1218,6 +1252,37 @@ mod tests {
                     .into_owned(),
                 guest: "/workspaces/shared-lib".to_string(),
                 readonly: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn new_sandbox_settings_show_the_target_of_a_symlinked_mount() {
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().join("project");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, project.join("lib")).unwrap();
+        fs::write(
+            project.join(SPEC_FILE_NAME),
+            "name: dev\nmounts:\n  - host: lib\n    guest: /mnt/lib\n",
+        )
+        .unwrap();
+        let request =
+            build_start_request(read_spec_file(&project).unwrap().unwrap(), &project).unwrap();
+
+        let settings = new_sandbox_settings(&request, NetworkSpec::default());
+
+        assert_eq!(
+            settings.mounts,
+            [MountSpec {
+                host: fs::canonicalize(&target)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                guest: "/mnt/lib".to_string(),
+                readonly: false,
             }]
         );
     }

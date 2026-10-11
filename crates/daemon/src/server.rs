@@ -172,14 +172,7 @@ fn port_forward(port: PortMapping) -> PortForward {
 
 /// Reads the extra mounts of a request. The sandbox manager checks their paths.
 fn mount_specs(mounts: &[Mount]) -> Vec<MountSpec> {
-    mounts
-        .iter()
-        .map(|mount| MountSpec {
-            host: mount.host.clone(),
-            guest: mount.guest.clone(),
-            readonly: mount.readonly,
-        })
-        .collect()
+    mounts.iter().map(MountSpec::from).collect()
 }
 
 /// Parses the egress rules of a request. A request without them gets microsandbox's default

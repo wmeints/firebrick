@@ -44,18 +44,25 @@ impl Drop for RawModeGuard {
     }
 }
 
-/// Runs a command in the sandbox attached to the local terminal and returns its exit code.
+/// Runs a command, given as the program followed by its arguments, in the sandbox attached to
+/// the local terminal and returns its exit code. `assume_yes` approves changed mounts and
+/// network settings of a new sandbox without asking.
 pub async fn attach(
     working_dir: PathBuf,
-    command: String,
-    args: Vec<String>,
+    command: Vec<String>,
+    assume_yes: bool,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<i32> {
+    let mut words = command.into_iter();
+    let Some(command) = words.next() else {
+        bail!("no command to run");
+    };
+    let args = words.collect();
     let spec = resolve_spec(&working_dir, client).await?;
     let name = spec.name.clone();
 
     // Done before entering raw mode so progress messages render normally.
-    ensure_running(spec, &working_dir, client).await?;
+    ensure_running(spec, &working_dir, assume_yes, client).await?;
 
     let (tx, rx) = mpsc::channel(32);
 

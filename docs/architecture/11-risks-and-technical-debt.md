@@ -76,6 +76,18 @@
   still opens, so the browser sends the OAuth callback, with its code, to
   whatever listens on the host's port
   ([ADR 0030](decisions/0030-forward-oauth-callback-ports-when-opening-a-url.md)).
+- **Only mounts and network changes need approval:** the agent can edit
+  `.firebrick.yml`, and `fbk` only asks before it applies changed `mounts` or
+  `network` settings. A changed `image`, `init`, `mise`, `resources`, `volumes`,
+  `ports` or `name` applies the next time the sandbox is created, or for `ports`
+  the next time it starts, without asking. `--yes` approves whatever the file
+  contains. A workspace from before approvals existed has no entry, and its
+  first sandbox creation with the default network section doesn't ask: when the
+  agent removes the `network` section and the user runs `fbk rm --force && fbk
+  start`, the new sandbox doesn't enforce the old rules. `fbk` can't compare
+  with the removed sandbox, and `GetSandbox` doesn't return a running sandbox's
+  policy
+  ([ADR 0037](decisions/0037-approve-mounts-and-network-changes-in-the-spec.md)).
 - **Workspace files can run code on the host:** the workspace is mounted
   read/write, so the agent can plant files that run on the host when the user
   works on the project there, such as git hooks, `.git/config` settings like

@@ -95,6 +95,22 @@ updated the network rules of my-project
   first.
 - `fbk network` rewrites `.firebrick.yml`, which drops its comments and
   formatting.
+- `fbk network` sends the whole network section of `.firebrick.yml`, so it asks
+  before it sends changes you didn't make with the command, such as `enforce:
+  false` that the agent added by hand:
+
+  ```console
+  $ fbk network allow example.org
+  .firebrick.yml changes settings you haven't approved for this workspace:
+    ~ network.enforce: true -> false
+    + network.allow: example.org
+  Apply these changes? [y/N]
+  ```
+
+  Answer `y` to apply them, or anything else to leave the sandbox alone; the
+  change to `.firebrick.yml` stays. `--yes` approves them without asking. The
+  change you asked for never needs approval. See
+  [Approving mounts and network changes](/docs/configuration/#approving-mounts-and-network-changes).
 
 ## Working offline
 

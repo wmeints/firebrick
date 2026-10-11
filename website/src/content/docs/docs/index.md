@@ -61,9 +61,10 @@ remove them with `msb` if you no longer need them.
 The workspace is mounted read/write, so the agent can change any file in it,
 including `.firebrick.yml`. `fbk` asks before it applies changes to `mounts` or
 `network` that you haven't approved (see
-[Applying changes](/docs/configuration/#applying-changes)). Changes to the other
-settings, such as `image`, `init`, `mise`, `resources`, `volumes` and `ports`,
-apply without asking, so review them before you start or recreate the sandbox.
+[Approving mounts and network changes](/docs/configuration/#approving-mounts-and-network-changes)).
+Changes to the other settings, such as `image`, `init`, `mise`, `resources`,
+`volumes` and `ports`, apply without asking, so review them before you start or
+recreate the sandbox.
 
 Files in the workspace can also run code on the host when you use the project
 there. Common ones are:

@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 use std::fs;
-use std::io::{self, ErrorKind, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::io::{self, ErrorKind};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use thiserror::Error;
@@ -299,9 +299,11 @@ impl SecretStore {
 
         let content = serde_yaml::to_string(&secrets).map_err(SecretError::Encode)?;
 
-        write_private(&self.path, &content).map_err(|source| SecretError::Write {
-            path: self.path.clone(),
-            source,
+        firebrick_utils::write_private(&self.path, &content).map_err(|source| {
+            SecretError::Write {
+                path: self.path.clone(),
+                source,
+            }
         })?;
 
         Ok(true)
@@ -333,28 +335,6 @@ fn first_duplicate(secrets: &[Secret]) -> Option<&Secret> {
     secrets
         .iter()
         .find(|secret| !keys.insert((&secret.name, &secret.sandbox)))
-}
-
-/// Replaces a file with `content` that only the user can read, without leaving a partial file.
-fn write_private(path: &Path, content: &str) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-
-    let temp_path = path.with_extension("tmp");
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temp_path)?;
-
-    // The mode only applies to new files, so fix a temp file left over with other permissions.
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(content.as_bytes())?;
-    file.sync_all()?;
-
-    fs::rename(&temp_path, path)
 }
 
 /// Adds the secrets to a sandbox that is being created.

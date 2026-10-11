@@ -9,3 +9,6 @@ description = "Shared file locations, naming rules and text helpers for the Fire
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

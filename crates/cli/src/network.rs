@@ -3,13 +3,14 @@
 //! switch and rules.
 
 use anyhow::{Context, Result, anyhow};
-use firebrick_spec::{InvalidNetworkRule, NetworkRule, SandboxSpec};
+use firebrick_spec::{InvalidNetworkRule, NetworkRule, NetworkSpec, SandboxSpec};
 use std::path::Path;
 use tonic::transport::Channel;
 use tonic::{Code, Status};
 
 use crate::api::UpdateNetworkRequest;
 use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
+use crate::approval::Approver;
 use crate::manage::{self, SPEC_FILE_NAME};
 use crate::{client, validate};
 
@@ -49,19 +50,24 @@ fn parse_rules(rules: &[String]) -> Result<Vec<NetworkRule>, InvalidNetworkRule>
 /// section to the sandbox when it exists, also when the file didn't change, so a sandbox that
 /// missed an earlier update or a hand edit catches up. Without a spec file, it creates one with
 /// the default settings and the name `fbk start` would use. Fails before it writes the file
-/// when the sandbox belongs to another directory. Warns when rules are added while enforcement
-/// is off.
-pub async fn update(change: NetworkChange, working_dir: &Path) -> Result<()> {
-    update_with(change, working_dir, client::connect().await).await
+/// when the sandbox belongs to another directory. Before sending, asks the user to approve the
+/// section when it differs from the approved one with the change applied, for example after a
+/// hand edit; `assume_yes` approves it without asking. Warns when rules are added while
+/// enforcement is off.
+pub async fn update(change: NetworkChange, working_dir: &Path, assume_yes: bool) -> Result<()> {
+    let approver = Approver::new(assume_yes);
+
+    update_with(change, working_dir, client::connect().await, approver).await
 }
 
-/// Runs [`update`] with the result of connecting to the daemon. Without a spec file, the
-/// default spec is named the way `fbk start` names its sandbox, which needs the daemon to keep
-/// the name of an existing legacy sandbox.
+/// Runs [`update`] with the result of connecting to the daemon, getting approval from
+/// `approver`. Without a spec file, the default spec is named the way `fbk start` names its
+/// sandbox, which needs the daemon to keep the name of an existing legacy sandbox.
 async fn update_with(
     change: NetworkChange,
     working_dir: &Path,
     mut client: Result<Client>,
+    approver: Approver,
 ) -> Result<()> {
     let spec_path = working_dir.join(SPEC_FILE_NAME);
     let (spec, created) = match read_spec(&spec_path)? {
@@ -81,6 +87,7 @@ async fn update_with(
     check_owner(&spec, working_dir, &mut client).await?;
 
     let (spec, changed) = edit_spec(&spec_path, spec, &change, created)?;
+    approve(&change, &spec, working_dir, approver).await?;
     let result = apply_to_sandbox(&change, &spec, changed, client).await;
 
     if let Some(warning) = enforcement_warning(&change, &spec) {
@@ -123,7 +130,7 @@ fn edit_spec(
     change: &NetworkChange,
     new: bool,
 ) -> Result<(SandboxSpec, bool)> {
-    let changed = apply(change, &mut spec) || new;
+    let changed = apply(change, &mut spec.network) || new;
 
     if changed {
         firebrick_spec::to_file(&spec, spec_path)
@@ -133,11 +140,38 @@ fn edit_spec(
     Ok((spec, changed))
 }
 
-/// Applies the change to the spec's network section, adding the section when it's missing.
+/// Makes sure the user approved the network section of the spec before it's sent, asking on the
+/// terminal when it differs from the approved section with the change applied.
+async fn approve(
+    change: &NetworkChange,
+    spec: &SandboxSpec,
+    working_dir: &Path,
+    approver: Approver,
+) -> Result<()> {
+    let sent = spec.network.clone().unwrap_or_default();
+    let change = change.clone();
+
+    approver
+        .run(working_dir, move |approvals, prompt| {
+            approvals.approve_network(sent, |approved| expected_network(approved, &change), prompt)
+        })
+        .await
+}
+
+/// Returns the network section the user expects to send: the approved one with the change
+/// applied.
+fn expected_network(approved: &NetworkSpec, change: &NetworkChange) -> NetworkSpec {
+    let mut network = Some(approved.clone());
+    apply(change, &mut network);
+
+    network.unwrap_or_default()
+}
+
+/// Applies the change to a spec's network section, adding the section when it's missing.
 /// Returns whether the network section changed.
-fn apply(change: &NetworkChange, spec: &mut SandboxSpec) -> bool {
-    let added = spec.network.is_none();
-    let network = spec.network.get_or_insert_default();
+fn apply(change: &NetworkChange, network: &mut Option<NetworkSpec>) -> bool {
+    let added = network.is_none();
+    let network = network.get_or_insert_default();
 
     let changed = match change {
         NetworkChange::Allow(rules) => network.allow(rules),
@@ -257,7 +291,6 @@ fn enforcement_warning(change: &NetworkChange, spec: &SandboxSpec) -> Option<Str
 mod tests {
     use super::*;
     use crate::fake_daemon::{self, OTHER_WORKSPACE};
-    use firebrick_spec::NetworkSpec;
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -286,6 +319,12 @@ mod tests {
 
     /// Returns a working directory whose spec file names the sandbox `dev`, and the path of
     /// the spec file.
+    /// Returns an approver that approves without asking and keeps its approvals in `dir`, so
+    /// the tests never touch the user's own approvals.
+    fn approve_all(dir: &TempDir) -> Approver {
+        Approver::at(dir.path().join("approved.yml"), true)
+    }
+
     fn workspace() -> (TempDir, PathBuf) {
         let dir = TempDir::new().unwrap();
         let spec_path = dir.path().join(SPEC_FILE_NAME);
@@ -298,7 +337,7 @@ mod tests {
         let (dir, spec_path) = workspace();
         let client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
 
-        let result = update_with(rules_change(), dir.path(), Ok(client)).await;
+        let result = update_with(rules_change(), dir.path(), Ok(client), approve_all(&dir)).await;
 
         fake_daemon::assert_dev_belongs_to_other(result);
         assert_eq!(fs::read_to_string(&spec_path).unwrap(), "name: dev\n");
@@ -310,7 +349,7 @@ mod tests {
         let canonical = fs::canonicalize(dir.path()).unwrap();
         let client = fake_daemon::serve("dev", canonical.to_str().unwrap()).await;
 
-        let error = update_with(rules_change(), dir.path(), Ok(client))
+        let error = update_with(rules_change(), dir.path(), Ok(client), approve_all(&dir))
             .await
             .unwrap_err();
 
@@ -325,7 +364,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let client = fake_daemon::serve("other", OTHER_WORKSPACE).await;
 
-        let error = update_with(rules_change(), dir.path(), Ok(client))
+        let error = update_with(rules_change(), dir.path(), Ok(client), approve_all(&dir))
             .await
             .unwrap_err();
 
@@ -340,9 +379,14 @@ mod tests {
     async fn update_without_daemon_still_writes_the_spec_file() {
         let (dir, spec_path) = workspace();
 
-        let error = update_with(rules_change(), dir.path(), Err(anyhow!("no daemon")))
-            .await
-            .unwrap_err();
+        let error = update_with(
+            rules_change(),
+            dir.path(),
+            Err(anyhow!("no daemon")),
+            approve_all(&dir),
+        )
+        .await
+        .unwrap_err();
 
         assert!(
             error
@@ -384,7 +428,7 @@ mod tests {
     fn apply_adds_a_network_section_when_missing() {
         let mut spec = spec_with(None);
 
-        assert!(apply(&NetworkChange::Enforce(false), &mut spec));
+        assert!(apply(&NetworkChange::Enforce(false), &mut spec.network));
 
         assert_eq!(spec.network, enforced(false));
     }
@@ -400,7 +444,7 @@ mod tests {
 
         assert!(apply(
             &NetworkChange::Allow(rules(&["example.org"])),
-            &mut spec
+            &mut spec.network
         ));
 
         assert_eq!(
@@ -424,14 +468,14 @@ mod tests {
 
         assert!(!apply(
             &NetworkChange::Allow(rules(&["github.com"])),
-            &mut spec
+            &mut spec.network
         ));
         assert!(!apply(
             &NetworkChange::Deny(rules(&["example.org"])),
-            &mut spec
+            &mut spec.network
         ));
-        assert!(!apply(&NetworkChange::Enforce(true), &mut spec));
-        assert!(apply(&NetworkChange::Enforce(false), &mut spec));
+        assert!(!apply(&NetworkChange::Enforce(true), &mut spec.network));
+        assert!(apply(&NetworkChange::Enforce(false), &mut spec.network));
     }
 
     #[test]
@@ -552,6 +596,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn expected_network_applies_the_change_to_the_approved_section() {
+        let approved = NetworkSpec {
+            enforce: true,
+            deny: rules(&["example.org"]),
+            ..NetworkSpec::default()
+        };
+
+        assert_eq!(
+            expected_network(&approved, &NetworkChange::Allow(rules(&["example.org"]))),
+            NetworkSpec {
+                enforce: true,
+                allow: rules(&["example.org"]),
+                ..NetworkSpec::default()
+            }
+        );
+        assert_eq!(
+            expected_network(&approved, &NetworkChange::Enable(false)),
+            NetworkSpec {
+                enabled: Some(false),
+                ..approved.clone()
+            }
+        );
+    }
+
+    #[test]
+    fn expected_network_ignores_hand_edits_to_the_spec() {
+        // Whatever the spec says, the expected section starts from the approved one.
+        let approved = NetworkSpec {
+            enforce: true,
+            ..NetworkSpec::default()
+        };
+
+        assert_eq!(
+            expected_network(&approved, &NetworkChange::Allow(rules(&["example.org"]))),
+            NetworkSpec {
+                enforce: true,
+                allow: rules(&["example.org"]),
+                ..NetworkSpec::default()
+            }
+        );
+    }
+
     fn rules_change() -> NetworkChange {
         NetworkChange::Allow(rules(&["example.org"]))
     }
@@ -560,10 +647,10 @@ mod tests {
     fn apply_sets_the_network_switch() {
         let mut spec = spec_with(None);
 
-        assert!(apply(&NetworkChange::Enable(false), &mut spec));
+        assert!(apply(&NetworkChange::Enable(false), &mut spec.network));
         assert_eq!(spec.network.as_ref().unwrap().enabled, Some(false));
-        assert!(!apply(&NetworkChange::Enable(false), &mut spec));
-        assert!(apply(&NetworkChange::Enable(true), &mut spec));
+        assert!(!apply(&NetworkChange::Enable(false), &mut spec.network));
+        assert!(apply(&NetworkChange::Enable(true), &mut spec.network));
         assert!(spec.network.as_ref().unwrap().is_enabled());
     }
 
@@ -571,8 +658,8 @@ mod tests {
     fn apply_treats_a_missing_switch_as_enabled() {
         let mut spec = spec_with(enforced(true));
 
-        assert!(!apply(&NetworkChange::Enable(true), &mut spec));
-        assert!(apply(&NetworkChange::Enable(false), &mut spec));
+        assert!(!apply(&NetworkChange::Enable(true), &mut spec.network));
+        assert!(apply(&NetworkChange::Enable(false), &mut spec.network));
     }
 
     #[test]
@@ -584,7 +671,7 @@ mod tests {
         };
         let mut spec = spec_with(Some(rules_spec.clone()));
 
-        apply(&NetworkChange::Enable(false), &mut spec);
+        apply(&NetworkChange::Enable(false), &mut spec.network);
 
         assert_eq!(
             spec.network.unwrap(),

@@ -17,16 +17,19 @@ take a sandbox name from `fbk ls` to manage another sandbox from any directory.
 ## `fbk start`
 
 ```sh
-fbk start [NAME]
+fbk start [--yes] [NAME]
 ```
 
 Starts the sandbox for the working directory, and creates it first when it
 doesn't exist. Prints how to connect to it with SSH, VS Code and Zed, and the
-ports it forwards.
+ports it forwards. Before it creates a sandbox whose mounts or network settings
+you haven't approved, it shows them and asks
+([Approving mounts and network changes](/docs/configuration/#approving-mounts-and-network-changes)).
 
-| Argument | Description                                                                        | Default                                |
-| -------- | ---------------------------------------------------------------------------------- | -------------------------------------- |
-| `NAME`   | Name of an existing sandbox as listed by `fbk ls`, to start it from any directory. | The sandbox for the working directory. |
+| Argument      | Description                                                                        | Default                                |
+| ------------- | ---------------------------------------------------------------------------------- | -------------------------------------- |
+| `NAME`        | Name of an existing sandbox as listed by `fbk ls`, to start it from any directory. | The sandbox for the working directory. |
+| `--yes`, `-y` | Approve changed mounts and network settings in `.firebrick.yml` without asking.    | Ask.                                   |
 
 ```sh
 fbk start
@@ -95,18 +98,20 @@ fbk rm --force
 ## `fbk run`
 
 ```sh
-fbk run <COMMAND> [ARGS]...
+fbk run [--yes] <COMMAND> [ARGS]...
 ```
 
 Runs a command in the working directory's sandbox with your terminal attached,
 and exits with the command's exit code. Starts the sandbox first when needed,
-and creates it when it doesn't exist. The sandbox keeps running after the
-command exits.
+and creates it when it doesn't exist, asking first about mounts and network
+settings you haven't approved, like `fbk start`. The sandbox keeps running after
+the command exits.
 
-| Argument  | Description                                                                        |
-| --------- | ---------------------------------------------------------------------------------- |
-| `COMMAND` | Command to run in the sandbox.                                                     |
-| `ARGS`    | Arguments for the command. Flags after `COMMAND` are passed on, not read by `fbk`. |
+| Argument      | Description                                                                                            |
+| ------------- | ------------------------------------------------------------------------------------------------------ |
+| `COMMAND`     | Command to run in the sandbox.                                                                         |
+| `ARGS`        | Arguments for the command. Flags after `COMMAND`, including `--yes`, are passed on, not read by `fbk`. |
+| `--yes`, `-y` | Approve changed mounts and network settings in `.firebrick.yml` without asking. Goes before `COMMAND`. |
 
 ```sh
 fbk run bash
@@ -213,6 +218,10 @@ directory's sandbox. See [Networking](/docs/networking/).
 A `RULE` is a host name, `*.` plus a domain, an IP address or a CIDR range, such
 as `example.org`, `*.npmjs.org` or `10.0.0.0/8`. `allow` and `deny` need at
 least one rule.
+
+Before it sends the network section, every subcommand asks about changes in it
+that you haven't approved and didn't make with the command. `--yes` (`-y`)
+approves them without asking.
 
 ```sh
 fbk network allow example.org "*.npmjs.org"

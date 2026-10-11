@@ -1,3 +1,4 @@
+pub mod approval;
 pub mod client;
 #[cfg(test)]
 mod fake_daemon;

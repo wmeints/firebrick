@@ -1,6 +1,9 @@
 //! File locations, naming rules and text helpers shared by the Firebrick CLI and daemon.
 
 use std::ffi::OsString;
+use std::fs;
+use std::io::{self, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// Name used when a path's leaf has no ASCII letters or digits left after sanitizing.
@@ -115,6 +118,22 @@ pub fn secrets_path() -> Option<PathBuf> {
     data_dir().map(|dir| dir.join("secrets.yml"))
 }
 
+/// Returns the file `fbk` records the approved mounts and network settings of each workspace
+/// in: `$XDG_CONFIG_HOME/firebrick/approved.yml`, falling back to
+/// `$HOME/.config/firebrick/approved.yml`.
+///
+/// Returns `None` when neither variable is an absolute path. Sandboxes mount the workspace, so
+/// the file must never end up in the current directory or a temp directory, where an agent
+/// could write it.
+pub fn approvals_path() -> Option<PathBuf> {
+    approvals_path_from(&env_var)
+}
+
+/// Returns the approvals file for the environment that `var` describes.
+fn approvals_path_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    base_dir(var, "XDG_CONFIG_HOME", ".config").map(|config| config.join("firebrick/approved.yml"))
+}
+
 /// Returns the directory holding the daemon's persistent data: `$XDG_DATA_HOME/firebrick`,
 /// falling back to `$HOME/.local/share/firebrick`.
 ///
@@ -127,6 +146,28 @@ fn data_dir() -> Option<PathBuf> {
 /// Returns the data directory for the environment that `var` describes.
 fn data_dir_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     base_dir(var, "XDG_DATA_HOME", ".local/share").map(|data| data.join("firebrick"))
+}
+
+/// Replaces a file with `content` that only the user can read, without leaving a partial file.
+pub fn write_private(path: &Path, content: &str) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+
+    let temp_path = path.with_extension("tmp");
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&temp_path)?;
+
+    // The mode only applies to new files, so fix a temp file left over with other permissions.
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    file.write_all(content.as_bytes())?;
+    file.sync_all()?;
+
+    fs::rename(&temp_path, path)
 }
 
 /// Turns the leaf directory of `path` into a DNS label of lowercase ASCII letters, digits and
@@ -266,6 +307,57 @@ mod tests {
                 "peer uid {peer_uid}"
             );
         }
+    }
+
+    #[test]
+    fn approvals_path_is_under_xdg_config_home() {
+        let var = env(&[("XDG_CONFIG_HOME", "/config"), ("HOME", "/home/user")]);
+        assert_eq!(
+            approvals_path_from(&var),
+            Some(PathBuf::from("/config/firebrick/approved.yml"))
+        );
+    }
+
+    #[test]
+    fn approvals_path_falls_back_to_config_in_home() {
+        for config in ["", "config"] {
+            let vars = [("XDG_CONFIG_HOME", config), ("HOME", "/home/user")];
+            assert_eq!(
+                approvals_path_from(&env(&vars)),
+                Some(PathBuf::from("/home/user/.config/firebrick/approved.yml")),
+                "XDG_CONFIG_HOME={config:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn approvals_path_is_none_without_absolute_home() {
+        assert_eq!(approvals_path_from(&env(&[])), None);
+        let var = env(&[("XDG_CONFIG_HOME", "config"), ("HOME", "home")]);
+        assert_eq!(approvals_path_from(&var), None);
+    }
+
+    #[test]
+    fn write_private_replaces_the_file_with_a_private_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config/approved.yml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path.with_extension("tmp"), "left over").unwrap();
+        fs::set_permissions(
+            path.with_extension("tmp"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+
+        write_private(&path, "first").unwrap();
+        write_private(&path, "second").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!path.with_extension("tmp").exists());
     }
 
     fn label(path: &str) -> String {
