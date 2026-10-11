@@ -1774,18 +1774,17 @@ const CURL_IMAGE: &str = "buildpack-deps:trixie-curl";
 
 /// Requests the URL over IPv4 from inside the sandbox and returns the body followed by the
 /// HTTP status code on its own line.
+///
+/// curl writes the status code as it exits, and microsandbox drops terminal output that the
+/// guest agent hasn't read when it reports the exit. The shell waits a second after curl exits
+/// so the status code is read first.
 async fn fetch(
     client: &mut SandboxManagementServiceClient<Channel>,
     name: &str,
     url: &str,
 ) -> String {
-    let (output, _) = run_command(
-        client,
-        name,
-        "curl",
-        &["-4", "-sS", "-m", "30", "-w", "\\n%{http_code}", url],
-    )
-    .await;
+    let script = "curl -4 -sS -m 30 -w '\\n%{http_code}' \"$1\"; code=$?; sleep 1; exit $code";
+    let (output, _) = run_command(client, name, "sh", &["-c", script, "fetch", url]).await;
 
     output
 }

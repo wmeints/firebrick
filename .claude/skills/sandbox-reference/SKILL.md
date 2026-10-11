@@ -237,6 +237,12 @@ build on it when `Cargo.lock` has a newer version.
   from. `session.rs` sets `TERM` explicitly.
 - The SSH server sets `TERM` in the guest from the client's PTY request
   (`ssh.rs`), so the host side can't choose it for SSH sessions.
+- An exec stream ends at `ExecExited`: the reader in `$M/sandbox/exec.rs` stops
+  there and drops anything after it. On a TTY exec the guest agent can report
+  the exit before it has read the last terminal output, so output written as the
+  process exits, such as curl's `-w` status code, is sometimes lost. The
+  `vm-tests` wait in the shell after such a command (`fetch` in
+  `tests/grpc.rs`).
 
 **Host state**
 
