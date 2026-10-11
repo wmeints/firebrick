@@ -31,8 +31,10 @@ The rest of this README is for people who work on the source code.
 
 ### Setup
 
-Development needs Linux with KVM or macOS on Apple Silicon, like Firebrick
-itself; the integration tests boot real VMs. See
+Development needs Linux with KVM, macOS on Apple Silicon, or Windows with a WSL
+2 distribution that has nested virtualization, like Firebrick itself; the
+integration tests boot real VMs. On Windows, run all development commands inside
+the distribution. See
 [Installation](https://firebrick-sandbox.dev/docs/installation/) for the
 details.
 

@@ -1,11 +1,13 @@
 # Risks and technical debt
 
-- **No Windows support:** the constraints require the application to work on
-  Windows, but the CLI and daemon talk over a unix socket and rely on unix
+- **No native Windows support:** the constraints require the application to work
+  on Windows, but the CLI and daemon talk over a unix socket and rely on unix
   signals, so they don't compile for Windows and no Windows release exists
   ([ADR 0001](decisions/0001-release-through-github-releases-and-ghcr.md)).
   Porting needs a cross-platform transport, such as named pipes, and
-  microsandbox's Windows support is still in preview.
+  microsandbox's Windows support is still in preview. Until then, Windows users
+  run the Linux release in WSL 2 with nested virtualization, and editors on
+  Windows can't reach the sandboxes' SSH hosts.
 - **Secrets in plaintext at rest:** the secret values are stored in plaintext in
   `secrets.yml` and in microsandbox's database, readable by every process that
   runs as the user. When the host may be compromised, rotate the secrets at
