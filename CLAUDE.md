@@ -194,13 +194,19 @@ These checks enforce the rules above, so don't try to bypass them:
   tests; `dprint check` for Markdown and `actionlint` for workflows. A failure
   blocks the turn once; when it still fails on the retry, the hook reports it to
   the user and lets the turn end instead of looping.
-- Lefthook runs the format checks for Rust and Markdown, `actionlint` on the
-  GitHub workflows, clippy and the unit tests before each commit, and for
-  commits that touch `website/` or `mise.toml` the website's install, format
-  check, lint, type check, unit tests and build.
-- GitHub Actions (`.github/workflows/ci.yaml`) runs the format checks,
-  `actionlint`, build, clippy, unit tests and the `vm-tests` integration tests
-  on every pull request and every push to `main`.
+- Before each commit, Lefthook runs the checks for the staged files: the format
+  checks for Rust and Markdown, `actionlint` for the GitHub workflows, clippy
+  and the unit tests for the Rust inputs (`*.rs`, `*.proto`, `Cargo.toml`,
+  `Cargo.lock`, `.cargo/config.toml`), and for `website/` or `mise.toml` the
+  website's install, format check, lint, type check, unit tests and build.
+- Each GitHub Actions workflow runs on pull requests and pushes to `main` only
+  when the files it checks, or the workflow itself, changed (ADR 0036):
+  `.github/workflows/ci.yaml` runs the Rust format check, clippy, the unit tests
+  and the `vm-tests` integration tests for changes to `crates/`, the `Cargo`
+  files, `.cargo/`, `clippy.toml` or `mise.toml`; `markdown.yaml` runs `dprint
+  check` for Markdown, `dprint.json` or `mise.toml` changes; `actionlint.yaml`
+  runs `actionlint` for workflow or `mise.toml` changes. A website-only or
+  docs-only pull request runs no `CI` jobs.
 - `.github/workflows/website.yaml` runs the website's install, format check,
   lint, type check, unit tests, build and end-to-end tests on pull requests and
   pushes to `main` that change `website/`, `mise.toml` or the workflow. On
