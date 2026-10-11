@@ -20,11 +20,11 @@ use firebrick_daemon::api::{
 };
 use firebrick_daemon::open::{self, Opener};
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
-use firebrick_daemon::{mise, sandboxes, server};
+use firebrick_daemon::{mise, netlog, sandboxes, server};
 use hyper_util::rt::TokioIo;
 use microsandbox::Sandbox;
 use microsandbox::sandbox::{
-    OwnedVolumeStorage, RootfsSource, SandboxHandle, SandboxSpec, VolumeMount,
+    OwnedVolumeStorage, RootfsSource, SandboxHandle, SandboxSpec, VolumeMount, VsockSocketType,
 };
 use microsandbox::snapshot::{Snapshot, SnapshotHandle};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -84,6 +84,22 @@ impl TestDaemon {
     }
 
     async fn start_with_secrets(name: &str, secrets: SecretStore) -> Self {
+        Self::start_with(name, secrets, false).await
+    }
+
+    /// Starts a daemon that listens for the network logs of the existing sandboxes first, like
+    /// `fbkd` does when it starts.
+    async fn start_restoring_network_logs(name: &str) -> Self {
+        let secrets_path = std::env::temp_dir().join(format!(
+            "fbk-it-{}-{}-secrets.yml",
+            std::process::id(),
+            name
+        ));
+
+        Self::start_with(name, SecretStore::new(secrets_path), true).await
+    }
+
+    async fn start_with(name: &str, secrets: SecretStore, restore_network_logs: bool) -> Self {
         init_logging();
         STALE_SWEEP.get_or_init(sweep_stale_sandboxes).await;
 
@@ -93,12 +109,13 @@ impl TestDaemon {
 
         let (tx, rx) = oneshot::channel();
         let opener = Arc::new(RecordingOpener::default());
-        let handle = tokio::spawn(serve_until(
-            socket_path.clone(),
-            secrets,
-            opener.clone(),
-            rx,
-        ));
+        let service = server::FirebrickServer::new(secrets, opener.clone());
+
+        if restore_network_logs {
+            service.restore_network_logs().await;
+        }
+
+        let handle = tokio::spawn(serve_until(socket_path.clone(), service, rx));
 
         wait_for_socket(&socket_path).await;
 
@@ -145,15 +162,12 @@ fn init_logging() {
         .try_init();
 }
 
-/// Serves the daemon on the socket until `stop` fires, opening URLs with `opener`.
+/// Serves the daemon on the socket until `stop` fires.
 async fn serve_until(
     path: PathBuf,
-    secrets: SecretStore,
-    opener: Arc<RecordingOpener>,
+    service: server::FirebrickServer,
     stop: oneshot::Receiver<()>,
 ) -> Result<(), server::ServerError> {
-    let service = server::FirebrickServer::new(secrets, opener);
-
     server::serve(&path, service, async {
         let _ = stop.await;
     })
@@ -244,10 +258,24 @@ async fn remove_stale_sandbox(sb: &SandboxHandle) {
 }
 
 /// Removes the workspaces, mount directories, sockets and secrets files that dead test
-/// processes left in the temp directory. They're all named `fbk-it-<pid>-...`, also when the
-/// process was killed before it created the sandbox.
+/// processes left in the temp directory, and the network log sockets and records of their
+/// sandboxes. They're all named `fbk-it-<pid>-...`, also when the process was killed before it
+/// created the sandbox.
 fn remove_stale_host_files() {
-    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+    let dirs = [
+        Some(std::env::temp_dir()),
+        Some(firebrick_utils::netlog_socket_dir()),
+        firebrick_utils::network_log_dir(),
+    ];
+
+    for dir in dirs.iter().flatten() {
+        remove_stale_files_in(dir);
+    }
+}
+
+/// Removes the files and directories of dead test processes in the directory.
+fn remove_stale_files_in(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
 
@@ -259,8 +287,8 @@ fn remove_stale_host_files() {
     }
 }
 
-/// Stops and removes a sandbox and its workspace, including ones left over from an earlier
-/// (failed) run.
+/// Stops and removes a sandbox, its workspace and its network log, including ones left over
+/// from an earlier (failed) run.
 async fn remove_sandbox(name: &str) {
     if let Ok(sb) = Sandbox::get(name).await {
         let _ = sb.stop().await;
@@ -268,6 +296,8 @@ async fn remove_sandbox(name: &str) {
     }
 
     let _ = std::fs::remove_dir_all(workspace_path(name));
+    let _ = std::fs::remove_file(netlog_socket(name));
+    let _ = std::fs::remove_file(netlog_record(name));
 }
 
 async fn sandbox_status(
@@ -2967,4 +2997,152 @@ async fn forward_port_fails_for_a_stored_port_that_is_still_busy() {
     assert_eq!(started.failed_forwards.len(), 1);
     let status = status.unwrap_err();
     assert_eq!(status.code(), Code::FailedPrecondition, "{status:?}");
+}
+
+/// Returns the host socket fbkd listens on for the sandbox's network log.
+fn netlog_socket(name: &str) -> PathBuf {
+    firebrick_utils::netlog_socket_dir().join(format!("{name}.sock"))
+}
+
+/// Returns the file fbkd records the sandbox's network activity in.
+fn netlog_record(name: &str) -> PathBuf {
+    firebrick_utils::network_log_dir()
+        .expect("no state directory for network records")
+        .join(format!("{name}.json"))
+}
+
+/// Whether the sandbox has a stream route from the network log port to its socket.
+async fn has_netlog_route(name: &str) -> bool {
+    sandbox_spec(name).await.vsock.routes.iter().any(|route| {
+        route.port == netlog::GUEST_PORT
+            && route.socket_type == VsockSocketType::Stream
+            && route.host_socket == netlog_socket(name)
+    })
+}
+
+/// Writes the lines to the sandbox's network log socket, as the logger in the guest does.
+async fn write_netlog_lines(name: &str, lines: &[&str]) {
+    let mut stream = UnixStream::connect(netlog_socket(name))
+        .await
+        .expect("fbkd doesn't listen on the network log socket");
+
+    stream
+        .write_all(format!("{}\n", lines.join("\n")).as_bytes())
+        .await
+        .unwrap();
+}
+
+/// Waits until the sandbox's record file has the expected number of DNS and connection
+/// entries, and returns it.
+async fn wait_for_record(name: &str, dns: usize, connections: usize) -> netlog::Record {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut record = read_record(name);
+
+    while record.as_ref().map(|r| (r.dns.len(), r.connections.len())) != Some((dns, connections)) {
+        assert!(Instant::now() < deadline, "record of {name}: {record:?}");
+        sleep(POLL_INTERVAL).await;
+        record = read_record(name);
+    }
+
+    record.unwrap()
+}
+
+/// Reads the sandbox's record file, if it exists and parses.
+fn read_record(name: &str) -> Option<netlog::Record> {
+    let content = std::fs::read(netlog_record(name)).ok()?;
+
+    serde_json::from_slice(&content).ok()
+}
+
+const DNS_LINE: &str = r#"{"kind":"dns","name":"example.com","addresses":["93.184.215.14"],"at":"2026-10-11T14:02:11Z"}"#;
+const CONNECT_LINE: &str = r#"{"kind":"connect","protocol":"tcp","ip":"93.184.215.14","port":443}"#;
+
+#[tokio::test]
+async fn network_log_records_lines_across_restarts_until_the_sandbox_is_removed() {
+    let name: &str = &sandbox_name("netlog");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("netlog").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, name).await;
+    let routed = has_netlog_route(name).await;
+    write_netlog_lines(
+        name,
+        &[DNS_LINE, "not json", &"x".repeat(5000), CONNECT_LINE],
+    )
+    .await;
+    let before = wait_for_record(name, 1, 1).await;
+    daemon.stop().await;
+
+    let daemon = TestDaemon::start_restoring_network_logs("netlog-restarted").await;
+    let mut client = daemon.client().await;
+    write_netlog_lines(name, &[DNS_LINE]).await;
+    let after = wait_for_record_count(name, 2).await;
+    remove_with_force(&mut client, name).await;
+    let socket_left = netlog_socket(name).exists();
+    let record_left = netlog_record(name).exists();
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert!(routed, "sandbox has no network log route");
+    assert_eq!(before.dns[0].name, "example.com");
+    assert_eq!(before.connections[0].ports, [443].into());
+    assert_eq!(after.dns[0].first_seen, before.dns[0].first_seen);
+    assert!(!socket_left, "the network log socket is left");
+    assert!(!record_left, "the network record is left");
+}
+
+/// Waits until the DNS entry of the sandbox's record has the count.
+async fn wait_for_record_count(name: &str, count: u64) -> netlog::Record {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut record = read_record(name);
+
+    while record.as_ref().and_then(|r| r.dns.first()).map(|e| e.count) != Some(count) {
+        assert!(Instant::now() < deadline, "record of {name}: {record:?}");
+        sleep(POLL_INTERVAL).await;
+        record = read_record(name);
+    }
+
+    record.unwrap()
+}
+
+/// Removes the sandbox through the daemon, stopping it first.
+async fn remove_with_force(client: &mut SandboxManagementServiceClient<Channel>, name: &str) {
+    client
+        .remove_sandbox(RemoveSandboxRequest {
+            name: name.to_string(),
+            force: true,
+        })
+        .await
+        .expect("failed to remove sandbox");
+}
+
+#[tokio::test]
+async fn update_network_adds_the_network_log_route_to_a_sandbox_without_one() {
+    let name: &str = &sandbox_name("netlog-update");
+    remove_sandbox_and_snapshots(name).await;
+    // Like a sandbox fbkd created before network logging, with a Docker disk but no route.
+    Sandbox::builder(name)
+        .image(TEST_IMAGE)
+        .volume("/var/lib/docker", |m| m.owned_with(|v| v.disk().size(1024)))
+        .detached(true)
+        .create()
+        .await
+        .expect("failed to create sandbox without a route");
+    let routed_before = has_netlog_route(name).await;
+
+    let daemon = TestDaemon::start("netlog-update").await;
+    let mut client = daemon.client().await;
+    let updated = update_network(&mut client, name, allow_policy(true, &["example.com"])).await;
+    let routed_after = has_netlog_route(name).await;
+    let listening = UnixStream::connect(netlog_socket(name)).await.is_ok();
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
+
+    assert!(!routed_before);
+    assert!(updated.unwrap());
+    assert!(routed_after, "recreated sandbox has no network log route");
+    assert!(listening, "fbkd doesn't listen for the recreated sandbox");
 }

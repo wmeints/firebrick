@@ -37,3 +37,4 @@
 - [ADR 0035 - Theme the website with shared tokens and self-hosted fonts](decisions/0035-theme-the-website-with-shared-tokens-and-self-hosted-fonts.md)
 - [ADR 0036 - Run each CI workflow only for the changes it checks](decisions/0036-run-each-ci-workflow-only-for-the-changes-it-checks.md)
 - [ADR 0037 - Approve mounts and network changes in the spec](decisions/0037-approve-mounts-and-network-changes-in-the-spec.md)
+- [ADR 0038 - Record network activity with a guest logger on vsock](decisions/0038-record-network-activity-with-a-guest-logger-on-vsock.md)

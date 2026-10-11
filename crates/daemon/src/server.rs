@@ -71,6 +71,12 @@ impl FirebrickServer {
             sandboxes: Arc::new(SandboxManager::new(secrets, opener)),
         }
     }
+
+    /// Listens for the network logs of the existing sandboxes that have the route. Run when the
+    /// daemon starts, so it records the sandboxes that kept running while it was down.
+    pub async fn restore_network_logs(&self) {
+        self.sandboxes.restore_network_logs().await;
+    }
 }
 
 /// Reads the sandbox to start from a request with its parsed egress rules and ports. A request
@@ -533,13 +539,15 @@ fn parse_size_mib(size: &str) -> Result<u32, SandboxError> {
         .map_err(|err| SandboxError::InvalidArgument(err.to_string()))
 }
 
-/// Reopens the port forwards of the sandboxes that are running, then serves the gRPC API on
+/// Reopens the port forwards of the sandboxes that are running and listens for the network logs
+/// of the sandboxes, then serves the gRPC API on
 /// the socket until SIGINT or SIGTERM is received, opening the URLs from sandboxes in the
 /// host's browser. The caller makes sure no other daemon serves on the socket, so it doesn't
 /// take that daemon's host ports.
 pub async fn run(socket_path: &Path, secrets: SecretStore) -> Result<(), ServerError> {
     let service = FirebrickServer::new(secrets, Arc::new(HostOpener));
     service.sandboxes.restore_forwards().await;
+    service.restore_network_logs().await;
 
     serve(socket_path, service, shutdown_signal()).await
 }

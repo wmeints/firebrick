@@ -182,6 +182,7 @@ C4Component
         Component(network, "network", "microsandbox-network", "Egress rules")
         Component(forward, "forward", "russh", "Port forwards")
         Component(open, "open", "Rust", "URL relays")
+        Component(netlog, "netlog", "serde_json", "Network logs")
         Component(pull, "pull", "Rust", "Image pull progress")
     }
     Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names, text")
@@ -208,6 +209,8 @@ C4Component
     Rel(sandboxes, open, "Starts URL relays")
     Rel(open, microsandbox, "Runs the relay as an exec stream")
     Rel(open, browser, "Opens URLs")
+    Rel(sandboxes, netlog, "Adds vsock routes, listens for network logs")
+    Rel(netlog, utils, "Finds socket and record directories")
     Rel(sandboxes, ssh, "Host names, SSH config")
     Rel(sandboxes, vscode, "Syncs Remote-SSH platforms")
     Rel(sandboxes, zed, "Syncs remote projects")
@@ -324,7 +327,13 @@ C4Component
   ports lock while they read, reconcile and store the ports. `StartSandbox`,
   `Attach`, `SshTunnel` and an `UpdateNetwork` of a running sandbox make sure
   the sandbox's URL relay runs, through `open`; `StopSandbox`, `RemoveSandbox`
-  and recreating the sandbox forget it.
+  and recreating the sandbox forget it. The shared builder chain also adds the
+  vsock route of the sandbox's network log through `netlog`, so created and
+  recreated sandboxes get it, also when the original had none. Before it creates
+  a sandbox, starts one that has the route (also through `SshTunnel`) or
+  recreates one, it makes `netlog` listen on the sandbox's socket; `fbkd` does
+  the same for every sandbox with the route when it starts. `RemoveSandbox`
+  deletes the socket and the record.
 - `pull` - Turns microsandbox's `PullProgress` events into pull updates: it adds
   up the downloaded bytes per layer, takes the total from the manifest, and
   reports at most one update every 100 ms, one for each layer that finishes and
@@ -411,6 +420,35 @@ C4Component
   <name> without forwarding its callback port <port>` and the URL still opens.
   The forwards close when the relay ends, when `Relays::forget` stops the relay
   task, or after they're idle.
+- `netlog` - Records the domains and IP addresses a sandbox contacts, as the
+  logger in the `firebrick-base` image reports them (see
+  [ADR 0038](decisions/0038-record-network-activity-with-a-guest-logger-on-vsock.md)
+  and
+  [Recording network activity](06-runtime-view.md#recording-network-activity)).
+  `NetLogs::add_route` adds a stream route from guest vsock port `52000` to
+  `$XDG_RUNTIME_DIR/firebrick/netlog/<sandbox>.sock` (the temp directory without
+  `XDG_RUNTIME_DIR`). When that path doesn't fit in a unix socket address (108
+  bytes), it adds no route and logs a warning, because microsandbox would refuse
+  to boot the sandbox. `NetLogs::listen` binds the socket unless `fbkd` already
+  listens on it: it creates the directory with mode `0700`, leaves a socket that
+  another process answers on alone, and removes a stale socket file first. A
+  socket that can't be bound is logged as an error and the sandbox starts
+  without a record. Each line the guest writes is untrusted: a line longer than
+  4 KiB, invalid JSON, an unknown `kind`, a name that isn't a valid DNS name, an
+  invalid IPv4 address or port 0 is dropped with a warning at most once a minute
+  per sandbox, and the connection stays open. The valid events are aggregated
+  per destination: a DNS entry per name (lowercase, without a trailing dot) with
+  its resolved IPv4 addresses, and a connection entry per address and protocol
+  with its ports, each with a count and the first and last time `fbkd` received
+  it (the guest's own timestamp is ignored). A record holds at most 10,000
+  destinations, after which new ones are dropped with one warning while known
+  ones keep updating, and at most 64 addresses or ports per entry. The record is
+  written to `$XDG_STATE_HOME/firebrick/network/<sandbox>.json` (falling back to
+  `~/.local/state/firebrick/network`) with `write_private`, at most once a
+  second while it changes. A corrupt record file is logged as a warning and
+  replaced by a new, empty record. `NetLogs::record` returns a sandbox's
+  entries, and `NetLogs::remove` stops listening and deletes the socket and the
+  record.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `fbkd` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,
@@ -549,7 +587,8 @@ The `Dockerfile` in the repository root describes a base image for sandbox
 images. It builds on `ubuntu:26.04` and adds:
 
 - Base tooling - `build-essential`, `ca-certificates`, `curl`, `git`, `gpg`,
-  `libicu78`, `libssl-dev`, `pkg-config`, `procps`, `sudo` and `tini`. The build
+  `libicu78`, `libssl-dev`, `pkg-config`, `procps`, `python3`, `sudo`, `tcpdump`
+  and `tini`. `python3` and `tcpdump` run the network logger. The build
   toolchain and OpenSSL headers let native npm and pip extensions, Rust crates
   with C build scripts such as `openssl-sys`, and runtimes that mise builds from
   source compile without installing anything first. `libicu78` is there for .NET
@@ -570,11 +609,13 @@ images. It builds on `ubuntu:26.04` and adds:
   `/etc/sysctl.d/99-disable-ipv6.conf`, removes Docker's runtime state from the
   previous boot, which survives in `/run` because it sits on the persistent
   root, starts `dockerd` in the background with its output in
-  `/var/log/dockerd.log`, and then hands PID 1 to `tini`, which reaps zombie
-  processes. It doesn't wait for `dockerd` to be ready, and the sandbox boots
-  even when `dockerd` fails. `fbkd` runs it as PID 1 unless the spec sets `init:
-  false`; then nothing starts `dockerd`, and the agent can start it in the
-  background with `sudo sh -c 'dockerd >/var/log/dockerd.log 2>&1 &'`. See
+  `/var/log/dockerd.log`, starts the network logger in a loop that restarts it 5
+  seconds after it exits, with its output in `/var/log/firebrick-netlog.log`,
+  and then hands PID 1 to `tini`, which reaps zombie processes. It doesn't wait
+  for `dockerd` to be ready, and the sandbox boots even when `dockerd` fails.
+  `fbkd` runs it as PID 1 unless the spec sets `init: false`; then nothing
+  starts `dockerd`, and the agent can start it in the background with `sudo sh
+  -c 'dockerd >/var/log/dockerd.log 2>&1 &'`. See
   [ADR 0007](decisions/0007-disable-guest-ipv6-in-the-base-image.md).
 - `/usr/local/bin/firebrick-open` - a stand-in for a browser, symlinked as
   `/usr/local/bin/xdg-open` and set as `BROWSER`, so `gh auth login --web`,
@@ -586,6 +627,19 @@ images. It builds on `ubuntu:26.04` and adds:
   FIFO is missing or no relay reads it within 5 seconds, it exits 1 and prints
   `firebrick-open: couldn't reach the host; open this URL yourself: <url>`. See
   [Opening a URL on the host](06-runtime-view.md#opening-a-url-on-the-host).
+- `/usr/local/sbin/firebrick-netlog` - the network logger, a Python script that
+  runs as root. It runs two `tcpdump`s on the interface of the default route:
+  one for outgoing UDP datagrams and TCP SYNs, and one for the answers of DNS
+  servers. It pairs each `A?` query with its answer by port and query id and
+  reports `{"kind":"dns","name":...,"addresses":[...],"at":...}`, and it reports
+  every TCP SYN and the first UDP datagram to each new destination as
+  `{"kind":"connect","protocol":"tcp"|"udp","ip":...,"port":...,"at":...}`.
+  Attempts the network policy denies leave the interface too, so they're
+  reported. It writes one event per line to vsock port `52000` of the host (CID
+  2) without blocking. While `fbkd` can't be reached or its 64 KiB buffer is
+  full, it drops events, and it reconnects with a backoff that doubles up to 5
+  seconds. The agent can stop it or send false events, see
+  [ADR 0038](decisions/0038-record-network-activity-with-a-guest-logger-on-vsock.md).
 - `/usr/local/bin/firebrick-git-credential` - a git credential helper,
   registered in `/etc/gitconfig` as `credential.https://github.com.helper`. On
   `get` it prints `username=x-access-token` and `GH_TOKEN`, or `GITHUB_TOKEN`

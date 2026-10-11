@@ -19,10 +19,40 @@ pub const NO_LOG_DIR: &str =
 
 /// Returns the path of the daemon's unix socket.
 pub fn socket_path() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
+    runtime_dir_from(&env_var).join("fbkd.sock")
+}
+
+/// Returns the directory holding the unix sockets that sandboxes report their network activity
+/// to: `$XDG_RUNTIME_DIR/firebrick/netlog`, falling back to the temp directory like
+/// [`socket_path`].
+pub fn netlog_socket_dir() -> PathBuf {
+    netlog_socket_dir_from(&env_var)
+}
+
+/// Returns the network activity socket directory for the environment that `var` describes.
+fn netlog_socket_dir_from(var: &impl Fn(&str) -> Option<OsString>) -> PathBuf {
+    runtime_dir_from(var).join("firebrick/netlog")
+}
+
+/// Returns `$XDG_RUNTIME_DIR`, falling back to the temp directory, for the environment that
+/// `var` describes.
+fn runtime_dir_from(var: &impl Fn(&str) -> Option<OsString>) -> PathBuf {
+    var("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join("fbkd.sock")
+}
+
+/// Returns the directory the daemon records the network activity of sandboxes in:
+/// `$XDG_STATE_HOME/firebrick/network`, falling back to `$HOME/.local/state/firebrick/network`.
+///
+/// Returns `None` when neither variable is an absolute path, like [`log_dir`].
+pub fn network_log_dir() -> Option<PathBuf> {
+    network_log_dir_from(&env_var)
+}
+
+/// Returns the network activity directory for the environment that `var` describes.
+fn network_log_dir_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    log_dir_from(var).map(|dir| dir.join("network"))
 }
 
 /// Returns why the daemon can't choose its data or log directory in this environment, or
@@ -305,6 +335,45 @@ mod tests {
                 is_trusted_peer(peer_uid, 1000),
                 expected,
                 "peer uid {peer_uid}"
+            );
+        }
+    }
+
+    #[test]
+    fn netlog_socket_dir_is_under_xdg_runtime_dir() {
+        let var = env(&[("XDG_RUNTIME_DIR", "/run/user/1000")]);
+        assert_eq!(
+            netlog_socket_dir_from(&var),
+            PathBuf::from("/run/user/1000/firebrick/netlog")
+        );
+    }
+
+    #[test]
+    fn netlog_socket_dir_falls_back_to_the_temp_dir() {
+        assert_eq!(
+            netlog_socket_dir_from(&env(&[])),
+            std::env::temp_dir().join("firebrick/netlog")
+        );
+    }
+
+    #[test]
+    fn network_log_dir_is_under_the_log_dir() {
+        let cases = [
+            (
+                &[("XDG_STATE_HOME", "/state")][..],
+                Some("/state/firebrick/network"),
+            ),
+            (
+                &[("HOME", "/home/user")],
+                Some("/home/user/.local/state/firebrick/network"),
+            ),
+            (&[("HOME", "home")], None),
+        ];
+        for (vars, expected) in cases {
+            assert_eq!(
+                network_log_dir_from(&env(vars)),
+                expected.map(PathBuf::from),
+                "{vars:?}"
             );
         }
     }
