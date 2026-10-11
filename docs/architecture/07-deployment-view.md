@@ -60,7 +60,9 @@ The Linux binaries are built on Ubuntu 22.04, so they need glibc 2.35 or newer.
 
 Windows has no release: the CLI and daemon talk over a unix socket and rely on
 unix signals. See
-[ADR 0001](decisions/0001-release-through-github-releases-and-ghcr.md).
+[ADR 0001](decisions/0001-release-through-github-releases-and-ghcr.md). Windows
+users run the Linux release in WSL 2 with nested virtualization, which exposes
+`/dev/kvm` to the distribution.
 
 ## Host requirements
 

@@ -23,10 +23,10 @@ The documentation lives at
 
 - Linux with KVM, or macOS on Apple Silicon.
 - On Linux, glibc 2.35 or newer for the release binaries.
+- On Windows, WSL 2 with nested virtualization, which runs the Linux release.
 
-Windows isn't supported. See
-[Installation](https://firebrick-sandbox.dev/docs/installation/) to install the
-`fbk` and `fbkd` binaries from a release or from source.
+See [Installation](https://firebrick-sandbox.dev/docs/installation/) to install
+the `fbk` and `fbkd` binaries from a release or from source.
 
 ## Quickstart
 

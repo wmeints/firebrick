@@ -88,8 +88,9 @@ in an editor on the host.
 - Linux with KVM, on x86_64 or ARM64. The release binaries need glibc 2.35 or
   newer.
 - macOS on Apple Silicon.
-
-Windows isn't supported.
+- Windows 11 through WSL 2 with nested virtualization, which runs the Linux
+  release. See
+  [Installation](/docs/installation/#windows-run-firebrick-in-wsl-2).
 
 ## Next steps
 

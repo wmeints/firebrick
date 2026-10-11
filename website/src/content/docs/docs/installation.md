@@ -12,8 +12,9 @@ archive per platform with the `fbk` and `fbkd` binaries:
 | Linux ARM64           | `aarch64-unknown-linux-gnu` |
 | macOS (Apple Silicon) | `aarch64-apple-darwin`      |
 
-Linux needs KVM, and the Linux binaries need glibc 2.35 or newer. Windows isn't
-supported.
+Linux needs KVM, and the Linux binaries need glibc 2.35 or newer. On Windows,
+run the Linux binaries in WSL 2 with nested virtualization; see
+[Windows: run Firebrick in WSL 2](#windows-run-firebrick-in-wsl-2) first.
 
 The steps below install both binaries in `~/.local/bin`, which doesn't need root
 permissions. Keep `fbk` and `fbkd` in the same directory, because the CLI starts
@@ -109,6 +110,45 @@ them. Remove the quarantine flag:
 ```sh
 xattr -d com.apple.quarantine ~/.local/bin/fbk ~/.local/bin/fbkd
 ```
+
+## Windows: run Firebrick in WSL 2
+
+There's no Windows release, but the Linux release runs in a WSL 2 distribution
+when WSL exposes KVM to it through nested virtualization. This needs Windows 11
+and a CPU with hardware virtualization enabled in the firmware.
+
+1. Enable nested virtualization in `%UserProfile%\.wslconfig` on Windows:
+
+   ```ini
+   [wsl2]
+   nestedVirtualization=true
+   ```
+
+2. Restart WSL from PowerShell so it picks up the setting:
+
+   ```powershell
+   wsl --shutdown
+   ```
+
+3. In the WSL distribution, check that KVM is available and that your user can
+   open it:
+
+   ```sh
+   ls -l /dev/kvm
+   test -r /dev/kvm && test -w /dev/kvm && echo "KVM is usable"
+   ```
+
+   When `/dev/kvm` is missing, nested virtualization isn't active. When it
+   exists but isn't usable, add your user to its group, for example with `sudo
+   usermod -aG kvm "$USER"`, and restart WSL.
+
+Then follow the Linux steps above inside the distribution, and keep your
+projects in the distribution's file system, for example under `~/projects`,
+instead of under `/mnt/c`.
+
+`fbkd` writes its SSH config to `~/.ssh/config` in the distribution, so the
+`.fbk` host names from [Editor support](/docs/editor-support/) only resolve for
+`ssh` and editors that run inside WSL. Editors on Windows don't see them.
 
 ## Upgrading and uninstalling
 
