@@ -6,6 +6,22 @@ request, and the release workflow copies the section into the GitHub release,
 above the generated list of pull requests. Each section starts with a `##
 vX.Y.Z - YYYY-MM-DD` heading.
 
+## v0.7.0 - 2026-10-11
+
+This release shows which domains and IP addresses an agent contacts, so you can
+see which `fbk network allow` rules a task needs and spot hosts it shouldn't
+reach.
+
+### Features
+
+- `fbkd` records the domains and IP addresses each sandbox contacts, including
+  attempts the network rules deny. A logger in the `firebrick-base` image
+  reports each DNS lookup and outgoing TCP and UDP destination. Sandboxes
+  created by an older version have no record until you remove and start them
+  again; custom images need to run the logger. (#156)
+- `fbk network log` shows the record of the project's sandbox, newest first,
+  with whether its current rules allow each destination. (#157)
+
 ## v0.6.0 - 2026-10-11
 
 This release makes .NET tools such as the Aspire CLI work in a sandbox out of
