@@ -1,0 +1,49 @@
+---
+import SectionIntro from "./SectionIntro.astro";
+import { docsPage } from "../../site";
+
+const introduction = docsPage("docs");
+const cards = [
+  { label: "Start here", page: docsPage("docs/quickstart") },
+  { label: "Configure", page: docsPage("docs/configuration") },
+  { label: "Keep keys safe", page: docsPage("docs/secrets") },
+  { label: "Look it up", page: docsPage("docs/command-line-reference") },
+];
+---
+
+<section
+  aria-labelledby="docs-heading"
+  class="mx-auto max-w-landing px-4 py-16 sm:px-6 lg:py-24"
+>
+  <div class="flex flex-wrap items-end justify-between gap-6">
+    <div>
+      <SectionIntro
+        id="docs-heading"
+        eyebrow="Documentation"
+        heading="Read the Firebrick Book."
+      >
+        The docs are written as a book: start at the beginning, or jump straight
+        to the page you need.
+      </SectionIntro>
+    </div>
+    <a
+      href={introduction.href}
+      class="text-sm font-semibold text-accent-dark underline underline-offset-4 hover:text-white"
+    >
+      Browse all chapters →
+    </a>
+  </div>
+  <ul class="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    {cards.map(({ label, page }) => (
+      <li class="relative rounded-card border border-card-border bg-card p-6 hover:border-accent-dark/60">
+        <p class="font-mono text-xs text-accent-dark">{label}</p>
+        <h3 class="mt-3 font-display text-lg font-bold text-white">
+          <a href={page.href} class="after:absolute after:inset-0">
+            {page.title}
+          </a>
+        </h3>
+        <p class="mt-3 text-sm text-muted-on-dark">{page.description}</p>
+      </li>
+    ))}
+  </ul>
+</section>

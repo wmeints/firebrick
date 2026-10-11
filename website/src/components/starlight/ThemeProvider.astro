@@ -1,0 +1,16 @@
+---
+import Default from "@astrojs/starlight/components/ThemeProvider.astro";
+---
+
+{/* Makes the light theme of the mockups the default for new visitors, before
+Starlight reads the stored theme. Choosing "Auto" stores "", which is kept. */}
+<script is:inline>
+  try {
+    if (localStorage.getItem("starlight-theme") === null) {
+      localStorage.setItem("starlight-theme", "light");
+    }
+  } catch {
+    // Without storage, Starlight follows the system theme.
+  }
+</script>
+<Default />

@@ -1,0 +1,53 @@
+---
+import Icon, { type IconName } from "../Icon.astro";
+import SectionIntro from "./SectionIntro.astro";
+
+const features: { icon: IconName; title: string; body: string }[] = [
+  {
+    icon: "boundary",
+    title: "A real VM boundary",
+    body: "Every sandbox is a microVM with its own kernel. A misbehaving agent runs into a hypervisor, not your home directory.",
+  },
+  {
+    icon: "zap",
+    title: "Light enough to throw away",
+    body: "microsandbox VMs start quickly and stay small. If the agent breaks its sandbox, replace it with <code>fbk rm</code> and <code>fbk start</code>; your project files stay on the host.",
+  },
+  {
+    icon: "folder",
+    title: "You decide what gets in",
+    body: "Mount only the project you're working on and choose what the network can reach. Keys and dotfiles stay on the host.",
+  },
+  {
+    icon: "terminal",
+    title: "One small CLI",
+    body: "Written in Rust and driven from a single command, <code>fbk</code>. No dashboards, no YAML sprawl.",
+  },
+];
+---
+
+<section
+  aria-labelledby="why-heading"
+  class="mx-auto max-w-landing px-4 py-16 sm:px-6 lg:py-24"
+>
+  <SectionIntro
+    id="why-heading"
+    eyebrow="Why Firebrick"
+    heading="Containers share a kernel. Your agent shouldn't."
+  >
+    Coding agents run commands, install packages and rewrite files without
+    asking. Firebrick gives each agent session a disposable virtual machine, so
+    autonomy doesn't come at the cost of your laptop.
+  </SectionIntro>
+  <ul class="mt-12 grid gap-4 sm:grid-cols-2">
+    {features.map((feature) => (
+      <li class="rounded-card border border-card-border bg-card p-6">
+        <Icon name={feature.icon} class="size-6 text-accent-dark" />
+        <h3 class="mt-4 font-display text-lg font-bold text-white">
+          {feature.title}
+        </h3>
+        <p class="mt-3 text-sm text-muted-on-dark" set:html={feature.body} />
+      </li>
+    ))}
+  </ul>
+</section>

@@ -1,0 +1,27 @@
+---
+/**
+ * The hero's terminal window with a short `fbk` session. Lines wrap instead of
+ * scrolling, so the window never shows a scrollbar.
+ */
+---
+
+<figure class="overflow-hidden rounded-card border border-card-border bg-terminal shadow-2xl shadow-black/50">
+  <div class="flex items-center gap-3 border-b border-card-border px-4 py-3">
+    <span class="flex gap-1.5" aria-hidden="true">
+      <span class="size-2.5 rounded-full bg-white/20"></span>
+      <span class="size-2.5 rounded-full bg-white/20"></span>
+      <span class="size-2.5 rounded-full bg-white/20"></span>
+    </span>
+    <figcaption class="font-mono text-xs text-muted-on-dark">
+      ~/projects/webshop
+    </figcaption>
+  </div>
+  <pre class="px-4 py-5 font-mono text-sm leading-relaxed wrap-anywhere whitespace-pre-wrap text-text-on-dark"><span class="text-muted-on-dark">$</span> fbk start
+<span class="text-muted-on-dark">Starting sandbox webshop...</span>
+<span class="text-accent-dark">✓</span> Connect with: ssh webshop.fbk
+<span class="text-muted-on-dark">$</span> fbk run claude
+<span class="text-accent-dark">•</span> Agent is working in /workspaces/webshop.
+<span class="text-accent-dark">•</span> Your host stays untouched. <span
+  class="inline-block h-4 w-2 bg-accent-dark align-text-bottom"
+  aria-hidden="true"></span></pre>
+</figure>

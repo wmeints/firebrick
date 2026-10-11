@@ -1,0 +1,27 @@
+---
+import Default from "@astrojs/starlight/components/TableOfContents.astro";
+import EditLink from "@astrojs/starlight/components/EditLink.astro";
+import { links } from "../../site";
+---
+
+<Default />
+<div class="fb-rail-links">
+  <EditLink />
+  <a href={links.newIssue}>Report a problem</a>
+</div>
+
+<style>
+  .fb-rail-links {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 1.5rem;
+    border-top: 1px solid var(--sl-color-hairline);
+    padding-top: 1rem;
+    font-size: var(--sl-text-xs);
+  }
+
+  .fb-rail-links :global(svg) {
+    display: none;
+  }
+</style>

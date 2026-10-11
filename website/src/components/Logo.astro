@@ -1,0 +1,32 @@
+---
+/** The brick logo. Decorative: the "firebrick" word mark next to it names it. */
+interface Props {
+  class?: string;
+}
+
+const { class: className } = Astro.props;
+---
+
+<svg
+  class={className}
+  viewBox="0 0 24 18"
+  width="24"
+  height="18"
+  aria-hidden="true"
+  fill="var(--color-brick)"
+>
+  <rect x="0" y="0" width="10" height="5" rx="1"></rect>
+  <rect x="12" y="0" width="12" height="5" rx="1"></rect>
+  <rect x="0" y="6.5" width="5" height="5" rx="1"></rect>
+  <rect
+    x="7"
+    y="6.5"
+    width="10"
+    height="5"
+    rx="1"
+    fill="var(--color-accent-dark)"
+  ></rect>
+  <rect x="19" y="6.5" width="5" height="5" rx="1"></rect>
+  <rect x="0" y="13" width="10" height="5" rx="1"></rect>
+  <rect x="12" y="13" width="12" height="5" rx="1"></rect>
+</svg>

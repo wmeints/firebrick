@@ -1,0 +1,2 @@
+/* The landing page has no Starlight reset, so it uses Tailwind's. */
+@import "tailwindcss/preflight.css" layer(base);

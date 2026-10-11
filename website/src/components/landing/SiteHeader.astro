@@ -1,0 +1,46 @@
+---
+import Icon from "../Icon.astro";
+import Logo from "../Logo.astro";
+import { docsPage, links, withBase } from "../../site";
+
+const introduction = docsPage("docs");
+const quickstart = docsPage("docs/quickstart");
+---
+
+<header class="border-b border-card-border">
+  <div class="mx-auto flex max-w-landing items-center justify-between gap-4 px-4 py-4 sm:px-6">
+    <a
+      href={withBase("")}
+      class="flex items-center gap-2 font-display text-xl font-extrabold text-white"
+    >
+      <Logo />
+      firebrick
+    </a>
+    <nav aria-label="Main">
+      <ul class="flex items-center gap-4 text-sm sm:gap-6">
+        <li>
+          <a
+            href={introduction.href}
+            class="text-text-on-dark hover:text-white"
+          >
+            Docs
+          </a>
+        </li>
+        <li class="hidden sm:block">
+          <a href={quickstart.href} class="text-text-on-dark hover:text-white">
+            Getting started
+          </a>
+        </li>
+        <li>
+          <a
+            href={links.repository}
+            class="flex items-center gap-2 rounded-button border border-white/20 px-3 py-2 text-white hover:border-white/60"
+          >
+            <Icon name="git-branch" class="size-4" />
+            GitHub
+          </a>
+        </li>
+      </ul>
+    </nav>
+  </div>
+</header>

@@ -1,0 +1,33 @@
+---
+import Default from "@astrojs/starlight/components/PageTitle.astro";
+import { withBase } from "../../site";
+
+const isIntroduction = Astro.locals.starlightRoute.id === "docs";
+---
+
+<p class="fb-eyebrow">
+  {isIntroduction ? (
+    "The Firebrick Book"
+  ) : (
+    <a href={withBase("docs/")}>The Firebrick Book</a>
+  )}
+</p>
+<Default />
+
+<style>
+  .fb-eyebrow {
+    margin-top: 1rem;
+    font-family: var(--font-mono);
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-text-accent);
+  }
+
+  .fb-eyebrow a {
+    color: inherit;
+    text-underline-offset: 0.2em;
+  }
+
+  .fb-eyebrow + :global(h1) {
+    margin-top: 0.25rem;
+  }
+</style>
