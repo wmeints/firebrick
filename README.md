@@ -31,6 +31,11 @@ The rest of this README is for people who work on the source code.
 
 ### Setup
 
+Development needs Linux with KVM or macOS on Apple Silicon, like Firebrick
+itself; the integration tests boot real VMs. See
+[Installation](https://firebrick-sandbox.dev/docs/installation/) for the
+details.
+
 Install the toolchain (Rust, Node, pnpm, `buf`, `protoc`, `dprint`,
 `actionlint`, `lefthook`, the GitHub CLI and Claude Code) with
 [mise](https://mise.jdx.dev). This also installs the git hooks:
