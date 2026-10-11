@@ -65,7 +65,8 @@ enum Commands {
     Secret(SecretCommands),
     /// Change the network settings in .firebrick.yml and apply them to the sandbox, or show the
     /// sandbox's network activity
-    Network(NetworkArgs),
+    #[command(subcommand)]
+    Network(NetworkCommands),
     /// Forward host ports to the working directory's sandbox and record them in .firebrick.yml
     #[command(subcommand)]
     Port(PortCommands),
@@ -98,13 +99,11 @@ enum SecretCommands {
     },
 }
 
-#[derive(Args, Debug)]
-struct NetworkArgs {
-    #[command(subcommand)]
-    command: NetworkCommands,
-
+/// The `--yes` flag of the `fbk network` subcommands that change the network settings.
+#[derive(Args, Debug, Default)]
+struct ApproveArgs {
     /// Apply unapproved network settings in .firebrick.yml without asking
-    #[arg(long, short, global = true)]
+    #[arg(long, short)]
     yes: bool,
 }
 
@@ -115,20 +114,26 @@ enum NetworkCommands {
         /// Host name, *.domain, IP address or CIDR range, e.g. example.org or *.npmjs.org
         #[arg(required = true, value_name = "RULE")]
         rules: Vec<String>,
+
+        #[command(flatten)]
+        approve: ApproveArgs,
     },
     /// Deny the sandbox to connect to destinations, and stop allowing them
     Deny {
         /// Host name, *.domain, IP address or CIDR range, e.g. example.org or 10.0.0.0/8
         #[arg(required = true, value_name = "RULE")]
         rules: Vec<String>,
+
+        #[command(flatten)]
+        approve: ApproveArgs,
     },
     /// Turn enforcement of the network rules on or off
     #[command(subcommand)]
     Policy(PolicyCommands),
     /// Give the sandbox a network device again
-    Enable,
+    Enable(ApproveArgs),
     /// Remove the sandbox's network device, so it works fully offline
-    Disable,
+    Disable(ApproveArgs),
     /// Show the domains and IP addresses the sandbox contacted, newest first. The record comes
     /// from inside the sandbox, so an agent can tamper with it
     Log,
@@ -137,9 +142,9 @@ enum NetworkCommands {
 #[derive(Subcommand, Debug)]
 enum PolicyCommands {
     /// Deny outgoing traffic unless a rule allows it
-    Enable,
+    Enable(ApproveArgs),
     /// Allow all outgoing traffic; the rules are kept but not enforced
-    Disable,
+    Disable(ApproveArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -213,8 +218,8 @@ async fn main() -> Result<()> {
         Commands::Init { force } => init_spec(&working_dir, force),
         Commands::Secret(SecretCommands::Set(args)) => set_secret(args, &working_dir).await,
         // Changes the spec file first and only needs the daemon to apply it.
-        Commands::Network(args) => match network_change(args.command)? {
-            Some(change) => network::update(change, &working_dir, args.yes).await,
+        Commands::Network(command) => match network_change(command)? {
+            Some((change, yes)) => network::update(change, &working_dir, yes).await,
             None => network::log(&working_dir, &mut client::connect().await?).await,
         },
         command => run_with_daemon(command, working_dir).await,
@@ -321,16 +326,20 @@ async fn ssh_proxy(
     std::process::exit(0);
 }
 
-/// Returns the change to the network section of the spec, validating the rules, or `None` for
-/// `log`, which changes nothing.
-fn network_change(command: NetworkCommands) -> Result<Option<NetworkChange>> {
+/// Returns the change to the network section of the spec, validating the rules, with whether
+/// `--yes` approves it, or `None` for `log`, which changes nothing.
+fn network_change(command: NetworkCommands) -> Result<Option<(NetworkChange, bool)>> {
     Ok(Some(match command {
-        NetworkCommands::Allow { rules } => NetworkChange::allow(&rules)?,
-        NetworkCommands::Deny { rules } => NetworkChange::deny(&rules)?,
-        NetworkCommands::Policy(PolicyCommands::Enable) => NetworkChange::Enforce(true),
-        NetworkCommands::Policy(PolicyCommands::Disable) => NetworkChange::Enforce(false),
-        NetworkCommands::Enable => NetworkChange::Enable(true),
-        NetworkCommands::Disable => NetworkChange::Enable(false),
+        NetworkCommands::Allow { rules, approve } => (NetworkChange::allow(&rules)?, approve.yes),
+        NetworkCommands::Deny { rules, approve } => (NetworkChange::deny(&rules)?, approve.yes),
+        NetworkCommands::Policy(PolicyCommands::Enable(approve)) => {
+            (NetworkChange::Enforce(true), approve.yes)
+        }
+        NetworkCommands::Policy(PolicyCommands::Disable(approve)) => {
+            (NetworkChange::Enforce(false), approve.yes)
+        }
+        NetworkCommands::Enable(approve) => (NetworkChange::Enable(true), approve.yes),
+        NetworkCommands::Disable(approve) => (NetworkChange::Enable(false), approve.yes),
         NetworkCommands::Log => return Ok(None),
     }))
 }
@@ -582,7 +591,7 @@ mod tests {
         let cli = Cli::try_parse_from(["fbk", "network"].iter().chain(args))?;
 
         match cli.command {
-            Commands::Network(args) => Ok(args.command),
+            Commands::Network(command) => Ok(command),
             command => panic!("unexpected command {command:?}"),
         }
     }
@@ -617,40 +626,46 @@ mod tests {
         );
     }
 
-    #[test]
-    fn every_network_subcommand_takes_a_yes_flag() {
-        let parse = |args: &[&str]| Cli::try_parse_from(["fbk"].iter().chain(args)).unwrap();
+    /// Returns whether `--yes` approves the change of the parsed `fbk network` arguments.
+    fn network_yes(args: &[&str]) -> bool {
+        let (_, yes) = network_change(parse_network(args).unwrap())
+            .unwrap()
+            .expect("a change");
 
+        yes
+    }
+
+    #[test]
+    fn every_network_subcommand_that_changes_settings_takes_a_yes_flag() {
         for args in [
-            ["network", "--yes", "allow", "example.org"].as_slice(),
-            &["network", "allow", "example.org", "--yes"],
-            &["network", "policy", "disable", "-y"],
-            &["network", "enable", "--yes"],
-            &["network", "deny", "--yes", "example.org"],
+            ["allow", "example.org", "--yes"].as_slice(),
+            &["deny", "--yes", "example.org"],
+            &["policy", "enable", "--yes"],
+            &["policy", "disable", "-y"],
+            &["enable", "--yes"],
+            &["disable", "-y"],
         ] {
-            assert!(
-                matches!(
-                    parse(args).command,
-                    Commands::Network(NetworkArgs { yes: true, .. })
-                ),
-                "{args:?}"
-            );
+            assert!(network_yes(args), "{args:?}");
         }
-        assert!(matches!(
-            parse(&["network", "disable"]).command,
-            Commands::Network(NetworkArgs { yes: false, .. })
-        ));
+        assert!(!network_yes(&["disable"]));
+    }
+
+    #[test]
+    fn network_log_takes_no_yes_flag() {
+        assert!(parse_network(&["log", "--yes"]).is_err());
+        assert!(parse_network(&["log", "-y"]).is_err());
+        assert!(parse_network(&["--yes", "log"]).is_err());
     }
 
     #[test]
     fn network_allow_and_deny_take_one_or_more_rules() {
         assert!(matches!(
             parse_network(&["allow", "example.org", "*.npmjs.org"]).unwrap(),
-            NetworkCommands::Allow { rules } if rules == ["example.org", "*.npmjs.org"]
+            NetworkCommands::Allow { rules, .. } if rules == ["example.org", "*.npmjs.org"]
         ));
         assert!(matches!(
             parse_network(&["deny", "10.0.0.0/8"]).unwrap(),
-            NetworkCommands::Deny { rules } if rules == ["10.0.0.0/8"]
+            NetworkCommands::Deny { rules, .. } if rules == ["10.0.0.0/8"]
         ));
         assert!(parse_network(&["allow"]).is_err());
         assert!(parse_network(&["deny"]).is_err());
@@ -660,11 +675,11 @@ mod tests {
     fn network_policy_takes_enable_or_disable() {
         assert!(matches!(
             parse_network(&["policy", "enable"]).unwrap(),
-            NetworkCommands::Policy(PolicyCommands::Enable)
+            NetworkCommands::Policy(PolicyCommands::Enable(_))
         ));
         assert!(matches!(
             parse_network(&["policy", "disable"]).unwrap(),
-            NetworkCommands::Policy(PolicyCommands::Disable)
+            NetworkCommands::Policy(PolicyCommands::Disable(_))
         ));
         assert!(parse_network(&["policy"]).is_err());
     }
@@ -673,11 +688,11 @@ mod tests {
     fn network_takes_enable_and_disable_without_arguments() {
         assert!(matches!(
             parse_network(&["enable"]).unwrap(),
-            NetworkCommands::Enable
+            NetworkCommands::Enable(_)
         ));
         assert!(matches!(
             parse_network(&["disable"]).unwrap(),
-            NetworkCommands::Disable
+            NetworkCommands::Disable(_)
         ));
         assert!(parse_network(&["enable", "example.org"]).is_err());
         assert!(parse_network(&["disable", "example.org"]).is_err());
@@ -685,30 +700,32 @@ mod tests {
 
     #[test]
     fn network_change_maps_the_commands() {
-        let allow = NetworkCommands::Allow {
-            rules: vec!["example.org".to_string()],
-        };
+        let change = |args: &[&str]| network_change(parse_network(args).unwrap()).unwrap();
 
         assert_eq!(
-            network_change(allow).unwrap(),
-            Some(NetworkChange::allow(&["example.org".to_string()]).unwrap())
+            change(&["allow", "example.org"]),
+            Some((
+                NetworkChange::allow(&["example.org".to_string()]).unwrap(),
+                false
+            ))
         );
         assert_eq!(
-            network_change(NetworkCommands::Policy(PolicyCommands::Enable)).unwrap(),
-            Some(NetworkChange::Enforce(true))
+            change(&["policy", "enable"]),
+            Some((NetworkChange::Enforce(true), false))
         );
         assert_eq!(
-            network_change(NetworkCommands::Policy(PolicyCommands::Disable)).unwrap(),
-            Some(NetworkChange::Enforce(false))
+            change(&["policy", "disable"]),
+            Some((NetworkChange::Enforce(false), false))
         );
         assert_eq!(
-            network_change(NetworkCommands::Enable).unwrap(),
-            Some(NetworkChange::Enable(true))
+            change(&["enable"]),
+            Some((NetworkChange::Enable(true), false))
         );
         assert_eq!(
-            network_change(NetworkCommands::Disable).unwrap(),
-            Some(NetworkChange::Enable(false))
+            change(&["disable"]),
+            Some((NetworkChange::Enable(false), false))
         );
+        assert_eq!(change(&["log"]), None);
     }
 
     #[test]
@@ -724,6 +741,7 @@ mod tests {
     fn network_change_rejects_invalid_rules() {
         let deny = NetworkCommands::Deny {
             rules: vec!["https://example.org".to_string()],
+            approve: ApproveArgs::default(),
         };
 
         assert!(

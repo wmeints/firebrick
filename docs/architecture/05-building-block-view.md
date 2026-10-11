@@ -85,14 +85,15 @@ C4Component
 - `main` - Parses the `start`, `stop`, `ls`, `rm`, `run`, `validate`, `init`,
   `secret set`, `secret ls`, `secret rm`, `network allow`, `network deny`,
   `network policy enable`, `network policy disable`, `network enable`, `network
-  disable`, `port forward` and `port rm` commands, and the hidden `ssh-proxy`
-  command. The argument of `port forward` is parsed with `PortMapping`'s parser,
-  and that of `port rm` as a port from 1 to 65535. `validate`, `init` and
-  `--version`, which prints the package version, run without the daemon.
-  `start`, `run` and every `network` subcommand take `--yes`, which approves
-  changed mounts and network settings without asking. `run` takes the command
-  and its arguments as one trailing list, so options after the command, such as
-  `--yes`, go to the command.
+  disable`, `network log`, `port forward` and `port rm` commands, and the hidden
+  `ssh-proxy` command. The argument of `port forward` is parsed with
+  `PortMapping`'s parser, and that of `port rm` as a port from 1 to 65535.
+  `validate`, `init` and `--version`, which prints the package version, run
+  without the daemon. `start`, `run` and every `network` subcommand that changes
+  the network settings take `--yes`, which approves changed mounts and network
+  settings without asking; `network log` changes nothing and doesn't take it.
+  `run` takes the command and its arguments as one trailing list, so options
+  after the command, such as `--yes`, go to the command.
 - `client` - Connects to the daemon socket. When nobody listens, it removes a
   stale socket, spawns `fbkd` from next to the `fbk` binary (or from `PATH`) and
   waits at most 5 seconds for the socket.

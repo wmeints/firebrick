@@ -230,12 +230,13 @@ fbk network allow example.org "*.npmjs.org"
 fbk network policy enable
 ```
 
-`fbk network log` only reads: it doesn't change `.firebrick.yml` and never asks
-for approval. It prints a table with the destination, the kind (`dns`, `tcp` or
-`udp`), the ports, how often the sandbox contacted it, when it was last seen in
-your local time zone, and whether the sandbox's current rules allow it. The
-record comes from a logger inside the sandbox, so an agent can tamper with it;
-see [Recording network activity](/docs/networking/#recording-network-activity).
+`fbk network log` only reads: it doesn't change `.firebrick.yml`, never asks for
+approval and doesn't take `--yes`. It prints a table with the destination, the
+kind (`dns`, `tcp` or `udp`), the ports, how often the sandbox contacted it,
+when it was last seen in your local time zone, and whether the sandbox's current
+rules allow it. The record comes from a logger inside the sandbox, so an agent
+can tamper with it; see
+[Recording network activity](/docs/networking/#recording-network-activity).
 
 ## `fbk port`
 
