@@ -8,7 +8,7 @@ use std::path::Path;
 use tonic::{Code, Status};
 
 use crate::api::UpdateNetworkRequest;
-use crate::approval::{Approvals, Prompt};
+use crate::approval;
 use crate::manage::{self, SPEC_FILE_NAME};
 use crate::{client, validate};
 
@@ -116,18 +116,11 @@ async fn approve(
 ) -> Result<()> {
     let sent = spec.network.clone().unwrap_or_default();
     let change = change.clone();
-    let working_dir = working_dir.to_path_buf();
 
-    // Reading the answer blocks, so it runs off the async runtime.
-    tokio::task::spawn_blocking(move || {
-        let mut prompt = Prompt::terminal(assume_yes);
-        Approvals::open(&working_dir)?.approve_network(
-            sent,
-            |approved| expected_network(approved, &change),
-            &mut prompt,
-        )
+    approval::on_terminal(working_dir, assume_yes, move |approvals, prompt| {
+        approvals.approve_network(sent, |approved| expected_network(approved, &change), prompt)
     })
-    .await?
+    .await
 }
 
 /// Returns the network section the user expects to send: the approved one with the change
@@ -508,17 +501,20 @@ mod tests {
 
     #[test]
     fn expected_network_ignores_hand_edits_to_the_spec() {
+        // Whatever the spec says, the expected section starts from the approved one.
         let approved = NetworkSpec {
             enforce: true,
             ..NetworkSpec::default()
         };
-        let mut edited = spec_with(enforced(false));
-        let change = NetworkChange::Allow(rules(&["example.org"]));
 
-        apply(&change, &mut edited.network);
-
-        assert_ne!(Some(expected_network(&approved, &change)), edited.network);
-        assert!(expected_network(&approved, &change).enforce);
+        assert_eq!(
+            expected_network(&approved, &NetworkChange::Allow(rules(&["example.org"]))),
+            NetworkSpec {
+                enforce: true,
+                allow: rules(&["example.org"]),
+                ..NetworkSpec::default()
+            }
+        );
     }
 
     fn rules_change() -> NetworkChange {

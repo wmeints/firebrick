@@ -40,8 +40,11 @@ sends a network section, `fbk` compares the settings with the approved ones. It
 prints every added or removed mount and every changed network field, and asks
 `Apply these changes? [y/N]`. `fbk network` only asks when the section differs
 from the approved one with the user's own change applied, so the change the user
-typed needs no second confirmation. `--yes` approves without asking, and without
-a terminal on stdin and without `--yes` the command fails.
+typed needs no second confirmation. A workspace without an entry gets no mounts
+and the default network section without asking; any other settings are listed in
+full and asked about once, because `fbk` can't know what a sandbox created
+before this change enforced. `--yes` approves without asking, and without a
+terminal on stdin and without `--yes` the command fails.
 
 ## Consequences
 

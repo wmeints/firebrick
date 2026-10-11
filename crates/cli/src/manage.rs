@@ -19,7 +19,7 @@ use crate::api::{
     StopSandboxRequest, sandbox_management_service_client::SandboxManagementServiceClient,
     start_sandbox_response,
 };
-use crate::approval::{Approvals, Prompt, Settings};
+use crate::approval::{self, Settings};
 use crate::progress::PullProgressView;
 use crate::table;
 
@@ -168,26 +168,20 @@ async fn approve_new_sandbox(
     workspace: &Path,
     assume_yes: bool,
 ) -> Result<()> {
-    let settings = Settings {
-        mounts: request.mounts.iter().map(mount_spec).collect(),
-        network,
-    };
-    let workspace = workspace.to_path_buf();
+    let settings = new_sandbox_settings(request, network);
 
-    // Reading the answer blocks, so it runs off the async runtime.
-    tokio::task::spawn_blocking(move || {
-        let mut prompt = Prompt::terminal(assume_yes);
-        Approvals::open(&workspace)?.approve_sandbox(settings, &mut prompt)
+    approval::on_terminal(workspace, assume_yes, move |approvals, prompt| {
+        approvals.approve_sandbox(settings, prompt)
     })
-    .await?
+    .await
 }
 
-/// Turns a resolved mount back into its spec form, with the canonical host path.
-fn mount_spec(mount: &Mount) -> MountSpec {
-    MountSpec {
-        host: mount.host.clone(),
-        guest: mount.guest.clone(),
-        readonly: mount.readonly,
+/// Returns the settings a new sandbox needs approval for: the request's mounts, whose host
+/// paths are canonical, so a symlink shows up as the directory it points to.
+fn new_sandbox_settings(request: &StartSandboxRequest, network: NetworkSpec) -> Settings {
+    Settings {
+        mounts: request.mounts.iter().map(MountSpec::from).collect(),
+        network,
     }
 }
 
@@ -1174,6 +1168,37 @@ mod tests {
                     .into_owned(),
                 guest: "/workspaces/shared-lib".to_string(),
                 readonly: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn new_sandbox_settings_show_the_target_of_a_symlinked_mount() {
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().join("project");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, project.join("lib")).unwrap();
+        fs::write(
+            project.join(SPEC_FILE_NAME),
+            "name: dev\nmounts:\n  - host: lib\n    guest: /mnt/lib\n",
+        )
+        .unwrap();
+        let request =
+            build_start_request(read_spec_file(&project).unwrap().unwrap(), &project).unwrap();
+
+        let settings = new_sandbox_settings(&request, NetworkSpec::default());
+
+        assert_eq!(
+            settings.mounts,
+            [MountSpec {
+                host: fs::canonicalize(&target)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                guest: "/mnt/lib".to_string(),
+                readonly: false,
             }]
         );
     }

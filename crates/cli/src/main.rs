@@ -604,7 +604,10 @@ mod tests {
             parse(&["run", "claude", "-y", "--model", "opus"]).command,
             Commands::Run(RunArgs { yes: false, command }) if command == ["claude", "-y", "--model", "opus"]
         ));
-        assert!(Cli::try_parse_from(["fbk", "run"]).is_err());
+        assert_eq!(
+            Cli::try_parse_from(["fbk", "run"]).unwrap_err().kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
     }
 
     #[test]

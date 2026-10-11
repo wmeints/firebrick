@@ -10,3 +10,15 @@
 )]
 
 tonic::include_proto!("firebrick");
+
+impl From<&Mount> for firebrick_spec::MountSpec {
+    /// Turns a mount of a start request into its spec form. The CLI shows the user these
+    /// mounts for approval and the daemon creates them, so both convert them the same way.
+    fn from(mount: &Mount) -> Self {
+        Self {
+            host: mount.host.clone(),
+            guest: mount.guest.clone(),
+            readonly: mount.readonly,
+        }
+    }
+}

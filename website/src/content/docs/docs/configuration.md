@@ -114,9 +114,12 @@ Error: aborted: the changes to mounts and network in .firebrick.yml weren't appr
 Each line shows an added (`+`) or removed (`-`) mount, with the real directory a
 symlink points to, or rule, or a changed (`~`) network switch. Answer `y` to
 create the sandbox and remember the settings, so the next `fbk start` with the
-same settings doesn't ask. Any other answer creates nothing. A project starts
-out approved for no mounts and no `network` section, so a new project with
-mounts or network rules asks once.
+same settings doesn't ask. Any other answer creates nothing. The first time a
+project has mounts or a `network` section, `fbk` lists all of them under
+`.firebrick.yml sets mounts or network settings you haven't approved for this
+workspace yet:` and asks once, also for a project you used before this version
+of Firebrick. Check that `network.enforce` is `true` there when you expect your
+rules to be enforced.
 
 Review the changes before you approve them: when you didn't make them, the agent
 did. Pass `--yes` to `fbk start` or `fbk run` to approve them without asking,

@@ -483,7 +483,9 @@ C4Component
 
 - `firebrick-proto` (`crates/proto`) - The gRPC client and server code that
   `tonic-prost-build` generates from `crates/proto/proto/daemon.v1.proto`. The
-  CLI and daemon re-export it as their `api` module.
+  CLI and daemon re-export it as their `api` module. It also converts a `Mount`
+  into a `firebrick_spec::MountSpec`, so the CLI approves the mounts the way the
+  daemon creates them.
 - `firebrick-spec` (`crates/spec`) - Parses `.firebrick.yml` into a
   `SandboxSpec` with a `name`, an optional `image`, optional `init` and `mise`
   flags, optional `resources` (`cpu`, `memory`), `volumes` (`docker`, the size

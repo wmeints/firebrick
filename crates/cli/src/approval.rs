@@ -7,12 +7,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use firebrick_spec::{MountSpec, NetworkRule, NetworkSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-
-use crate::manage::SPEC_FILE_NAME;
 
 /// Error for an answer other than yes.
 const ABORTED: &str =
@@ -22,6 +19,14 @@ const ABORTED: &str =
 const NOT_INTERACTIVE: &str = ".firebrick.yml changes mounts or network since you last approved \
                                them; run the command in a terminal to review the changes, or \
                                pass --yes";
+
+/// Header above the changes to approve.
+const CHANGES_HEADER: &str =
+    ".firebrick.yml changes settings you haven't approved for this workspace:";
+
+/// Header above the settings of a workspace without approved settings.
+const FIRST_HEADER: &str = ".firebrick.yml sets mounts or network settings you haven't approved \
+                            for this workspace yet:";
 
 /// The settings of a workspace that need approval.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
@@ -73,14 +78,10 @@ impl Approvals {
         Ok(Self { path, workspace })
     }
 
-    /// Returns the approved settings: no mounts and the default network section when the
-    /// workspace has none. Fails when the file can't be read or isn't valid.
-    pub fn approved(&self) -> Result<Settings> {
-        Ok(self
-            .load()?
-            .workspaces
-            .remove(&self.workspace)
-            .unwrap_or_default())
+    /// Returns the approved settings, or `None` when the workspace has none yet. Fails when the
+    /// file can't be read or isn't valid.
+    pub fn approved(&self) -> Result<Option<Settings>> {
+        Ok(self.load()?.workspaces.remove(&self.workspace))
     }
 
     /// Records the settings as approved.
@@ -93,22 +94,25 @@ impl Approvals {
     }
 
     /// Makes sure the user approved the settings a new sandbox gets. Asks when they differ from
-    /// the approved ones, and records them once approved.
+    /// the approved ones, and records them once approved. A workspace without approved settings
+    /// gets no mounts and the default network section without asking; other settings are shown
+    /// in full, because the sandbox they replace may have had stricter ones.
     pub fn approve_sandbox<R: BufRead, W: Write>(
         &self,
         requested: Settings,
         prompt: &mut Prompt<R, W>,
     ) -> Result<()> {
         let approved = self.approved()?;
-        prompt.review(&approved, &approved, &requested)?;
+        prompt.review(approved.as_ref(), approved.as_ref(), &requested)?;
 
-        self.record_changed(&approved, requested)
+        self.record_changed(approved.as_ref(), requested)
     }
 
     /// Makes sure the user approved the network section sent to a sandbox. `expected` turns the
     /// approved section into the one the user asked for; when the sent section differs from it,
     /// asks about the difference with the approved one. Records the sent section once approved,
-    /// keeping the approved mounts.
+    /// keeping the approved mounts. A workspace without approved settings is asked about any
+    /// section but the default, like [`Approvals::approve_sandbox`].
     pub fn approve_network<R: BufRead, W: Write>(
         &self,
         sent: NetworkSpec,
@@ -116,22 +120,24 @@ impl Approvals {
         prompt: &mut Prompt<R, W>,
     ) -> Result<()> {
         let approved = self.approved()?;
+        let base = approved.clone().unwrap_or_default();
         let expected = Settings {
-            network: expected(&approved.network),
-            ..approved.clone()
+            network: expected(&base.network),
+            ..base.clone()
         };
         let requested = Settings {
             network: sent,
-            ..approved.clone()
+            ..base
         };
-        prompt.review(&approved, &expected, &requested)?;
+        prompt.review(approved.as_ref(), Some(&expected), &requested)?;
 
-        self.record_changed(&approved, requested)
+        self.record_changed(approved.as_ref(), requested)
     }
 
-    /// Records the requested settings when they differ from the approved ones.
-    fn record_changed(&self, approved: &Settings, requested: Settings) -> Result<()> {
-        if *approved == requested {
+    /// Records the requested settings when they differ from the approved ones. Default settings
+    /// need no entry.
+    fn record_changed(&self, approved: Option<&Settings>, requested: Settings) -> Result<()> {
+        if approved.cloned().unwrap_or_default() == requested {
             return Ok(());
         }
 
@@ -157,34 +163,28 @@ impl Approvals {
     /// Writes the file with mode `0600` through a temp file and a rename, so a failed write
     /// leaves the old approvals in place.
     fn save(&self, file: &ApprovalsFile) -> Result<()> {
-        let parent = self
-            .path
-            .parent()
-            .context("the approvals file has no directory")?;
-        fs::create_dir_all(parent)?;
-
-        let temp = parent.join(format!("approved.yml.{}.tmp", std::process::id()));
-        remove_if_exists(&temp)?;
-
-        let mut out = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temp)?;
-        out.write_all(serde_yaml::to_string(file)?.as_bytes())?;
-        out.sync_all()?;
-        fs::rename(&temp, &self.path)?;
+        firebrick_utils::write_private(&self.path, &serde_yaml::to_string(file)?)?;
 
         Ok(())
     }
 }
 
-/// Removes a file, doing nothing when it doesn't exist.
-fn remove_if_exists(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
-        Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
-        _ => Ok(()),
-    }
+/// Runs `approve` with the approvals of the workspace and a prompt on the terminal, off the
+/// async runtime because reading the answer blocks. `assume_yes` approves without asking.
+pub async fn on_terminal<F>(workspace: &Path, assume_yes: bool, approve: F) -> Result<()>
+where
+    F: FnOnce(&Approvals, &mut Prompt<io::StdinLock<'static>, io::Stderr>) -> Result<()>
+        + Send
+        + 'static,
+{
+    let workspace = workspace.to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        let approvals = Approvals::open(&workspace)?;
+        approve(&approvals, &mut Prompt::terminal(assume_yes))
+    })
+    .await
+    .context("failed to ask for approval of the mounts and network settings")?
 }
 
 /// Returns a line per added or removed mount and per changed network field between the
@@ -244,6 +244,22 @@ fn mount_line(sign: char, mount: &MountSpec) -> String {
     };
 
     format!("{sign} mount {} -> {} ({access})", mount.host, mount.guest)
+}
+
+/// Returns a line per mount and network field of settings that have nothing to compare with.
+fn listing(settings: &Settings) -> Vec<String> {
+    let network = &settings.network;
+    let mut lines = list_difference(&[], &settings.mounts, mount_line);
+    lines.push(format!("network.enabled: {}", network.is_enabled()));
+    lines.push(format!("network.enforce: {}", network.enforce));
+    lines.extend(list_difference(&[], &network.allow, |sign, rule| {
+        rule_line(sign, "allow", rule)
+    }));
+    lines.extend(list_difference(&[], &network.deny, |sign, rule| {
+        rule_line(sign, "deny", rule)
+    }));
+
+    lines
 }
 
 /// Describes an added or removed network rule.
@@ -308,32 +324,43 @@ impl<R: BufRead, W: Write> Prompt<R, W> {
 
     /// Asks about the difference between the approved and requested settings when the
     /// requested ones differ from the expected ones. Settings equal to the approved ones never
-    /// need asking.
+    /// need asking. Without approved settings, asks about all requested settings unless they're
+    /// the defaults.
     fn review(
         &mut self,
-        approved: &Settings,
-        expected: &Settings,
+        approved: Option<&Settings>,
+        expected: Option<&Settings>,
         requested: &Settings,
     ) -> Result<()> {
+        let Some(approved) = approved else {
+            return self.review_first(requested);
+        };
+
         let changes = difference(approved, requested);
+        let expected = expected.unwrap_or(approved);
 
         if changes.is_empty() || difference(expected, requested).is_empty() {
             return Ok(());
         }
 
-        self.confirm(&changes)
+        self.confirm(CHANGES_HEADER, &changes)
     }
 
-    /// Prints the changes and asks to apply them, unless the answer is `Yes`. Fails when
-    /// the user doesn't answer yes, or nobody can answer.
-    fn confirm(&mut self, changes: &[String]) -> Result<()> {
-        writeln!(
-            self.output,
-            "{SPEC_FILE_NAME} changes settings you haven't approved for this workspace:"
-        )?;
-        for change in changes {
-            writeln!(self.output, "  {change}")?;
+    /// Asks about all requested settings of a workspace without approved ones, unless they're
+    /// the defaults.
+    fn review_first(&mut self, requested: &Settings) -> Result<()> {
+        if difference(&Settings::default(), requested).is_empty() {
+            return Ok(());
         }
+
+        self.confirm(FIRST_HEADER, &listing(requested))
+    }
+
+    /// Prints the lines under the header and asks to apply them, unless the answer is `Yes`.
+    /// Fails when the user doesn't answer yes, or nobody can answer.
+    fn confirm(&mut self, header: &str, lines: &[String]) -> Result<()> {
+        self.show(header, lines)
+            .context("failed to show the settings to approve")?;
 
         match self.answer {
             Answer::Yes => return Ok(()),
@@ -341,16 +368,35 @@ impl<R: BufRead, W: Write> Prompt<R, W> {
             Answer::Ask => {}
         }
 
+        let answer = self
+            .ask()
+            .context("failed to read the answer to the approval prompt")?;
+
+        match answer.trim().to_lowercase().as_str() {
+            "y" | "yes" => Ok(()),
+            _ => bail!(ABORTED),
+        }
+    }
+
+    /// Writes the header and an indented line per setting.
+    fn show(&mut self, header: &str, lines: &[String]) -> io::Result<()> {
+        writeln!(self.output, "{header}")?;
+        for line in lines {
+            writeln!(self.output, "  {line}")?;
+        }
+
+        Ok(())
+    }
+
+    /// Asks to apply the changes and returns the answer.
+    fn ask(&mut self) -> io::Result<String> {
         write!(self.output, "Apply these changes? [y/N] ")?;
         self.output.flush()?;
 
         let mut answer = String::new();
         self.input.read_line(&mut answer)?;
 
-        match answer.trim().to_lowercase().as_str() {
-            "y" | "yes" => Ok(()),
-            _ => bail!(ABORTED),
-        }
+        Ok(answer)
     }
 }
 
@@ -380,6 +426,13 @@ mod tests {
 
         fn approvals(&self) -> Approvals {
             Approvals::at(self.path(), self.workspace.path()).unwrap()
+        }
+
+        /// Returns the approvals of a workspace whose default settings were approved before.
+        fn approvals_with_defaults(&self) -> Approvals {
+            let approvals = self.approvals();
+            approvals.record(Settings::default()).unwrap();
+            approvals
         }
     }
 
@@ -419,10 +472,10 @@ mod tests {
     }
 
     #[test]
-    fn workspace_without_an_entry_has_the_defaults() {
+    fn workspace_without_an_entry_has_no_approved_settings() {
         let fixture = Fixture::new();
 
-        assert_eq!(fixture.approvals().approved().unwrap(), Settings::default());
+        assert_eq!(fixture.approvals().approved().unwrap(), None);
     }
 
     #[test]
@@ -433,13 +486,13 @@ mod tests {
 
         approvals.record(home_mount()).unwrap();
 
-        assert_eq!(approvals.approved().unwrap(), home_mount());
+        assert_eq!(approvals.approved().unwrap(), Some(home_mount()));
         assert_eq!(
             Approvals::at(fixture.path(), other.path())
                 .unwrap()
                 .approved()
                 .unwrap(),
-            Settings::default()
+            None
         );
     }
 
@@ -454,7 +507,7 @@ mod tests {
             .record(home_mount())
             .unwrap();
 
-        assert_eq!(fixture.approvals().approved().unwrap(), home_mount());
+        assert_eq!(fixture.approvals().approved().unwrap(), Some(home_mount()));
     }
 
     #[test]
@@ -585,7 +638,7 @@ mod tests {
     #[test]
     fn changes_are_shown_and_recorded_when_the_user_answers_yes() {
         let fixture = Fixture::new();
-        let approvals = fixture.approvals();
+        let approvals = fixture.approvals_with_defaults();
         let mut prompt = prompt("y\n");
 
         approvals
@@ -597,18 +650,24 @@ mod tests {
             ".firebrick.yml changes settings you haven't approved for this workspace:\n  \
              + mount /home/me -> /mnt/home (read/write)\nApply these changes? [y/N] "
         );
-        assert_eq!(approvals.approved().unwrap(), home_mount());
+        assert_eq!(approvals.approved().unwrap(), Some(home_mount()));
     }
 
     #[test]
     fn yes_is_accepted_in_any_case() {
         for answer in ["yes\n", "Y\n", " YES \n"] {
             let fixture = Fixture::new();
+            let approvals = fixture.approvals_with_defaults();
 
-            fixture
-                .approvals()
+            approvals
                 .approve_sandbox(home_mount(), &mut prompt(answer))
                 .unwrap();
+
+            assert_eq!(
+                approvals.approved().unwrap(),
+                Some(home_mount()),
+                "{answer:?}"
+            );
         }
     }
 
@@ -616,36 +675,40 @@ mod tests {
     fn other_answers_abort_without_recording() {
         for answer in ["n\n", "\n", "", "sure\n"] {
             let fixture = Fixture::new();
-            let approvals = fixture.approvals();
+            let approvals = fixture.approvals_with_defaults();
 
             let error = approvals
                 .approve_sandbox(home_mount(), &mut prompt(answer))
                 .unwrap_err();
 
             assert_eq!(error.to_string(), ABORTED, "{answer:?}");
-            assert_eq!(approvals.approved().unwrap(), Settings::default());
+            assert_eq!(approvals.approved().unwrap(), Some(Settings::default()));
         }
     }
 
     #[test]
     fn without_a_terminal_the_changes_are_shown_and_refused() {
         let fixture = Fixture::new();
+        let approvals = fixture.approvals_with_defaults();
         let mut prompt = Prompt::new(Answer::NoTerminal, "y\n".as_bytes(), Vec::new());
 
-        let error = fixture
-            .approvals()
+        let error = approvals
             .approve_sandbox(home_mount(), &mut prompt)
             .unwrap_err();
 
         assert_eq!(error.to_string(), NOT_INTERACTIVE);
-        assert!(printed(&prompt).contains("+ mount /home/me -> /mnt/home"));
-        assert!(!fixture.path().exists());
+        assert_eq!(
+            printed(&prompt),
+            ".firebrick.yml changes settings you haven't approved for this workspace:\n  \
+             + mount /home/me -> /mnt/home (read/write)\n"
+        );
+        assert_eq!(approvals.approved().unwrap(), Some(Settings::default()));
     }
 
     #[test]
     fn assume_yes_shows_and_records_the_changes_without_asking() {
         let fixture = Fixture::new();
-        let approvals = fixture.approvals();
+        let approvals = fixture.approvals_with_defaults();
         let mut prompt = Prompt::new(Answer::Yes, "".as_bytes(), Vec::new());
 
         approvals
@@ -657,7 +720,7 @@ mod tests {
             ".firebrick.yml changes settings you haven't approved for this workspace:\n  \
              + mount /home/me -> /mnt/home (read/write)\n"
         );
-        assert_eq!(approvals.approved().unwrap(), home_mount());
+        assert_eq!(approvals.approved().unwrap(), Some(home_mount()));
     }
 
     /// Adds `example.org` to the allowed rules, like `fbk network allow example.org`.
@@ -682,10 +745,10 @@ mod tests {
         assert_eq!(printed(&prompt), "");
         assert_eq!(
             approvals.approved().unwrap(),
-            Settings {
+            Some(Settings {
                 network: sent,
                 ..home_mount()
-            }
+            })
         );
     }
 
@@ -697,12 +760,11 @@ mod tests {
             enforce: false,
             ..allow_example(&NetworkSpec::default())
         };
-        approvals
-            .record(network(NetworkSpec {
-                enforce: true,
-                ..NetworkSpec::default()
-            }))
-            .unwrap();
+        let enforced = network(NetworkSpec {
+            enforce: true,
+            ..NetworkSpec::default()
+        });
+        approvals.record(enforced.clone()).unwrap();
         let mut prompt = prompt("n\n");
 
         let error = approvals
@@ -716,5 +778,51 @@ mod tests {
              ~ network.enforce: true -> false\n  + network.allow: example.org\n\
              Apply these changes? [y/N] "
         );
+        assert_eq!(approvals.approved().unwrap(), Some(enforced));
+    }
+
+    #[test]
+    fn first_settings_are_shown_in_full() {
+        let fixture = Fixture::new();
+        let approvals = fixture.approvals();
+        let mut prompt = prompt("y\n");
+
+        approvals
+            .approve_sandbox(home_mount(), &mut prompt)
+            .unwrap();
+
+        assert_eq!(
+            printed(&prompt),
+            ".firebrick.yml sets mounts or network settings you haven't approved for this \
+             workspace yet:\n  + mount /home/me -> /mnt/home (read/write)\n  \
+             network.enabled: true\n  network.enforce: false\nApply these changes? [y/N] "
+        );
+        assert_eq!(approvals.approved().unwrap(), Some(home_mount()));
+    }
+
+    #[test]
+    fn first_network_change_shows_that_enforcement_is_off() {
+        // A sandbox created before approvals existed may enforce rules that the agent removed
+        // from the spec, so the first change shows the whole section it would send.
+        let fixture = Fixture::new();
+        let approvals = fixture.approvals();
+        let mut prompt = prompt("n\n");
+
+        let error = approvals
+            .approve_network(
+                allow_example(&NetworkSpec::default()),
+                allow_example,
+                &mut prompt,
+            )
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), ABORTED);
+        assert_eq!(
+            printed(&prompt),
+            ".firebrick.yml sets mounts or network settings you haven't approved for this \
+             workspace yet:\n  network.enabled: true\n  network.enforce: false\n  \
+             + network.allow: example.org\nApply these changes? [y/N] "
+        );
+        assert_eq!(approvals.approved().unwrap(), None);
     }
 }

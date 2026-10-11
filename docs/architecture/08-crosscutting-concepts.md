@@ -71,8 +71,11 @@ approved per workspace in `approved.yml` in the firebrick config directory
 (`$XDG_CONFIG_HOME/firebrick`, falling back to `$HOME/.config/firebrick`), keyed
 by the canonical workspace path
 ([ADR 0037](decisions/0037-approve-mounts-and-network-changes-in-the-spec.md)).
-A workspace without an entry counts as approved for no mounts and the default
-network section.
+A workspace without an entry gets no mounts and the default network section
+without asking. Any other settings are asked about once, and listed in full
+instead of as a difference: a sandbox created before approvals existed may have
+enforced rules that the agent has since removed from the file, so `fbk` can't
+assume what was approved before.
 
 | Command                    | Compares                                                                                                  | Asks when                                                                                                 |
 | -------------------------- | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
@@ -90,10 +93,14 @@ the difference. Approved settings are recorded, so the next command with the
 same settings doesn't ask. `fbk network` records the section it sends and keeps
 the approved mounts.
 
-`approved.yml` is written with mode `0600` through a temp file and a rename. A
-file that can't be read or isn't valid YAML fails the command, so a broken file
-never counts as approving nothing. Starting an existing sandbox doesn't check
-anything, because microsandbox only applies mounts when it creates a sandbox.
+`approved.yml` is written with mode `0600` through a temp file and a rename,
+with `firebrick_utils::write_private`, which `secrets.yml` uses too. The CLI
+turns the request's mounts into `MountSpec`s with the same `From<&Mount>`
+conversion in `firebrick-proto` that the daemon uses to create them, so the
+approved mounts are the ones the daemon applies. A file that can't be read or
+isn't valid YAML fails the command, so a broken file never counts as approving
+nothing. Starting an existing sandbox doesn't check anything, because
+microsandbox only applies mounts when it creates a sandbox.
 
 ## Securing the daemon socket
 

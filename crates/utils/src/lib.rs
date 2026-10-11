@@ -1,6 +1,9 @@
 //! File locations and naming rules shared by the Firebrick CLI and daemon.
 
 use std::ffi::OsString;
+use std::fs;
+use std::io::{self, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// Name used when a path's leaf has no ASCII letters or digits left after sanitizing.
@@ -93,6 +96,28 @@ fn data_dir() -> PathBuf {
     base_dir(&env_var, "XDG_DATA_HOME", ".local/share")
         .unwrap_or_else(std::env::temp_dir)
         .join("firebrick")
+}
+
+/// Replaces a file with `content` that only the user can read, without leaving a partial file.
+pub fn write_private(path: &Path, content: &str) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+
+    let temp_path = path.with_extension("tmp");
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&temp_path)?;
+
+    // The mode only applies to new files, so fix a temp file left over with other permissions.
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    file.write_all(content.as_bytes())?;
+    file.sync_all()?;
+
+    fs::rename(&temp_path, path)
 }
 
 /// Turns the leaf directory of `path` into a DNS label of lowercase ASCII letters, digits and
@@ -204,6 +229,29 @@ mod tests {
         assert_eq!(approvals_path_from(&env(&[])), None);
         let var = env(&[("XDG_CONFIG_HOME", "config"), ("HOME", "home")]);
         assert_eq!(approvals_path_from(&var), None);
+    }
+
+    #[test]
+    fn write_private_replaces_the_file_with_a_private_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config/approved.yml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path.with_extension("tmp"), "left over").unwrap();
+        fs::set_permissions(
+            path.with_extension("tmp"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+
+        write_private(&path, "first").unwrap();
+        write_private(&path, "second").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!path.with_extension("tmp").exists());
     }
 
     fn label(path: &str) -> String {
