@@ -176,9 +176,17 @@ pub fn validate_name(name: &str) -> Result<(), SecretError> {
 }
 
 /// Checks that a host is a host name, optionally with a `*.` prefix for its subdomains.
+///
+/// After `*.` the name needs at least two labels: `*.com` would match a whole
+/// top-level domain.
 fn is_valid_host(host: &str) -> bool {
-    let name = host.strip_prefix("*.").unwrap_or(host);
+    match host.strip_prefix("*.") {
+        Some(domain) => is_host_name(domain) && domain.contains('.'),
+        None => is_host_name(host),
+    }
+}
 
+fn is_host_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .split('.')
@@ -497,6 +505,8 @@ mod tests {
             "*",
             "",
             "*.",
+            "*.com",
+            "*.localhost",
             "https://example.com",
             "a..b",
             "a b",
@@ -512,6 +522,13 @@ mod tests {
     #[test]
     fn new_accepts_wildcard_subdomains() {
         assert!(secret("X", &["*.example.com"]).is_ok());
+        assert!(secret("X", &["*.githubcopilot.com"]).is_ok());
+    }
+
+    #[test]
+    fn new_accepts_exact_hosts() {
+        assert!(secret("X", &["api.example.com"]).is_ok());
+        assert!(secret("X", &["localhost"]).is_ok());
     }
 
     #[test]
