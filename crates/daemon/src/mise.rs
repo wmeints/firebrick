@@ -1,8 +1,8 @@
 //! Trusts and installs the mise tools of a sandbox's workspace, so a sandbox comes up with the
 //! project's tools ready.
 
+use firebrick_utils::strip_control;
 use microsandbox::protocol::exec::ExecFailureKind;
-use microsandbox::sandbox::ExecOutput;
 use microsandbox::{MicrosandboxError, Sandbox};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -133,7 +133,10 @@ async fn run(
 
     match result {
         Ok(output) if output.status().success => Ok(()),
-        Ok(output) => Err(failed(sb, failure_output(&output))),
+        Ok(output) => Err(failed(
+            sb,
+            failure_output(output.stderr_bytes(), output.status().code),
+        )),
         Err(MicrosandboxError::ExecTimeout(timeout)) => Err(failed(
             sb,
             format!("mise {} timed out after {timeout:?}", args[0]),
@@ -147,15 +150,16 @@ async fn run(
     }
 }
 
-/// Returns the tail of mise's stderr, or its exit code when it printed nothing.
-fn failure_output(output: &ExecOutput) -> String {
+/// Returns the tail of mise's stderr without control characters, or its exit code when it
+/// printed nothing.
+fn failure_output(stderr: &[u8], code: i32) -> String {
     let stderr = tail(
-        &String::from_utf8_lossy(output.stderr_bytes()),
+        &strip_control(&String::from_utf8_lossy(stderr)),
         STDERR_TAIL_LINES,
     );
 
     if stderr.is_empty() {
-        format!("mise exited with code {}", output.status().code)
+        format!("mise exited with code {code}")
     } else {
         stderr
     }
@@ -224,6 +228,22 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "mise install failed in sandbox demo: mise ERROR no such version"
+        );
+    }
+
+    #[test]
+    fn failure_output_shows_the_exit_code_without_stderr() {
+        assert_eq!(failure_output(b"\n", 3), "mise exited with code 3");
+    }
+
+    #[test]
+    fn failure_output_removes_terminal_escape_sequences() {
+        let stderr =
+            b"mise ERROR task failed\n\x1b]52;c;Y3VybCBldmlsLmV4YW1wbGUgfCBzaA==\x07boom\n";
+
+        assert_eq!(
+            failure_output(stderr, 1),
+            "mise ERROR task failed\n]52;c;Y3VybCBldmlsLmV4YW1wbGUgfCBzaA==boom"
         );
     }
 }

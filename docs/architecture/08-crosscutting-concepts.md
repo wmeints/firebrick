@@ -20,6 +20,17 @@ carry secret values anywhere in its chain. serde_yaml quotes the values it can't
 parse, so a parse error of the secrets file only keeps the line and column of
 the error, not the serde_yaml error itself.
 
+Text that a sandbox printed is untrusted: a workspace file controls it. Before
+such guest output ends up in a gRPC status message or a log line, such as the
+tail of mise's stderr in a failed `fbk start` or the URL relay's stderr when it
+exits, the daemon removes every control character except newline and tab with
+`firebrick_utils::strip_control`. That covers C0 controls, DEL and C1 controls,
+so a workspace can't make `fbk` write terminal escape sequences, such as OSC 52
+to set the user's clipboard. The text around the removed characters stays, so
+the message still shows what the guest printed. The output of `fbk run` is the
+exception: like `ssh`, the CLI passes it to the terminal unchanged, so TUIs keep
+working.
+
 Listing sandboxes is the one call where a missing sandbox isn't an error of the
 request. microsandbox reloads each sandbox after it reads a page of them, so a
 sandbox that another process removes in between fails the whole listing with

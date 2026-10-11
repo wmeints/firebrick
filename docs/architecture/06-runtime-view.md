@@ -790,6 +790,12 @@ already has the rules isn't recreated, and neither is one whose rules aren't
 enforced, because they don't change it, nor one without a network device whose
 rules change, because it ignores them.
 
+microsandbox refuses to delete a snapshot while another operation reads it, for
+example a snapshot listing by `msb` or another sandbox's update, and doesn't
+wait for that reader. `fbkd` tries the delete again every 100 ms for up to 10
+seconds, then logs a warning and leaves the snapshot behind; a leftover snapshot
+only takes up disk space, so it doesn't fail the update.
+
 Between removing and creating the sandbox, it briefly doesn't exist, so an SSH
 connection to its host name fails during that time. Other requests for the
 sandbox wait for the lock.

@@ -1774,18 +1774,17 @@ const CURL_IMAGE: &str = "buildpack-deps:trixie-curl";
 
 /// Requests the URL over IPv4 from inside the sandbox and returns the body followed by the
 /// HTTP status code on its own line.
+///
+/// curl writes the status code as it exits, and microsandbox drops terminal output that the
+/// guest agent hasn't read when it reports the exit. The shell waits a second after curl exits
+/// so the status code is read first.
 async fn fetch(
     client: &mut SandboxManagementServiceClient<Channel>,
     name: &str,
     url: &str,
 ) -> String {
-    let (output, _) = run_command(
-        client,
-        name,
-        "curl",
-        &["-4", "-sS", "-m", "30", "-w", "\\n%{http_code}", url],
-    )
-    .await;
+    let script = "curl -4 -sS -m 30 -w '\\n%{http_code}' \"$1\"; code=$?; sleep 1; exit $code";
+    let (output, _) = run_command(client, name, "sh", &["-c", script, "fetch", url]).await;
 
     output
 }
@@ -2106,6 +2105,70 @@ async fn update_network_of_running_sandbox_keeps_its_disk_and_settings() {
 }
 
 #[tokio::test]
+async fn update_network_removes_its_snapshot_after_a_reader_releases_it() {
+    let name: &str = &sandbox_name("update-leased");
+    remove_sandbox_and_snapshots(name).await;
+
+    let daemon = TestDaemon::start("update-leased").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, name).await;
+    let reader = hold_snapshot_leases(snapshot_group(name), Duration::from_secs(3));
+
+    let updated = update_network(&mut client, name, allow_policy(true, &["example.com"])).await;
+    let held = reader.join();
+    let snapshots = leftover_snapshots(name).await;
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
+
+    assert!(held.is_ok(), "the reader failed to hold the snapshot");
+    assert!(matches!(updated, Ok(true)), "{updated:?}");
+    assert!(snapshots.is_empty(), "{snapshots:?}");
+}
+
+/// Returns the directory microsandbox keeps the snapshots of the sandbox in.
+fn snapshot_group(name: &str) -> PathBuf {
+    microsandbox::config::config()
+        .unwrap()
+        .home()
+        .join("snapshots")
+        .join(name)
+}
+
+/// Waits in a thread until the snapshot group holds a snapshot, then holds a reader lease on
+/// each of its entries for `hold`, like a concurrent microsandbox operation that reads it.
+fn hold_snapshot_leases(group: PathBuf, hold: Duration) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + STATUS_TIMEOUT;
+
+        while !has_snapshot(&group) {
+            assert!(std::time::Instant::now() < deadline, "no snapshot appeared");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let leases: Vec<std::fs::File> = std::fs::read_dir(group.join(".msb-leases"))
+            .unwrap()
+            .map(|entry| std::fs::File::open(entry.unwrap().path()).unwrap())
+            .collect();
+
+        for lease in &leases {
+            lease.lock_shared().unwrap();
+        }
+
+        std::thread::sleep(hold);
+    })
+}
+
+/// Returns whether the snapshot group holds a snapshot.
+fn has_snapshot(group: &Path) -> bool {
+    std::fs::read_dir(group).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().starts_with("snap_"))
+    })
+}
+
+#[tokio::test]
 async fn update_network_of_stopped_sandbox_keeps_it_stopped() {
     let name: &str = &sandbox_name("update-stopped");
     remove_sandbox_and_snapshots(name).await;
@@ -2304,27 +2367,27 @@ async fn start_curl_sandbox(
 
 #[tokio::test]
 async fn disabled_network_blocks_connections_until_it_is_enabled() {
-    const NAME: &str = "fbk-it-network-disabled";
-    remove_sandbox_and_snapshots(NAME).await;
+    let name: &str = &sandbox_name("network-disabled");
+    remove_sandbox_and_snapshots(name).await;
 
     let dir = tempfile::tempdir().unwrap();
     let store = store_with_test_secret(dir.path());
     let daemon = TestDaemon::start_with_secrets("network-disabled", store).await;
     let mut client = daemon.client().await;
-    start_curl_sandbox(&mut client, NAME, Some(disabled_network())).await;
-    write_markers(&mut client, NAME).await;
-    let before = kept_settings(&mut client, NAME).await;
+    start_curl_sandbox(&mut client, name, Some(disabled_network())).await;
+    write_markers(&mut client, name).await;
+    let before = kept_settings(&mut client, name).await;
 
-    let (_, resolved) = run_command(&mut client, NAME, "getent", &["hosts", "example.com"]).await;
-    let offline = fetch(&mut client, NAME, "http://1.1.1.1").await;
-    let enabled = update_network(&mut client, NAME, NetworkPolicy::default()).await;
-    let after = after_update(&mut client, NAME).await;
-    let markers = read_markers(&mut client, NAME).await;
-    let online = fetch(&mut client, NAME, "https://example.com").await;
-    let secret = print_env(&mut client, NAME, "FIREBRICK_IT_TOKEN").await;
+    let (_, resolved) = run_command(&mut client, name, "getent", &["hosts", "example.com"]).await;
+    let offline = fetch(&mut client, name, "http://1.1.1.1").await;
+    let enabled = update_network(&mut client, name, NetworkPolicy::default()).await;
+    let after = after_update(&mut client, name).await;
+    let markers = read_markers(&mut client, name).await;
+    let online = fetch(&mut client, name, "https://example.com").await;
+    let secret = print_env(&mut client, name, "FIREBRICK_IT_TOKEN").await;
 
     daemon.stop().await;
-    remove_sandbox_and_snapshots(NAME).await;
+    remove_sandbox_and_snapshots(name).await;
 
     assert_ne!(resolved, 0, "example.com resolved without a network");
     assert!(offline.trim_end().ends_with("000"), "{offline:?}");
@@ -2339,19 +2402,19 @@ async fn disabled_network_blocks_connections_until_it_is_enabled() {
 
 #[tokio::test]
 async fn update_network_disables_the_network_once() {
-    const NAME: &str = "fbk-it-network-disable";
-    remove_sandbox_and_snapshots(NAME).await;
+    let name: &str = &sandbox_name("network-disable");
+    remove_sandbox_and_snapshots(name).await;
 
     let daemon = TestDaemon::start("network-disable").await;
     let mut client = daemon.client().await;
-    start_curl_sandbox(&mut client, NAME, None).await;
+    start_curl_sandbox(&mut client, name, None).await;
 
-    let disabled = update_network(&mut client, NAME, disabled_network()).await;
-    let offline = fetch(&mut client, NAME, "http://1.1.1.1").await;
+    let disabled = update_network(&mut client, name, disabled_network()).await;
+    let offline = fetch(&mut client, name, "http://1.1.1.1").await;
     // A disabled network ignores its rules, so changing them doesn't recreate the sandbox.
     let still_disabled = update_network(
         &mut client,
-        NAME,
+        name,
         NetworkPolicy {
             enforce: true,
             ..disabled_network()
@@ -2360,7 +2423,7 @@ async fn update_network_disables_the_network_once() {
     .await;
 
     daemon.stop().await;
-    remove_sandbox_and_snapshots(NAME).await;
+    remove_sandbox_and_snapshots(name).await;
 
     assert!(matches!(disabled, Ok(true)), "{disabled:?}");
     assert!(offline.trim_end().ends_with("000"), "{offline:?}");
@@ -2543,8 +2606,8 @@ async fn forwards_host_port_to_sandbox_and_closes_removed_port() {
 
 #[tokio::test]
 async fn forwards_ports_to_sandbox_without_network() {
-    const NAME: &str = "fbk-it-port-forward-offline";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("port-forward-offline");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("port-forward-offline").await;
     let mut client = daemon.client().await;
@@ -2554,15 +2617,15 @@ async fn forwards_ports_to_sandbox_without_network() {
         image: "alpine:3.22".to_string(),
         network: Some(disabled_network()),
         ports: Some(forward_ports(host, GUEST_PORT)),
-        ..start_request(NAME)
+        ..start_request(name)
     };
 
     let started = start_with_ports(&mut client, request).await;
     // The forwards go through microsandbox's SSH server, which needs no guest network.
-    check_forward_both_ways(&mut client, NAME, host).await;
+    check_forward_both_ways(&mut client, name, host).await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 
     assert!(started.failed_forwards.is_empty());
 }
