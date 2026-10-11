@@ -14,8 +14,9 @@ The base image is built from the
 [`Dockerfile`](https://github.com/wmeints/firebrick/blob/main/Dockerfile) in the
 repository, for `linux/amd64` and `linux/arm64`:
 
-- Ubuntu 26.04 with `build-essential`, `curl`, `git`, `gpg`, `libssl-dev`,
-  `pkg-config`, `procps`, `sudo` and [tini](https://github.com/krallin/tini).
+- Ubuntu 26.04 with `build-essential`, `curl`, `git`, `gpg`, `libicu78` (ICU for
+  .NET apps such as the Aspire CLI), `libssl-dev`, `pkg-config`, `procps`,
+  `sudo` and [tini](https://github.com/krallin/tini).
 - [mise](https://mise.jdx.dev), activated for bash, with its shims on the
   `PATH`.
 - The Docker engine with the `buildx` and `compose` plugins.
