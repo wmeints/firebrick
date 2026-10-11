@@ -42,10 +42,10 @@ jobs:
     name: Format, lint and unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Installs the Rust toolchain, protoc and the other tools pinned in mise.toml.
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v5
 
       # One cache for both jobs, so the integration tests reuse the
       # dependencies this job compiled.
@@ -62,7 +62,7 @@ jobs:
       # build keeps the cached microsandbox fresh.
       - name: Restore the microsandbox runtime
         id: msb-runtime
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             /tmp/firebrick-msb/bin
@@ -89,7 +89,7 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # microsandbox boots VMs through KVM; give the runner user access to it.
       - name: Enable KVM
@@ -99,7 +99,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v5
 
       # Restores the cache the check job saved; only firebrick-daemon compiles
       # again, for the vm-tests feature.
@@ -112,7 +112,7 @@ jobs:
       # recompile microsandbox.
       - name: Restore the microsandbox runtime
         id: msb-runtime
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             /tmp/firebrick-msb/bin
