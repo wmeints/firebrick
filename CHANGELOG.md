@@ -6,6 +6,51 @@ request, and the release workflow copies the section into the GitHub release,
 above the generated list of pull requests. Each section starts with a `##
 vX.Y.Z - YYYY-MM-DD` heading.
 
+## v0.5.0 - 2026-10-11
+
+This release hardens firebrick against an agent that edits its own workspace:
+`fbk` asks before it applies mounts or network changes from `.firebrick.yml`,
+and several paths that trusted agent-controlled input are closed. Browser logins
+from inside a sandbox now complete, git can push to GitHub with a `GH_TOKEN`
+secret, and the crates are published to crates.io.
+
+### Breaking changes
+
+- `fbk start`, `fbk run` and `fbk network` ask before they apply `mounts` or
+  `network` settings from `.firebrick.yml` that you haven't approved, and show
+  the changes. Approvals are stored per workspace in
+  `~/.config/firebrick/approved.yml`. Without a terminal the command fails; pass
+  `--yes` (`fbk run --yes <command>`) in scripts to approve without asking.
+  (#140)
+- `fbkd` no longer falls back to `/tmp/firebrick` for its secrets, SSH keys and
+  logs. When `HOME` and the XDG variables aren't absolute paths it refuses to
+  start, and `fbk` reports why. (#139)
+- `fbk secret set --allow-host` rejects single-label wildcards such as `*.com`,
+  following the same rules as the network rules in `.firebrick.yml`. (#141)
+
+### Features
+
+- OAuth browser logins in a sandbox, such as `gh auth login --web` or Claude
+  Code, complete: `fbkd` forwards the callback port into the sandbox before it
+  opens the URL in the host browser. (#118)
+- The `firebrick-base` image configures a git credential helper, so `git clone`,
+  `pull` and `push` over HTTPS to github.com work once `fbk secret set GH_TOKEN`
+  is set. (#123)
+- Install firebrick from crates.io with `cargo install firebrick-cli
+  firebrick-daemon`. (#120)
+- The user documentation moved to https://firebrick-sandbox.dev. (#122, #123)
+
+### Fixes
+
+- `fbk` only talks to a daemon socket served by your own user or root, so
+  another local user can't intercept requests such as `fbk secret set`. (#139)
+- `fbk stop`, `fbk rm`, `fbk network`, `fbk port` and `fbk secret --scope
+  sandbox` without a name refuse to act on a sandbox that belongs to another
+  workspace, like `fbk start` already did. (#138)
+- Terminal control characters in guest output, for example from mise when a
+  sandbox starts, are stripped before they reach your terminal or the daemon
+  log. (#137)
+
 ## v0.4.0 - 2026-10-10
 
 This release gives you control over what a sandbox can reach and see: network

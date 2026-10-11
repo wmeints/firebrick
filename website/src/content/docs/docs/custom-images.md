@@ -43,7 +43,7 @@ The simplest custom image starts from the base image and adds a toolchain. This
 user:
 
 ```dockerfile
-FROM ghcr.io/wmeints/firebrick-base:v0.4.0
+FROM ghcr.io/wmeints/firebrick-base:v0.5.0
 
 RUN mise use -g python@3.13 uv@latest
 
