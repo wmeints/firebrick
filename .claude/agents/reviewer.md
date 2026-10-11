@@ -33,9 +33,13 @@ documents and the following points:
    the tests exist; the `test-reviewer` agent reviews their quality and changes
    that weaken the test suite.
 5. **Packaging and docs**: new files the build or packaging configuration needs
-   to know about are added to it, and `CLAUDE.md` and `README.md` match the new
-   behavior. When the change alters how Firebrick is used, the user docs in
-   `website/src/content/docs/` describe the new behavior too.
+   to know about are added to it, and `CLAUDE.md` matches the new behavior. When
+   the change alters how Firebrick is installed, configured or used, the user
+   docs in `website/src/content/docs/docs/` describe the new behavior.
+   `README.md` is for contributors: it must match a changed development workflow
+   (setup, build, tests, running a development build or workspace layout), and
+   user-facing content added to it, such as requirements, install steps or `fbk`
+   walkthroughs, belongs in the user docs instead.
 
 The `implementation-reviewer` agent checks the implementation ladder, error
 handling (swallowed errors, lost context, unwraps, fallbacks), lint suppression,

@@ -40,8 +40,10 @@ Before opening the PR, verify the change:
    behavior. When it adds a dependency or makes an architectural choice, a new
    decision record must exist in `docs/architecture/decisions/`, numbered after
    the last one and listed in `docs/architecture/09-decisions.md`. When it
-   changes how the project is used, `README.md` must describe it. If any of
-   these is missing, stop and offer to write it before opening the PR.
+   changes how the project is used, the user docs in
+   `website/src/content/docs/docs/` must describe it. When it changes the
+   development workflow, `README.md` must describe it. If any of these is
+   missing, stop and offer to write it before opening the PR.
 3. Run the `review-branch` workflow with the Workflow tool, by name. It runs the
    `implementation-reviewer` passes, the `website-reviewer` agent and the
    `test-reviewer` agent in parallel, and the `reviewer` agent merges their
