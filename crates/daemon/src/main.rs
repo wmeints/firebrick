@@ -15,9 +15,8 @@ use firebrick_daemon::{runtime, sandboxes, server, ssh};
 fn main() -> Result<()> {
     // Fail instead of falling back to the shared temp dir, where another user could create
     // the directories first and read or plant the secrets, SSH keys and SSH config.
-    let secrets_path = firebrick_utils::secrets_path().context(ssh::NO_DATA_DIR)?;
-    let log_dir = firebrick_utils::log_dir()
-        .context("can't choose a log directory: set HOME or XDG_STATE_HOME to an absolute path")?;
+    let secrets_path = firebrick_utils::secrets_path().context(firebrick_utils::NO_DATA_DIR)?;
+    let log_dir = firebrick_utils::log_dir().context(firebrick_utils::NO_LOG_DIR)?;
     use_firebrick_msb_home()?;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()

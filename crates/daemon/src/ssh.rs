@@ -25,10 +25,6 @@ const KNOWN_HOSTS_FILE: &str = "known_hosts";
 const CONFIG_FILE: &str = "config";
 const CLI_BINARY: &str = "fbk";
 
-/// Error for when neither `XDG_DATA_HOME` nor `HOME` points to a private data directory.
-pub const NO_DATA_DIR: &str =
-    "can't choose a data directory: set HOME or XDG_DATA_HOME to an absolute path";
-
 /// Returns the host key the sandbox SSH servers identify themselves with.
 pub fn host_key_path() -> Result<PathBuf> {
     Ok(ssh_dir()?.join(HOST_KEY_FILE))
@@ -42,7 +38,7 @@ pub fn client_public_key_path() -> Result<PathBuf> {
 /// Returns the directory holding the SSH keys and config, failing when there's no data
 /// directory instead of falling back to a shared one.
 fn ssh_dir() -> Result<PathBuf> {
-    firebrick_utils::ssh_dir().context(NO_DATA_DIR)
+    firebrick_utils::ssh_dir().context(firebrick_utils::NO_DATA_DIR)
 }
 
 /// Creates the client and host keys when they're missing and pins the host key for `*.fbk`.

@@ -83,7 +83,8 @@ user it runs as, in two layers:
 
 Root is allowed on purpose: root can bypass the check anyway, for example by
 reading the daemon's memory, so rejecting it adds no security and only gets in
-the way of an administrator.
+the way of an administrator. The rule lives in
+`firebrick_utils::is_trusted_peer`, which the daemon and the CLI share.
 
 The CLI checks the other direction. Where the socket falls back to the shared
 temp dir, another user can bind `fbkd.sock` first and receive every request,
@@ -104,3 +105,7 @@ path, and no log directory when neither `XDG_STATE_HOME` nor `HOME` is, and
 XDG_DATA_HOME to an absolute path` or the matching message for the logs, as it
 does for the microsandbox home
 ([ADR 0023](decisions/0023-keep-a-firebrick-microsandbox-home-in-the-xdg-state-directory.md)).
+The CLI starts the daemon with its stderr discarded, so that message would never
+reach the user. Before it starts the daemon, `client` asks
+`firebrick_utils::missing_dir` whether the same environment has a data and a log
+directory, and fails with the daemon's message instead.

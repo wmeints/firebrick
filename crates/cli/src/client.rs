@@ -47,6 +47,11 @@ pub async fn ensure_daemon(socket_path: &Path) -> Result<UnixStream> {
             .with_context(|| format!("failed to remove stale socket {}", socket_path.display()))?;
     }
 
+    // The daemon's stderr is discarded, so report the errors it would exit with here.
+    if let Some(err) = firebrick_utils::missing_dir() {
+        bail!("can't start the firebrick daemon: {err}");
+    }
+
     let child = Command::new(daemon_binary())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -67,19 +72,13 @@ fn verify_owner(socket_path: &Path, stream: UnixStream) -> Result<UnixStream> {
         .peer_cred()
         .with_context(|| format!("failed to read the owner of {}", socket_path.display()))?
         .uid();
-    if !is_trusted(peer_uid, nix::unistd::geteuid().as_raw()) {
+    if !firebrick_utils::is_trusted_peer(peer_uid, nix::unistd::geteuid().as_raw()) {
         bail!(
             "refusing to use {}: it's served by UID {peer_uid}, not by you",
             socket_path.display()
         );
     }
     Ok(stream)
-}
-
-/// Returns whether a daemon running as `peer_uid` may serve a client running as `own_uid`. Root
-/// is trusted because it can read the client's memory anyway, as the daemon's own check allows.
-fn is_trusted(peer_uid: u32, own_uid: u32) -> bool {
-    peer_uid == own_uid || peer_uid == 0
 }
 
 /// Waits until the spawned daemon listens on the socket, failing when it exits or times out.
@@ -119,14 +118,6 @@ fn daemon_binary() -> PathBuf {
 mod tests {
     use super::*;
 
-    #[test]
-    fn trusts_only_own_uid_and_root() {
-        let cases = [(1000, true), (0, true), (1001, false), (65534, false)];
-        for (peer_uid, expected) in cases {
-            assert_eq!(is_trusted(peer_uid, 1000), expected, "peer uid {peer_uid}");
-        }
-    }
-
     #[tokio::test]
     async fn accepts_a_socket_served_by_the_current_user() {
         let dir = tempfile::tempdir().unwrap();
@@ -135,6 +126,6 @@ mod tests {
 
         let stream = UnixStream::connect(&path).await.unwrap();
 
-        assert!(verify_owner(&path, stream).is_ok());
+        verify_owner(&path, stream).unwrap();
     }
 }
