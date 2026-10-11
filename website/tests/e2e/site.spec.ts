@@ -154,3 +154,11 @@ test("the docs keep a theme the reader chose", async ({ page }) => {
 
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });
+
+test("the docs link back to the landing page on a phone", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+
+  await page.goto(`${base}docs/quickstart/`);
+
+  await expect(page.locator(`header a[href="${base}"]`).first()).toBeVisible();
+});

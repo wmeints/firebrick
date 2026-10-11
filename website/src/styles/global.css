@@ -39,6 +39,12 @@
   --color-muted-on-dark: #a99d92;
   --color-text-on-light: #2a221d;
   --color-muted-on-light: #6b5f56;
+  --color-faint-on-light: #9a8d82;
+  --color-faint-on-dark: #7a6e64;
+  /* Dark theme variants of the docs surfaces. */
+  --color-sidebar-active-dark: #3a1f15;
+  --color-callout-dark: #2a1a12;
+  --color-callout-border-dark: #6b2d1a;
 
   --font-display: "Bricolage Grotesque", var(--font-sans);
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
@@ -57,7 +63,7 @@
   --sl-color-gray-1: var(--color-text-on-light);
   --sl-color-gray-2: var(--color-text-on-light);
   --sl-color-gray-3: var(--color-muted-on-light);
-  --sl-color-gray-4: #9a8d82;
+  --sl-color-gray-4: var(--color-faint-on-light);
   --sl-color-gray-5: var(--color-hairline);
   --sl-color-gray-6: var(--color-sidebar);
   --sl-color-gray-7: var(--color-paper);
@@ -73,20 +79,20 @@
   --sl-color-hairline-light: var(--color-hairline);
   --sl-color-hairline: var(--color-hairline);
   --sl-color-hairline-shade: var(--color-hairline);
-  --fb-card-bg: #fff;
+  --fb-card-bg: var(--color-white);
 }
 
 /* Maps the tokens to Starlight's dark theme. */
 :root[data-theme="dark"] {
-  --sl-color-white: #fff;
+  --sl-color-white: var(--color-white);
   --sl-color-gray-1: var(--color-text-on-dark);
   --sl-color-gray-2: var(--color-text-on-dark);
   --sl-color-gray-3: var(--color-muted-on-dark);
-  --sl-color-gray-4: #7a6e64;
+  --sl-color-gray-4: var(--color-faint-on-dark);
   --sl-color-gray-5: var(--color-card-border);
   --sl-color-gray-6: var(--color-card);
   --sl-color-black: var(--color-ink);
-  --sl-color-accent-low: #3a1f15;
+  --sl-color-accent-low: var(--color-sidebar-active-dark);
   --sl-color-accent: var(--color-brick);
   --sl-color-accent-high: var(--color-accent-dark);
   --sl-color-text-accent: var(--color-accent-dark);
@@ -97,9 +103,9 @@
   --sl-color-hairline-light: var(--color-card-border);
   --sl-color-hairline: var(--color-card-border);
   --sl-color-hairline-shade: var(--color-card-border);
-  --color-sidebar-active: #3a1f15;
-  --color-callout: #2a1a12;
-  --color-callout-border: #6b2d1a;
+  --color-sidebar-active: var(--color-sidebar-active-dark);
+  --color-callout: var(--color-callout-dark);
+  --color-callout-border: var(--color-callout-border-dark);
   --fb-card-bg: var(--color-card);
 }
 
@@ -190,6 +196,11 @@ h1#_top {
 .starlight-aside--tip {
   --sl-color-asides-text-accent: var(--color-brick);
   background-color: var(--sl-color-bg-sidebar);
+}
+
+/* Brick is too dark for the titles on the dark theme's sidebar color. */
+:root[data-theme="dark"] :is(.starlight-aside--note, .starlight-aside--tip) {
+  --sl-color-asides-text-accent: var(--color-accent-dark);
 }
 
 /* Caution and danger as the "What you'll need" callout. */

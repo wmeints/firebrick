@@ -1,5 +1,6 @@
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, expect, test } from "vitest";
+import Documentation from "../../src/components/landing/Documentation.astro";
 import Index from "../../src/pages/index.astro";
 
 // `vitest.config.ts` passes the base path on from `astro.config.mjs`, so these
@@ -24,11 +25,21 @@ test("the home page links to the repository and the releases", () => {
   );
 });
 
-test("the documentation cards show the pages from the docs", () => {
-  for (const page of ["configuration", "secrets", "command-line-reference"]) {
-    expect(html).toContain(`href="/docs/${page}/"`);
+test("the documentation cards link to their docs pages", async () => {
+  const container = await AstroContainer.create();
+  const cards = await container.renderToString(Documentation);
+
+  for (const [page, title] of [
+    ["quickstart", "Quickstart"],
+    ["configuration", "Configuration"],
+    ["secrets", "Secrets"],
+    ["command-line-reference", "Command-line reference"],
+  ]) {
+    expect(cards).toMatch(
+      new RegExp(`href="/docs/${page}/"[^>]*>\\s*${title}\\s*</a>`),
+    );
   }
-  expect(html).toContain(
+  expect(cards).toContain(
     "Go from the installed binaries to an agent running in a sandbox.",
   );
 });

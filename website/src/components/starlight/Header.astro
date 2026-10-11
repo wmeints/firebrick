@@ -7,11 +7,15 @@ import { links, withBase } from "../../site";
 ---
 
 <div class="fb-header">
-  <a href={withBase("docs/")} class="fb-title">
-    <Logo />
-    <span translate="no">firebrick</span>
-    <span class="fb-pill">docs</span>
-  </a>
+  <div class="fb-brand">
+    <a href={withBase("")} class="fb-title">
+      <Logo />
+      <span translate="no">firebrick</span>
+    </a>
+    <a href={withBase("docs/")} class="fb-pill">
+      docs
+    </a>
+  </div>
   <div class="fb-search print:hidden">
     <Search />
   </div>
@@ -38,6 +42,12 @@ import { links, withBase } from "../../site";
     color: var(--color-text-on-dark);
   }
 
+  .fb-brand {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
   .fb-title {
     display: flex;
     gap: 0.5rem;
@@ -45,7 +55,7 @@ import { links, withBase } from "../../site";
     font-family: var(--font-display);
     font-size: var(--sl-text-xl);
     font-weight: 800;
-    color: #fff;
+    color: var(--color-white);
     text-decoration: none;
     white-space: nowrap;
   }
@@ -58,6 +68,7 @@ import { links, withBase } from "../../site";
     font-size: var(--sl-text-2xs);
     font-weight: 400;
     color: var(--color-accent-dark);
+    text-decoration: none;
   }
 
   .fb-search {
@@ -76,7 +87,7 @@ import { links, withBase } from "../../site";
 
   .fb-search :global(button[data-open-modal]:hover) {
     border-color: var(--color-muted-on-dark);
-    color: #fff;
+    color: var(--color-white);
   }
 
   .fb-nav {
@@ -93,7 +104,7 @@ import { links, withBase } from "../../site";
 
   .fb-nav a:hover,
   .fb-nav .fb-current {
-    color: #fff;
+    color: var(--color-white);
   }
 
   .fb-github {
@@ -113,7 +124,7 @@ import { links, withBase } from "../../site";
   .fb-nav :global(starlight-theme-select) {
     --sl-color-gray-1: var(--color-text-on-dark);
     --sl-color-gray-2: var(--color-text-on-dark);
-    --sl-color-white: #fff;
+    --sl-color-white: var(--color-white);
     color: var(--color-text-on-dark);
   }
 

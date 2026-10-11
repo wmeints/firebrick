@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { docsPage } from "../../src/site";
 
 test("docsPage links to a docs page under the base path", () => {
@@ -10,6 +10,16 @@ test("docsPage links to a docs page under the base path", () => {
       "Go from the installed binaries to an agent running in a sandbox.",
     href: "/docs/quickstart/",
   });
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+test("docsPage keeps the base path when the site moves under one", () => {
+  vi.stubEnv("BASE_URL", "/firebrick/");
+
+  expect(docsPage("docs/quickstart").href).toBe("/firebrick/docs/quickstart/");
 });
 
 test("docsPage links the introduction to the docs root", () => {
