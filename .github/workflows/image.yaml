@@ -77,9 +77,9 @@ jobs:
             fi
           }
 
-          out=$(fill github.com -e 'GH_TOKEN=$MSB_GH_TOKEN' -e GITHUB_TOKEN=other)
+          out=$(fill github.com -e "GH_TOKEN=\$MSB_GH_TOKEN" -e GITHUB_TOKEN=other)
           expect 'username=x-access-token' "$out"
-          expect 'password=$MSB_GH_TOKEN' "$out"
+          expect "password=\$MSB_GH_TOKEN" "$out"
 
           out=$(fill github.com -e GITHUB_TOKEN=fallback)
           expect 'username=x-access-token' "$out"
