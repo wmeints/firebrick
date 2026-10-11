@@ -549,10 +549,12 @@ The `Dockerfile` in the repository root describes a base image for sandbox
 images. It builds on `ubuntu:26.04` and adds:
 
 - Base tooling - `build-essential`, `ca-certificates`, `curl`, `git`, `gpg`,
-  `libssl-dev`, `pkg-config`, `procps`, `sudo` and `tini`. The build toolchain
-  and OpenSSL headers let native npm and pip extensions, Rust crates with C
-  build scripts such as `openssl-sys`, and runtimes that mise builds from source
-  compile without installing anything first.
+  `libicu78`, `libssl-dev`, `pkg-config`, `procps`, `sudo` and `tini`. The build
+  toolchain and OpenSSL headers let native npm and pip extensions, Rust crates
+  with C build scripts such as `openssl-sys`, and runtimes that mise builds from
+  source compile without installing anything first. `libicu78` is there for .NET
+  globalization, so .NET apps and tools such as the Aspire CLI run without
+  installing ICU first.
 - `mise` - installed from the mise apt repository. It's activated in `.bashrc`
   for interactive shells, and its shims are on `PATH` for everything else.
 - Docker - `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin`

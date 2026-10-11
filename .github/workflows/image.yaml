@@ -109,3 +109,7 @@ jobs:
           expect 'password=from-user' "$out"
           out=$(user_fill -e GH_TOKEN=token)
           expect 'password=token' "$out"
+
+      # .NET apps such as the Aspire CLI need ICU for globalization.
+      - name: Check that ICU is installed
+        run: docker run --rm firebrick-base:ci dpkg -s libicu78

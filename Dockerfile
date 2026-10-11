@@ -3,8 +3,9 @@ FROM ubuntu:26.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Base tooling, a native build toolchain, sudo, procps (sysctl), tini, the mise apt repository
-# and the Docker engine from Docker's apt repository.
+# Base tooling, a native build toolchain, ICU for .NET globalization (such as the Aspire CLI),
+# sudo, procps (sysctl), tini, the mise apt repository and the Docker engine from Docker's apt
+# repository.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
@@ -12,6 +13,7 @@ RUN apt-get update \
         curl \
         git \
         gpg \
+        libicu78 \
         libssl-dev \
         pkg-config \
         procps \
