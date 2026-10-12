@@ -112,6 +112,57 @@ updated the network rules of my-project
   change you asked for never needs approval. See
   [Approving mounts and network changes](/docs/configuration/#approving-mounts-and-network-changes).
 
+## Reaching hosts on your local network
+
+A sandbox can't reach a server on your LAN, such as a NAS at `192.168.68.122`,
+even when your host can. This is by design: by default a sandbox only reaches
+the public internet, and private address ranges are blocked, whether or not
+`enforce` is on. They include the RFC 1918 ranges `10.0.0.0/8`, `172.16.0.0/12`
+and `192.168.0.0/16`, IPv6 unique local addresses (`fc00::/7`) and carrier-grade
+NAT (`100.64.0.0/10`).
+
+To reach a LAN host, turn on the policy and allow the host's IP address, or a
+CIDR range for the whole LAN:
+
+```sh
+$ fbk network policy enable
+updated the network rules of my-project
+$ fbk network allow 192.168.68.122     # or 192.168.68.0/24 for the whole LAN
+updated the network rules of my-project
+```
+
+Or the same in `.firebrick.yml`:
+
+```yaml
+name: my-project
+network:
+  enforce: true
+  allow:
+    - 192.168.68.122
+```
+
+Enabling the policy means the sandbox only reaches what the `allow` rules list,
+so also allow the public hosts the sandbox still needs, such as your agent's API
+and package registries. See
+[Restricting outgoing traffic](#restricting-outgoing-traffic).
+
+A host name that resolves to a LAN address, such as `nas.example.lan` in your
+internal DNS, needs an IP or CIDR rule for that address. A host-name rule alone
+isn't enough: to protect against DNS rebinding, the sandbox's resolver answers
+`NXDOMAIN` to any lookup whose answer contains a private address that no IP or
+CIDR rule allows. With the rule for the address, the name resolves and the
+sandbox connects to it over any protocol, HTTPS included, so it needs no
+host-name rule of its own.
+
+When a LAN host isn't allowed, you see one of these:
+
+- Without `enforce`, or for other protocols than HTTP/1.x, the connection is
+  refused or reset: `curl: (7) Failed to connect to 192.168.68.122 port 80`.
+- With `enforce` on, an HTTP/1.x request gets `403 Forbidden` with the message
+  `firebrick blocked the connection to 192.168.68.122`.
+- A host name that resolves to a LAN address without an IP or CIDR rule doesn't
+  resolve: `curl: (6) Could not resolve host: nas.example.lan`.
+
 ## Recording network activity
 
 Firebrick records the domains and IP addresses each sandbox contacts, so you can

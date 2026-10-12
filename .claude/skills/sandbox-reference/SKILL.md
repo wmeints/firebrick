@@ -188,6 +188,18 @@ build on it when `Cargo.lock` has a newer version.
   `.domain_suffix(..)`, which also matches the domain itself and its subdomains.
   There is no `*.example.com` wildcard syntax, and a suffix with a single label
   such as `com` fails to build.
+- `NetworkPolicy::default()` is `from_profiles([NetworkProfile::Public])`: DNS
+  plus the `Public` group, with default egress deny. `Private` (RFC 1918, ULA,
+  CGN `100.64.0.0/10`), `Loopback`, `LinkLocal` and `Host` aren't allowed, so a
+  sandbox without `enforce` can't reach the LAN. Only an IP or CIDR allow rule
+  in an enforced policy reaches it.
+- DNS rebinding protection (`rebind_protection`, on by default) answers
+  `NXDOMAIN` when a DNS answer contains a private or reserved address that no
+  explicit allow rule for an address covers (`policies_allow_rebind_address` in
+  `$N/engine/dns/forwarder.rs`). Only `Cidr` (IP) and `Group` rules without
+  ports count; domain rules don't, so a host name that resolves to a LAN address
+  needs an IP or CIDR rule. It also applies to queries the guest sends to its
+  own resolver, such as `1.1.1.1`.
 - `NetworkPolicy::builder().default_deny()` also denies ingress; use
   `.default_egress(Action::Deny)` to deny only egress.
 - Domain rules also match DNS queries to the sandbox's resolver: a domain deny
