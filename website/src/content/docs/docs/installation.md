@@ -12,14 +12,49 @@ archive per platform with the `fbk` and `fbkd` binaries:
 | Linux ARM64           | `aarch64-unknown-linux-gnu` |
 | macOS (Apple Silicon) | `aarch64-apple-darwin`      |
 
-Linux needs KVM, and the Linux binaries need glibc 2.35 or newer. On Windows,
-run the Linux binaries in WSL 2 with nested virtualization; see
-[Windows: run Firebrick in WSL 2](#windows-run-firebrick-in-wsl-2) first.
-
 The steps below install both binaries in `~/.local/bin`, which doesn't need root
 permissions. Keep `fbk` and `fbkd` in the same directory, because the CLI starts
 the daemon from its own directory. To build them with Cargo instead, see
 [Installing with Cargo](#installing-with-cargo).
+
+## System requirements
+
+Check that your machine meets these requirements before you download anything.
+
+- **Linux**, on x86_64 or ARM64:
+  - A CPU with hardware virtualization (Intel VT-x or AMD-V) enabled in the
+    firmware.
+  - The KVM kernel module loaded, so `/dev/kvm` exists.
+  - Read and write access to `/dev/kvm` for your user, usually through the `kvm`
+    group.
+  - glibc 2.35 or newer for the release binaries.
+
+  When Linux runs inside a VM or a container, the host must expose `/dev/kvm` to
+  it, for example through nested virtualization.
+- **macOS**: Apple Silicon. Intel Macs aren't supported.
+- **Windows**: Windows 11 with WSL 2, nested virtualization enabled for WSL, and
+  hardware virtualization enabled in the firmware. Firebrick runs the Linux
+  release inside the WSL distribution; see
+  [Windows: run Firebrick in WSL 2](#windows-run-firebrick-in-wsl-2) for the
+  setup steps.
+
+On Linux, or in your WSL distribution, check KVM and glibc before you install:
+
+```sh
+ls -l /dev/kvm
+test -r /dev/kvm && test -w /dev/kvm && echo "KVM is usable"
+ldd --version | head -1   # glibc 2.35 or newer
+```
+
+When a check fails:
+
+- **`/dev/kvm` is missing**: enable hardware virtualization in the firmware, or
+  load the KVM module for your CPU with `sudo modprobe kvm_intel` or `sudo
+  modprobe kvm_amd`. On WSL, enable nested virtualization as described in
+  [Windows: run Firebrick in WSL 2](#windows-run-firebrick-in-wsl-2).
+- **`/dev/kvm` exists, but KVM isn't usable**: add your user to the `kvm` group
+  with `sudo usermod -aG kvm "$USER"`, then log out and in again. On WSL, run
+  `wsl --shutdown` from PowerShell instead and open the distribution again.
 
 ## 1. Download and install the binaries
 
@@ -114,8 +149,8 @@ xattr -d com.apple.quarantine ~/.local/bin/fbk ~/.local/bin/fbkd
 ## Windows: run Firebrick in WSL 2
 
 There's no Windows release, but the Linux release runs in a WSL 2 distribution
-when WSL exposes KVM to it through nested virtualization. This needs Windows 11
-and a CPU with hardware virtualization enabled in the firmware.
+when WSL exposes KVM to it through nested virtualization. Check the
+[System requirements](#system-requirements) for Windows first.
 
 1. Enable nested virtualization in `%UserProfile%\.wslconfig` on Windows:
 
@@ -130,17 +165,9 @@ and a CPU with hardware virtualization enabled in the firmware.
    wsl --shutdown
    ```
 
-3. In the WSL distribution, check that KVM is available and that your user can
-   open it:
-
-   ```sh
-   ls -l /dev/kvm
-   test -r /dev/kvm && test -w /dev/kvm && echo "KVM is usable"
-   ```
-
-   When `/dev/kvm` is missing, nested virtualization isn't active. When it
-   exists but isn't usable, add your user to its group, for example with `sudo
-   usermod -aG kvm "$USER"`, and restart WSL.
+3. In the WSL distribution, run the checks from
+   [System requirements](#system-requirements). When `/dev/kvm` is missing
+   there, nested virtualization isn't active.
 
 Then follow the Linux steps above inside the distribution, and keep your
 projects in the distribution's file system, for example under `~/projects`,
