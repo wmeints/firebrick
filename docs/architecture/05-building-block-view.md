@@ -46,7 +46,7 @@ C4Component
         Component(port, "port", "Rust", "Port forwards")
         Component(approval, "approval", "serde_yaml", "Approved spec settings")
         Component(table, "table", "ratatui", "Tables")
-        Component(progress, "progress", "indicatif", "Image pull progress")
+        Component(progress, "progress", "indicatif", "Image pull and mise install progress")
         Component(client, "client", "Tonic client", "Daemon client")
     }
     Component_Ext(spec, "firebrick-spec", "serde_yaml", "Sandbox spec")
@@ -65,7 +65,7 @@ C4Component
     Rel(port, spec, "Edits ports in .firebrick.yml")
     Rel(main, client, "Connects")
     Rel(manage, table, "Renders sandboxes")
-    Rel(manage, progress, "Shows image pull")
+    Rel(manage, progress, "Shows image pull and mise install")
     Rel(secret, table, "Renders secrets")
     Rel(session, manage, "Ensures running")
     Rel(manage, spec, "Loads .firebrick.yml")
@@ -165,11 +165,15 @@ C4Component
 - `table` - Renders rows as a bordered table with `ratatui` into an in-memory
   buffer and returns it as plain text lines
   ([ADR 0003](decisions/0003-render-cli-tables-with-ratatui.md)).
-- `progress` - Shows the image pull progress from the `StartSandbox` stream on
-  stderr: a progress bar made with `indicatif` with the downloaded and total MiB
-  and a percentage when stderr is a terminal, and otherwise `Pulling image
-  <ref>...` and `Pulled image <ref>`. It shows nothing when no progress arrives,
-  and clears an unfinished bar when the start fails
+- `progress` - Shows the image pull and mise install progress from the
+  `StartSandbox` stream on stderr. For the pull, a progress bar made with
+  `indicatif` with the downloaded and total MiB and a percentage when stderr is
+  a terminal, and otherwise `Pulling image <ref>...` and `Pulled image <ref>`.
+  For the mise install, a spinner with the elapsed time and the latest line of
+  mise, truncated to the terminal width and cleared when the install ends, and
+  otherwise `Installing mise tools...` and `Installed mise tools`. It shows
+  nothing for a step that sends no progress, and clears an unfinished bar or
+  spinner when the start fails
   ([ADR 0024](decisions/0024-stream-image-pull-progress-from-startsandbox.md)).
 - `validate` - Checks `.firebrick.yml` and reports problems as
   `file:line:column: error: message`.
@@ -264,13 +268,13 @@ C4Component
   `allowed` for every entry when the rules aren't enforced. This is `fbkd`'s
   evaluation, not microsandbox's own decision. `StartSandbox` is a
   server-streaming RPC: `server` runs the start in a task of its own, so it
-  finishes when the client disconnects, streams the image pull progress and ends
-  the stream with the open and failed forwards, or with the error status. It
-  maps the `SandboxError` of `sandboxes` to gRPC status codes in one place. It
-  refuses to start when the socket already exists, gives the socket mode `0600`
-  after binding it and removes it on shutdown. It only hands a connection to
-  tonic when the peer's UID, read with `SO_PEERCRED`, is the daemon's own UID or
-  root (see
+  finishes when the client disconnects, streams the image pull and mise install
+  progress and ends the stream with the open and failed forwards, or with the
+  error status. It maps the `SandboxError` of `sandboxes` to gRPC status codes
+  in one place. It refuses to start when the socket already exists, gives the
+  socket mode `0600` after binding it and removes it on shutdown. It only hands
+  a connection to tonic when the peer's UID, read with `SO_PEERCRED`, is the
+  daemon's own UID or root (see
   [Securing the daemon socket](08-crosscutting-concepts.md#securing-the-daemon-socket)).
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
@@ -292,27 +296,28 @@ C4Component
   before it creates anything. When it creates or starts a sandbox, it uses the
   `mise` module to trust the mise config files at the workspace root and run
   `mise install`, unless the sandbox's `firebrick.mise` label, stored at create
-  time, turns mise off (see
-  [Starting a sandbox](06-runtime-view.md#starting-a-sandbox)). It starts,
-  stops, gets, lists and removes sandboxes, gives each sandbox a unique SSH host
-  name, regenerates the SSH config, the editor settings and Zed's remote
-  projects after every start and remove and when the daemon starts, and connects
-  to a sandbox by name or host name. `GetSandbox` returns the sandbox's working
-  directory, which is the workspace mount path, as `workspace_path`, and the
-  host directory bind-mounted there, canonicalized, as `workspace_host_path`.
-  Both are empty for a sandbox without a workspace. The CLI compares
-  `workspace_host_path` with the working directory before it uses an existing
-  sandbox. A failed sync only logs a warning. `SetSecret` stores a secret and
-  adds it to the sandboxes in its scope: a global secret to the existing
-  sandboxes firebrick created, except the ones with a sandbox-scoped secret with
-  that name, and a sandbox-scoped secret to its sandbox only, which must exist.
-  `ListSecrets` returns the names, scopes and allowed hosts, sorted by name and
-  then scope with the global secret first, never the values. `RemoveSecret`
-  removes a secret from the same sandboxes and then from the store, keeps it in
-  the store when a sandbox fails so the removal can be retried, and returns
-  `NOT_FOUND` for an unknown name or sandbox. A sandbox that loses its
-  sandbox-scoped secret gets the global one with that name back. Removing a
-  sandbox removes its sandbox-scoped secrets from the store (see
+  time, turns mise off. The `mise` module streams mise's output and reports the
+  latest line without control characters, at most one every 100 ms, as start
+  progress (see [Starting a sandbox](06-runtime-view.md#starting-a-sandbox)). It
+  starts, stops, gets, lists and removes sandboxes, gives each sandbox a unique
+  SSH host name, regenerates the SSH config, the editor settings and Zed's
+  remote projects after every start and remove and when the daemon starts, and
+  connects to a sandbox by name or host name. `GetSandbox` returns the sandbox's
+  working directory, which is the workspace mount path, as `workspace_path`, and
+  the host directory bind-mounted there, canonicalized, as
+  `workspace_host_path`. Both are empty for a sandbox without a workspace. The
+  CLI compares `workspace_host_path` with the working directory before it uses
+  an existing sandbox. A failed sync only logs a warning. `SetSecret` stores a
+  secret and adds it to the sandboxes in its scope: a global secret to the
+  existing sandboxes firebrick created, except the ones with a sandbox-scoped
+  secret with that name, and a sandbox-scoped secret to its sandbox only, which
+  must exist. `ListSecrets` returns the names, scopes and allowed hosts, sorted
+  by name and then scope with the global secret first, never the values.
+  `RemoveSecret` removes a secret from the same sandboxes and then from the
+  store, keeps it in the store when a sandbox fails so the removal can be
+  retried, and returns `NOT_FOUND` for an unknown name or sandbox. A sandbox
+  that loses its sandbox-scoped secret gets the global one with that name back.
+  Removing a sandbox removes its sandbox-scoped secrets from the store (see
   [Secret scopes](08-crosscutting-concepts.md#secret-scopes)). A lock around the
   secret store makes sure a sandbox that is being created can't miss a secret
   that is being set. It stores a sandbox's port mappings in the
@@ -369,7 +374,8 @@ C4Component
   up the downloaded bytes per layer, takes the total from the manifest, and
   reports at most one update every 100 ms, one for each layer that finishes and
   a final one when the pull completes. A pull without layer downloads, because
-  the image is cached, reports nothing.
+  the image is cached, reports nothing. Its `Throttle` also limits the mise
+  install progress to one message every 100 ms.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
   `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
   forwards input, resizes, output and the exit code between the gRPC stream and

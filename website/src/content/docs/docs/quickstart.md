@@ -58,12 +58,16 @@ fbk run bash
 ```
 
 The base image comes with [mise](https://mise.jdx.dev), so you can install an
-agent CLI in the sandbox, for example Claude Code with Node:
+agent CLI in the sandbox, for example Claude Code:
 
 ```sh
-mise use -g node@lts npm:@anthropic-ai/claude-code
+mise use -g claude
 claude
 ```
+
+See [Installing an agent](/docs/agents/) for other agents, installing the agent
+for the whole project, and the hosts the install needs when the network policy
+is enforced.
 
 The agent works on the files in `/workspaces/my-project`, which are your project
 files on the host. The sandbox keeps running after you exit the shell.

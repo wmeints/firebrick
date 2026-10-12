@@ -15,14 +15,14 @@ use tonic::transport::Channel;
 
 use crate::api::{
     GetSandboxRequest, GetSandboxResponse, ImagePullProgress, ListSandboxesRequest,
-    ListSandboxesResponse, Mount, NetworkPolicy, PortForward, PortForwards, RemoveSandboxRequest,
-    SandboxResources, SandboxStarted, SandboxStatus, SandboxSummary, SandboxUpgraded,
-    SandboxVolumes, StartSandboxRequest, StopSandboxRequest, UpgradeSandboxRequest,
-    sandbox_management_service_client::SandboxManagementServiceClient, start_sandbox_response,
-    upgrade_sandbox_response,
+    ListSandboxesResponse, MiseInstallProgress, Mount, NetworkPolicy, PortForward, PortForwards,
+    RemoveSandboxRequest, SandboxResources, SandboxStarted, SandboxStatus, SandboxSummary,
+    SandboxUpgraded, SandboxVolumes, StartSandboxRequest, StopSandboxRequest,
+    UpgradeSandboxRequest, sandbox_management_service_client::SandboxManagementServiceClient,
+    start_sandbox_response, upgrade_sandbox_response,
 };
 use crate::approval::{Approver, Settings};
-use crate::progress::PullProgressView;
+use crate::progress::{MiseProgressView, PullProgressView};
 use crate::table;
 
 /// Name of the spec file `fbk` looks for in the working directory.
@@ -188,8 +188,8 @@ fn new_sandbox_settings(request: &StartSandboxRequest, network: NetworkSpec) -> 
     }
 }
 
-/// Sends the start request and shows the progress of the image pull while the daemon creates
-/// the sandbox. Returns the message that ends the stream.
+/// Sends the start request and shows the progress of the image pull and of installing the mise
+/// tools while the daemon starts the sandbox. Returns the message that ends the stream.
 async fn send_start_request(
     request: StartSandboxRequest,
     client: &mut SandboxManagementServiceClient<Channel>,
@@ -199,6 +199,7 @@ async fn send_start_request(
         Some(start_sandbox_response::Message::PullProgress(progress)) => {
             Streamed::Progress(progress)
         }
+        Some(start_sandbox_response::Message::MiseProgress(progress)) => Streamed::Mise(progress),
         Some(start_sandbox_response::Message::Started(started)) => Streamed::Done(started),
         None => Streamed::Empty,
     })
@@ -653,25 +654,33 @@ fn daemon_error(status: tonic::Status) -> anyhow::Error {
 enum Streamed<T> {
     /// The progress of the image pull.
     Progress(ImagePullProgress),
+    /// The progress of installing the workspace's mise tools, which follows the pull.
+    Mise(MiseInstallProgress),
     /// The result that ends the stream.
     Done(T),
     /// Nothing the client knows.
     Empty,
 }
 
-/// Reads the stream, showing the progress of the image pull, until the message `classify`
-/// finds the result in. Returns the result, or `None` when the stream ends without one.
+/// Reads the stream, showing the progress of the image pull and the mise install, until the
+/// message `classify` finds the result in. Returns the result, or `None` when the stream ends without one.
 async fn follow_pull<R, T>(
     mut stream: Streaming<R>,
     classify: impl Fn(R) -> Streamed<T>,
 ) -> Result<Option<T>, tonic::Status> {
     let mut pull = PullProgressView::stderr();
+    let mut mise = MiseProgressView::stderr();
 
     while let Some(response) = stream.message().await? {
         match classify(response) {
             Streamed::Progress(progress) => pull.update(&progress),
+            Streamed::Mise(progress) => {
+                pull.finish();
+                mise.update(&progress);
+            }
             Streamed::Done(result) => {
                 pull.finish();
+                mise.finish();
                 return Ok(Some(result));
             }
             Streamed::Empty => {}
