@@ -89,8 +89,10 @@ in an editor on the host.
   newer.
 - macOS on Apple Silicon.
 - Windows 11 through WSL 2 with nested virtualization, which runs the Linux
-  release. See
-  [Installation](/docs/installation/#windows-run-firebrick-in-wsl-2).
+  release.
+
+See [System requirements](/docs/installation/#system-requirements) for what each
+platform needs and how to check your machine.
 
 ## Next steps
 
