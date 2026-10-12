@@ -113,7 +113,7 @@ build on it when `Cargo.lock` has a newer version.
   load, save and remove images, but the pull runs inside a create. The default
   `PullPolicy::IfMissing` uses a cached tag without asking the registry; use
   `.pull_policy(PullPolicy::Always)` to notice a tag that moved. `fbkd` pulls
-  for `fbk upgrade` by creating and removing a probe sandbox (ADR 0040).
+  for `fbk upgrade` by creating and removing a probe sandbox (ADR 0041).
 - A sandbox's config stores the manifest digest of the image it was created from
   as `manifest_digest`, also after a create from a snapshot, but the field is
   `pub(crate)`. Read it from `SandboxHandle::config_json()`.
@@ -179,7 +179,7 @@ build on it when `Cargo.lock` has a newer version.
   image setter. Owned volumes are formatted empty at create time and only come
   back together with the snapshot's root filesystem; a sandbox created from a
   snapshot keeps its owned disk as a qcow2 chain (`runtime/owned-disks/`)
-  instead of a `disk.raw` (ADR 0040).
+  instead of a `disk.raw` (ADR 0041).
 - `RestoreBuilder` also restores a snapshot, but has no setters for init,
   labels, env, workdir or secrets.
 - `Sandbox::remove()` doesn't remove the sandbox's snapshots.

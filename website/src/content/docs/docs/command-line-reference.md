@@ -245,15 +245,17 @@ Changes the network settings in `.firebrick.yml` and applies them to the working
 directory's sandbox, or shows the sandbox's network activity. See
 [Networking](/docs/networking/).
 
-| Command                       | Description                                                                                |
-| ----------------------------- | ------------------------------------------------------------------------------------------ |
-| `fbk network allow <RULE>...` | Allow the sandbox to connect to the destinations, and stop denying them.                   |
-| `fbk network deny <RULE>...`  | Deny the sandbox to connect to the destinations, and stop allowing them.                   |
-| `fbk network policy enable`   | Deny outgoing traffic unless a rule allows it (`network.enforce: true`).                   |
-| `fbk network policy disable`  | Allow all outgoing traffic; the rules are kept but not enforced.                           |
-| `fbk network disable`         | Remove the sandbox's network device, so it works fully offline (`network.enabled: false`). |
-| `fbk network enable`          | Give the sandbox a network device again (`network.enabled: true`).                         |
-| `fbk network log`             | Show the domains and IP addresses the sandbox contacted, newest first.                     |
+| Command                                 | Description                                                                                |
+| --------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `fbk network allow <RULE>...`           | Allow the sandbox to connect to the destinations, and stop denying them.                   |
+| `fbk network deny <RULE>...`            | Deny the sandbox to connect to the destinations, and stop allowing them.                   |
+| `fbk network policy enable`             | Deny outgoing traffic unless a rule allows it (`network.enforce: true`).                   |
+| `fbk network policy disable`            | Allow all outgoing traffic; the rules are kept but not enforced.                           |
+| `fbk network disable`                   | Remove the sandbox's network device, so it works fully offline (`network.enabled: false`). |
+| `fbk network enable`                    | Give the sandbox a network device again (`network.enabled: true`).                         |
+| `fbk network log`                       | Show the domains and IP addresses the sandbox contacted, newest first.                     |
+| `fbk network presets show`              | List the built-in presets and their rules.                                                 |
+| `fbk network presets apply <PRESET>...` | Allow the rules of the presets, like `fbk network allow` with those rules.                 |
 
 A `RULE` is a host name, `*.` plus a domain, an IP address or a CIDR range, such
 as `example.org`, `*.npmjs.org` or `10.0.0.0/8`. `allow` and `deny` need at
@@ -275,6 +277,17 @@ when it was last seen in your local time zone, and whether the sandbox's current
 rules allow it. The record comes from a logger inside the sandbox, so an agent
 can tamper with it; see
 [Recording network activity](/docs/networking/#recording-network-activity).
+
+`fbk network presets show` reads neither `.firebrick.yml` nor the daemon. `fbk
+network presets apply` needs at least one `PRESET`: `claude`, `copilot`,
+`github`, `codex`, `node`, `dotnet`, `java`, `rust`, `go`, `python`, `mise`,
+`ruby`, or `all` for every preset. It fails on any other name without changing
+`.firebrick.yml`. See
+[Allowing coding agents and toolchains with presets](/docs/networking/#allowing-coding-agents-and-toolchains-with-presets).
+
+```sh
+fbk network presets apply claude rust github --yes
+```
 
 ## `fbk port`
 

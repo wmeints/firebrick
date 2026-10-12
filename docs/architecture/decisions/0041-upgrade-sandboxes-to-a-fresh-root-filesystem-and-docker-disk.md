@@ -1,4 +1,4 @@
-# 40. Upgrade sandboxes to a fresh root filesystem and Docker disk
+# 41. Upgrade sandboxes to a fresh root filesystem and Docker disk
 
 ## Status
 

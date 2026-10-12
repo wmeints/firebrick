@@ -112,6 +112,48 @@ updated the network rules of my-project
   change you asked for never needs approval. See
   [Approving mounts and network changes](/docs/configuration/#approving-mounts-and-network-changes).
 
+## Allowing coding agents and toolchains with presets
+
+Firebrick ships presets: groups of `allow` rules for coding agents, GitHub and
+the package registries and installers of common toolchains. Add the ones your
+project needs instead of working out every domain yourself:
+
+```sh
+$ fbk network policy enable
+updated the network rules of my-project
+$ fbk network presets apply claude github rust node
+updated the network rules of my-project
+```
+
+`fbk network presets apply <preset>...` works exactly like `fbk network allow`
+with the rules of the named presets, so it asks for approval and takes `--yes`
+the same way. `fbk network presets apply all` adds every preset. Run `fbk
+network presets show` to list the presets and their rules:
+
+| Preset    | Rules                                                                                                                                        |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude`  | `*.anthropic.com`, `*.claude.ai`, `*.claude.com`                                                                                             |
+| `copilot` | `*.githubcopilot.com`, `copilot-proxy.githubusercontent.com`, `origin-tracker.githubusercontent.com`                                         |
+| `github`  | `*.github.com`, `*.githubusercontent.com`, `*.githubassets.com`, `ghcr.io`                                                                   |
+| `codex`   | `*.openai.com`, `*.chatgpt.com`                                                                                                              |
+| `node`    | `*.nodejs.org`, `*.npmjs.org`, `*.npmjs.com`, `*.yarnpkg.com`, `*.pnpm.io`, `*.bun.sh`                                                       |
+| `dotnet`  | `*.nuget.org`, `*.dot.net`, `builds.dotnet.microsoft.com`, `dotnetcli.azureedge.net`, `dotnetcli.blob.core.windows.net`                      |
+| `java`    | `*.maven.org`, `repo.maven.apache.org`, `*.gradle.org`, `*.adoptium.net`, `central.sonatype.com`, `oss.sonatype.org`, `s01.oss.sonatype.org` |
+| `rust`    | `*.crates.io`, `*.rust-lang.org`, `*.rustup.rs`, `docs.rs`                                                                                   |
+| `go`      | `*.golang.org`, `*.go.dev`, `dl.google.com`                                                                                                  |
+| `python`  | `*.pypi.org`, `*.pythonhosted.org`, `*.python.org`, `*.astral.sh`, `*.anaconda.org`, `repo.anaconda.com`                                     |
+| `mise`    | `*.jdx.dev`, `mise.run`                                                                                                                      |
+| `ruby`    | `*.rubygems.org`, `*.ruby-lang.org`                                                                                                          |
+
+- The presets are built into `fbk`, so nobody can change them by editing a file.
+- `.firebrick.yml` gets the rules, not the preset names. Afterwards they're
+  ordinary `allow` rules: remove them from the file, or narrow them with `fbk
+  network deny`, like any other rule. Applying a preset again changes nothing.
+- `apply` doesn't turn on enforcement; run `fbk network policy enable` for that.
+- Many tools download releases from GitHub, so add `github` along with the
+  toolchain preset. Like every domain rule, the presets only allow HTTP and
+  HTTPS, so cloning over SSH (`git@github.com:...`) stays blocked.
+
 ## Reaching hosts on your local network
 
 A sandbox can't reach a server on your LAN, such as a NAS at `192.168.68.122`,
