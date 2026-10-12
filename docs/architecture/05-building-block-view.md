@@ -43,6 +43,7 @@ C4Component
         Component(init, "init", "serde_yaml", "Default spec")
         Component(secret, "secret", "Rust", "Secrets")
         Component(network, "network", "Rust", "Network rules")
+        Component(presets, "presets", "Rust", "Network presets")
         Component(port, "port", "Rust", "Port forwards")
         Component(approval, "approval", "serde_yaml", "Approved spec settings")
         Component(table, "table", "ratatui", "Tables")
@@ -60,6 +61,8 @@ C4Component
     Rel(main, init, "Uses")
     Rel(main, secret, "Uses")
     Rel(main, network, "Uses")
+    Rel(main, presets, "Selects preset rules")
+    Rel(presets, table, "Renders presets")
     Rel(main, port, "Uses")
     Rel(port, manage, "Resolves sandbox name")
     Rel(port, spec, "Edits ports in .firebrick.yml")
@@ -85,15 +88,19 @@ C4Component
 - `main` - Parses the `start`, `stop`, `ls`, `rm`, `run`, `validate`, `init`,
   `secret set`, `secret ls`, `secret rm`, `network allow`, `network deny`,
   `network policy enable`, `network policy disable`, `network enable`, `network
-  disable`, `network log`, `port forward` and `port rm` commands, and the hidden
-  `ssh-proxy` command. The argument of `port forward` is parsed with
-  `PortMapping`'s parser, and that of `port rm` as a port from 1 to 65535.
-  `validate`, `init` and `--version`, which prints the package version, run
-  without the daemon. `start`, `run` and every `network` subcommand that changes
-  the network settings take `--yes`, which approves changed mounts and network
-  settings without asking; `network log` changes nothing and doesn't take it.
-  `run` takes the command and its arguments as one trailing list, so options
-  after the command, such as `--yes`, go to the command.
+  disable`, `network log`, `network presets show`, `network presets apply`,
+  `port forward` and `port rm` commands, and the hidden `ssh-proxy` command. The
+  argument of `port forward` is parsed with `PortMapping`'s parser, and that of
+  `port rm` as a port from 1 to 65535. `validate`, `init`, `network presets
+  show` and `--version`, which prints the package version, run without the
+  daemon. `network presets apply` takes one or more preset names, which clap
+  checks against `presets::names`, and becomes a `network` allow change with the
+  rules of those presets. `start`, `run` and every `network` subcommand that
+  changes the network settings take `--yes`, which approves changed mounts and
+  network settings without asking; `network log` and `network presets show`
+  change nothing and don't take it. `run` takes the command and its arguments as
+  one trailing list, so options after the command, such as `--yes`, go to the
+  command.
 - `client` - Connects to the daemon socket. When nobody listens, it removes a
   stale socket, spawns `fbkd` from next to the `fbk` binary (or from `PATH`) and
   waits at most 5 seconds for the socket.
@@ -144,6 +151,15 @@ C4Component
   recorded for <sandbox> yet.`, `NOT_FOUND` that the sandbox doesn't exist, and
   `FAILED_PRECONDITION` that the sandbox was created before network logging and
   how to turn it on.
+- `presets` - Holds the network presets: named groups of `allow` rules for
+  coding agents (`claude`, `copilot`, `codex`), GitHub and the package
+  registries and installers of toolchains (`node`, `dotnet`, `java`, `rust`,
+  `go`, `python`, `mise`, `ruby`), compiled in as constants (see
+  [ADR 0040](decisions/0040-compile-the-network-presets-into-fbk.md)). `names`
+  lists `all` and every preset, `rules` returns the rules of the named presets,
+  or of every preset for `all`, each rule once and in the order of the presets,
+  and `show` renders every preset and its rules as a table. A unit test parses
+  every rule as a `NetworkRule`, so an invalid constant can't ship.
 - `approval` - Keeps the `mounts` and `network` settings the user approved per
   workspace in `approved.yml` in the config directory, prints the difference
   with the settings a command is about to apply and asks `Apply these changes?
