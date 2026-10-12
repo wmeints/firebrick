@@ -233,7 +233,7 @@ main()
 EOF
 
 # fbkd hands PID 1 to /sbin/init in sandboxes that run this image. The script applies the
-# sysctl settings, starts dockerd and the network logger in the background without waiting for
+# sysctl settings, remounts devpts, starts dockerd and the network logger in the background without waiting for
 # them, and hands PID 1 to tini, which reaps zombie processes. The logger restarts when it
 # exits and logs to /var/log/firebrick-netlog.log. dockerd keeps its data on the ext4 disk that fbkd
 # attaches at /var/lib/docker, and logs to /var/log/dockerd.log. /run lives on the sandbox's

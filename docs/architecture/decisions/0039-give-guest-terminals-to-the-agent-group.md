@@ -38,6 +38,8 @@ terminal opened after boot is readable and writable by the `agent` user.
   own init, terminals stay `root:root` `600`. Sandboxes created from an earlier
   image keep the old `/sbin/init` until they're recreated with `fbk rm` and `fbk
   start`.
+- agentd accepts sessions before the init runs, so a session opened in the first
+  moments of a boot can still get a `root:root` `600` terminal.
 - A session still doesn't end while a process it started keeps the terminal
   open, because that's how agentd decides a session has exited.
 - Remove the remount once agentd gives session terminals to the session user.
