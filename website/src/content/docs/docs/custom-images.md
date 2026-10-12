@@ -78,12 +78,16 @@ name: my-project
 image: ghcr.io/<you>/my-sandbox:1
 ```
 
-The image applies when the sandbox is created, so recreate an existing sandbox:
+The image applies when the sandbox is created, so move an existing sandbox to it
+with [`fbk upgrade`](/docs/command-line-reference/#fbk-upgrade):
 
 ```sh
-fbk rm --force
-fbk start
+fbk upgrade
 ```
+
+The sandbox keeps its settings, ports, network rules and secrets, but starts
+with a fresh root filesystem and Docker disk. Run `fbk upgrade` again after you
+push a new version of the image under the same tag.
 
 ## Bringing your own image
 

@@ -95,6 +95,44 @@ files stay on the host. Refuses to remove a running sandbox unless you pass
 fbk rm --force
 ```
 
+## `fbk upgrade`
+
+```sh
+fbk upgrade [NAME]
+```
+
+Recreates a sandbox from the latest version of its image. The image is the
+`image` in the `.firebrick.yml` of the sandbox's project directory, or the
+default image of the installed Firebrick version when the file names none. A tag
+that now points to a newer image, such as `node:22`, counts as a new version.
+`fbk upgrade` pulls the image first, so a failed pull leaves the sandbox as it
+was.
+
+The sandbox keeps its name, SSH host name, project directory, extra mounts,
+resources, ports, network rules and secrets, and ends up running or stopped like
+before. It gets a fresh root filesystem and Docker disk from the new image, so
+packages you installed, files outside the project directory, and Docker images,
+containers and volumes are gone. When the sandbox already runs the latest
+version, nothing changes. Other changes to `.firebrick.yml`, such as `mounts` or
+`resources`, need `fbk rm` and `fbk start`.
+
+| Argument | Description                                | Default                                |
+| -------- | ------------------------------------------ | -------------------------------------- |
+| `NAME`   | Name of the sandbox as listed by `fbk ls`. | The sandbox for the working directory. |
+
+```sh
+$ fbk upgrade
+Upgraded sandbox myproject-3f2a1c from ghcr.io/wmeints/firebrick-base:v0.7.0 to ghcr.io/wmeints/firebrick-base:v0.8.0
+Connect with: ssh myproject.fbk
+Open in VS Code: code --folder-uri vscode-remote://ssh-remote+myproject.fbk/workspaces/myproject
+Open in Zed: zed ssh://myproject.fbk/workspaces/myproject
+
+$ fbk upgrade
+Sandbox myproject-3f2a1c is already up to date (ghcr.io/wmeints/firebrick-base:v0.8.0)
+```
+
+A paused sandbox has to be resumed or stopped first.
+
 ## `fbk run`
 
 ```sh

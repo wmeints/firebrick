@@ -22,6 +22,12 @@ service SandboxManagementService {
   // Returns the network activity fbkd recorded for a sandbox. Fails with FAILED_PRECONDITION
   // when the sandbox has no network log route, because it was created before network logging.
   rpc ListNetworkActivity(ListNetworkActivityRequest) returns (ListNetworkActivityResponse);
+  // Recreates an existing sandbox from the latest version of an image, streaming the progress of
+  // the image pull. The sandbox keeps its settings, secrets, network rules and ports, but gets a
+  // fresh root filesystem and an empty Docker data disk, and ends in the state it was in. A
+  // sandbox whose image already has the pulled digest is left alone. Fails with
+  // FAILED_PRECONDITION for a paused sandbox.
+  rpc UpgradeSandbox(UpgradeSandboxRequest) returns (stream UpgradeSandboxResponse);
 }
 
 message StartSandboxRequest {
@@ -358,4 +364,31 @@ message NetworkActivity {
   // rules for a lookup, IP and CIDR rules for a connection. True for every entry when the rules
   // aren't enforced. This isn't microsandbox's own decision.
   bool allowed = 8;
+}
+
+message UpgradeSandboxRequest {
+  // Name of the sandbox.
+  string name = 1;
+  // Image to upgrade the sandbox to. Empty means the default image of the daemon.
+  string image = 2;
+}
+
+// A stream of image pull progress, ending with the result of the upgrade. Errors end the stream
+// with a status instead.
+message UpgradeSandboxResponse {
+  oneof message {
+    // Sent while fbkd downloads the image. Best-effort: fbkd may skip messages.
+    ImagePullProgress pull_progress = 1;
+    // The last message of the stream.
+    SandboxUpgraded upgraded = 2;
+  }
+}
+
+message SandboxUpgraded {
+  // Whether the sandbox was recreated. False when its image already had the pulled digest.
+  bool upgraded = 1;
+  // Image the sandbox was created from before the upgrade.
+  string old_image = 2;
+  // Image the sandbox was upgraded to, or is already up to date with.
+  string new_image = 3;
 }

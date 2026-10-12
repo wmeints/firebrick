@@ -861,6 +861,111 @@ example because the developer presses Ctrl-C, the recreate still finishes and
 deletes its snapshot. The client then doesn't learn the outcome; running the
 same `fbk network` command again reports whether the sandbox has the rules.
 
+## Upgrading a sandbox
+
+`fbk upgrade` recreates the sandbox of the working directory, or `fbk upgrade
+<name>` the named one, from the latest version of its image. The image is the
+`image` in the `.firebrick.yml` of the sandbox's workspace: the working
+directory without a name, which must be the sandbox's workspace, and the
+workspace the daemon reports with a name. Without a spec file or an `image` in
+it, the CLI sends an empty image, and `fbkd` uses its own default image. The
+upgrade only applies the image; changed mounts, network, resources, volumes,
+`init` or `mise` in the spec stay as the sandbox was created, so it asks for no
+approval.
+
+```mermaid
+sequenceDiagram
+    actor Dev as Developer
+    participant CLI as fbk
+    participant D as fbkd
+    participant MS as microsandbox
+
+    Dev->>CLI: fbk upgrade
+    CLI->>CLI: Resolve the spec like fbk stop
+    alt Invalid .firebrick.yml, sandbox of another directory or missing
+        CLI-->>Dev: Error, nothing changes
+    end
+    CLI->>D: UpgradeSandbox(name, image)
+    alt Paused
+        D-->>CLI: FAILED_PRECONDITION
+        CLI-->>Dev: Error
+    end
+    D->>MS: Create a probe sandbox from the image,<br/>pull policy Always, no network
+    MS-->>D: Pull progress
+    D-->>CLI: ImagePullProgress
+    D->>MS: Read the probe's manifest digest, remove the probe
+    alt Pull fails
+        D-->>CLI: NOT_FOUND, UNAVAILABLE or INTERNAL
+        CLI-->>Dev: Error, the sandbox is left alone
+    end
+    D->>D: Lock the sandbox, check it isn't paused
+    alt Its own digest can't be read
+        D-->>CLI: INTERNAL
+        CLI-->>Dev: Error, the sandbox is left alone
+    else Digest matches the sandbox's
+        D-->>CLI: upgraded: false
+        CLI-->>Dev: Sandbox my-project is already up to date (image)
+    end
+    D->>MS: Read cpus, memory, labels, workspace, mounts, init
+    opt Running
+        D->>MS: Stop (kill after 30s)
+        D->>D: Close its port forwards
+    end
+    D->>MS: Disk snapshot of the sandbox, then remove it
+    alt Snapshot or remove fails
+        D->>MS: Start it again when it was running
+        D-->>CLI: INTERNAL, keeps its old image
+        CLI-->>Dev: Error
+    end
+    D->>MS: Create it from the new image with the same settings,<br/>its secrets, the rules from its label and a fresh Docker disk
+    alt Create fails
+        D->>MS: Remove what was created
+        D-->>CLI: INTERNAL, names the kept snapshot
+        CLI-->>Dev: Error
+    end
+    D->>MS: Delete the snapshot
+    opt mise enabled
+        D->>MS: Trust and install the workspace's mise tools
+    end
+    opt Was stopped
+        D->>MS: Stop the upgraded sandbox
+    end
+    D->>D: Sync SSH config and editor settings
+    opt Runs now
+        D->>D: Open the forwards from firebrick.ports
+    end
+    D-->>CLI: upgraded: true, old and new image
+    CLI-->>Dev: Upgraded sandbox my-project from old to new image,<br/>and the connect instructions when it runs
+```
+
+microsandbox only pulls an image while it creates a sandbox, so `fbkd` creates a
+probe sandbox named `fbk-upgrade-<pid>-<nonce>` to pull it, without network and
+without `init`, with a `firebrick.upgrade-probe` label that names the sandbox.
+The pull policy `Always` asks the registry for the manifest again, so a moving
+tag such as `node:22` that points to a new digest is upgraded. The pull runs
+before `fbkd` takes the sandbox's lock, so other requests for the sandbox don't
+wait for a long download. The digest of the sandbox's own image is in the config
+microsandbox stores for it; when it can't be read, `fbkd` refuses the upgrade
+instead of recreating a sandbox that may be up to date. When `fbkd` starts, it
+removes the probes of earlier daemon processes, for example of one that was
+killed during a pull.
+
+The upgraded sandbox keeps its name, labels (and so its SSH host name, mise
+setting, stored ports and `firebrick.network` rules), workspace mount, extra
+mounts, resources, Docker disk size, `init` setting and secrets. Its root
+filesystem and Docker disk are new: installed packages, files outside the
+workspace and Docker images don't survive, because a snapshot can't move to
+another image (see
+[ADR 0041](decisions/0041-upgrade-sandboxes-to-a-fresh-root-filesystem-and-docker-disk.md)).
+The snapshot is only kept when the create fails, so the user can recover the old
+sandbox from it.
+
+Like `UpdateNetwork`, `fbkd` runs the upgrade in a task of its own, so a client
+that disconnects can't stop it halfway, and other requests for the sandbox wait
+for its lock while it recreates the sandbox. When `fbkd` shuts down, it waits up
+to 60 seconds for the updates and upgrades that are still running, so it doesn't
+stop between removing a sandbox and creating it again.
+
 ## Connecting via SSH
 
 `ssh <leaf>.fbk`, `scp` and IDEs reach a sandbox through the SSH config the

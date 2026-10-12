@@ -40,3 +40,4 @@
 - [ADR 0038 - Record network activity with a guest logger on vsock](decisions/0038-record-network-activity-with-a-guest-logger-on-vsock.md)
 - [ADR 0039 - Give guest terminals to the agent group](decisions/0039-give-guest-terminals-to-the-agent-group.md)
 - [ADR 0040 - Compile the network presets into fbk](decisions/0040-compile-the-network-presets-into-fbk.md)
+- [ADR 0041 - Upgrade sandboxes to a fresh root filesystem and Docker disk](decisions/0041-upgrade-sandboxes-to-a-fresh-root-filesystem-and-docker-disk.md)

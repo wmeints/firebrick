@@ -105,11 +105,13 @@ C4Component
   stale socket, spawns `fbkd` from next to the `fbk` binary (or from `PATH`) and
   waits at most 5 seconds for the socket.
 - `manage` - Resolves the sandbox spec for the working directory and starts,
-  stops, lists and removes sandboxes. Without `.firebrick.yml`, it names the
-  sandbox after the full working directory path. Before it creates a sandbox, it
-  has `approval` check the resolved mounts and the network section. `ls` prints
-  the name, status and host name of each sandbox as a table, or as a JSON array
-  with `--format json`.
+  stops, lists, upgrades and removes sandboxes. `upgrade` sends the `image` from
+  the spec of the sandbox's workspace to `UpgradeSandbox`, or an empty image for
+  the daemon's default, and shows the pull progress. Without `.firebrick.yml`,
+  it names the sandbox after the full working directory path. Before it creates
+  a sandbox, it has `approval` check the resolved mounts and the network
+  section. `ls` prints the name, status and host name of each sandbox as a
+  table, or as a JSON array with `--format json`.
 - `session` - Runs a command in the sandbox through the `Attach` stream. It
   makes sure the sandbox runs first, puts the terminal in raw mode and forwards
   input, output and window resizes.
@@ -262,8 +264,9 @@ C4Component
   sure the microsandbox runtime and the SSH keys exist, makes the microsandbox
   `db` directory readable by the user only, syncs the SSH config and serves the
   API until `SIGINT` or `SIGTERM`. Before serving, `server` reopens the port
-  forwards of the sandboxes that are running, and when it stops, their listeners
-  close.
+  forwards of the sandboxes that are running and removes the upgrade probes an
+  earlier daemon left behind. When it stops, their listeners close, and it waits
+  up to 60 seconds for updates and upgrades of sandboxes that are still running.
 - `server` - Adapts `SandboxManagementService` to the modules below: it converts
   each request into plain values, calls `sandboxes`, `session` or `tunnel`, and
   converts the result into a response. It converts requested resources and
@@ -272,13 +275,14 @@ C4Component
   rejects invalid values with `INVALID_ARGUMENT`. It parses the network rules of
   a `StartSandbox` or `UpdateNetwork` request with `firebrick-spec` and rejects
   an invalid rule with `INVALID_ARGUMENT`, also when the sandbox already exists.
-  It rejects a port outside 1 to 65535 or a host port that is listed twice with
-  `INVALID_ARGUMENT`. `ListNetworkActivity` turns a sandbox's record into one
-  entry per DNS name and per connection address and protocol, sorted by last
-  seen, newest first, and evaluates the sandbox's current rules for each with
-  `network::allows_host`: domain rules for a DNS entry, IP and CIDR rules for a
-  connection, and `allowed` for every entry when the rules aren't enforced. This
-  is `fbkd`'s evaluation, not microsandbox's own decision. `StartSandbox` is a
+  It rejects a port outside 1 to 65535 or a host port that is listed twice, and
+  an `UpgradeSandbox` request without a sandbox name, with `INVALID_ARGUMENT`.
+  `ListNetworkActivity` turns a sandbox's record into one entry per DNS name and
+  per connection address and protocol, sorted by last seen, newest first, and
+  evaluates the sandbox's current rules for each with `network::allows_host`:
+  domain rules for a DNS entry, IP and CIDR rules for a connection, and
+  `allowed` for every entry when the rules aren't enforced. This is `fbkd`'s
+  evaluation, not microsandbox's own decision. `StartSandbox` is a
   server-streaming RPC: `server` runs the start in a task of its own, so it
   finishes when the client disconnects, streams the image pull and mise install
   progress and ends the stream with the open and failed forwards, or with the
@@ -345,6 +349,11 @@ C4Component
   [Updating the network rules](06-runtime-view.md#updating-the-network-rules)
   and
   [ADR 0021](decisions/0021-recreate-sandboxes-from-a-disk-snapshot-to-change-their-network-rules.md)).
+  `UpgradeSandbox` recreates a sandbox the same way from a new image instead of
+  the snapshot, with a fresh Docker disk, after it pulled the image through a
+  probe sandbox and found another digest than the sandbox's (see
+  [Upgrading a sandbox](06-runtime-view.md#upgrading-a-sandbox) and
+  [ADR 0041](decisions/0041-upgrade-sandboxes-to-a-fresh-root-filesystem-and-docker-disk.md)).
   It skips a sandbox whose `firebrick.network` label already records the
   settings (`disabled` for a sandbox without a network device, whatever its
   rules) and refuses a paused one. It closes the forwards while it stops the
@@ -352,30 +361,31 @@ C4Component
   sandbox keeps its extra mounts and its labels, including `firebrick.ports`.
   Creating and recreating a sandbox share one builder chain, which also sets
   that label. A lock per sandbox name, held by start, stop, remove, connect,
-  `ForwardPort`, `RemovePort` and `UpdateNetwork`, keeps those operations from
-  interleaving with a recreate; a lock is dropped when no task holds or waits
-  for it. `ForwardPort` adds one mapping to the stored ports, replacing the one
-  with the same host port, and `RemovePort` removes the mapping of a host port,
-  or returns `NOT_FOUND` when it isn't stored. For a running sandbox, both first
-  reconcile its forwards with the new list; when the requested forward can't be
-  opened, also when it was stored already, they reopen the old forwards and
-  return `FAILED_PRECONDITION` with the reason, without changing the label. For
-  a stopped sandbox they only update the label, and the forward opens on the
-  next start. Both return whether the sandbox runs. They hold the sandbox's
-  lock, so they can't interleave with a recreate by `UpdateNetwork`, and the
-  ports lock while they read, reconcile and store the ports. `StartSandbox`,
-  `Attach`, `SshTunnel` and an `UpdateNetwork` of a running sandbox make sure
-  the sandbox's URL relay runs, through `open`; `StopSandbox`, `RemoveSandbox`
-  and recreating the sandbox forget it. The shared builder chain also adds the
-  vsock route of the sandbox's network log through `netlog`, so created and
-  recreated sandboxes get it, also when the original had none. Before it creates
-  a sandbox, starts one that has the route (also through `SshTunnel`) or
-  recreates one, it makes `netlog` listen on the sandbox's socket; `fbkd` does
-  the same for every sandbox with the route when it starts. `RemoveSandbox`
-  deletes the socket and the record. `SandboxManager::network_activity` returns
-  a sandbox's record from `netlog` with its rules from the `firebrick.network`
-  label (`network::rules_of`), `FAILED_PRECONDITION` when the sandbox has no
-  network log route, or `INTERNAL` when its record can't be read.
+  `ForwardPort`, `RemovePort`, `UpdateNetwork` and `UpgradeSandbox`, keeps those
+  operations from interleaving with a recreate; a lock is dropped when no task
+  holds or waits for it. `ForwardPort` adds one mapping to the stored ports,
+  replacing the one with the same host port, and `RemovePort` removes the
+  mapping of a host port, or returns `NOT_FOUND` when it isn't stored. For a
+  running sandbox, both first reconcile its forwards with the new list; when the
+  requested forward can't be opened, also when it was stored already, they
+  reopen the old forwards and return `FAILED_PRECONDITION` with the reason,
+  without changing the label. For a stopped sandbox they only update the label,
+  and the forward opens on the next start. Both return whether the sandbox runs.
+  They hold the sandbox's lock, so they can't interleave with a recreate by
+  `UpdateNetwork`, and the ports lock while they read, reconcile and store the
+  ports. `StartSandbox`, `Attach`, `SshTunnel` and an `UpdateNetwork` of a
+  running sandbox make sure the sandbox's URL relay runs, through `open`;
+  `StopSandbox`, `RemoveSandbox` and recreating the sandbox forget it. The
+  shared builder chain also adds the vsock route of the sandbox's network log
+  through `netlog`, so created and recreated sandboxes get it, also when the
+  original had none. Before it creates a sandbox, starts one that has the route
+  (also through `SshTunnel`) or recreates one, it makes `netlog` listen on the
+  sandbox's socket; `fbkd` does the same for every sandbox with the route when
+  it starts. `RemoveSandbox` deletes the socket and the record.
+  `SandboxManager::network_activity` returns a sandbox's record from `netlog`
+  with its rules from the `firebrick.network` label (`network::rules_of`),
+  `FAILED_PRECONDITION` when the sandbox has no network log route, or `INTERNAL`
+  when its record can't be read.
 - `pull` - Turns microsandbox's `PullProgress` events into pull updates: it adds
   up the downloaded bytes per layer, takes the total from the manifest, and
   reports at most one update every 100 ms, one for each layer that finishes and
@@ -629,11 +639,13 @@ C4Component
 
 The image, init, mise setting, resources, network rules and mounts apply when a
 sandbox is created. Changing them in `.firebrick.yml` doesn't change an existing
-sandbox; remove it with `fbk rm` and start it again. There are two exceptions:
+sandbox; remove it with `fbk rm` and start it again. There are three exceptions:
 `fbk start` and `fbk run` send `ports` to existing and running sandboxes too, so
-a changed list applies without a restart, and `fbk network` changes the network
+a changed list applies without a restart, `fbk network` changes the network
 switch or rules in `.firebrick.yml` and has `fbkd` recreate the sandbox from a
-disk snapshot, which keeps its disks.
+disk snapshot, which keeps its disks, and `fbk upgrade` recreates the sandbox
+from the latest version of the spec's image, with a fresh root filesystem and
+Docker disk.
 
 ## Base image
 

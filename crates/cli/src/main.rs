@@ -51,6 +51,12 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Recreate a sandbox from the latest version of its image. It keeps its settings, secrets,
+    /// network rules and ports, but not its installed packages or Docker data
+    Upgrade {
+        /// Name of the sandbox as listed by `fbk ls`. Defaults to the sandbox for the working directory
+        name: Option<String>,
+    },
     /// Run a command inside the sandbox
     Run(RunArgs),
     /// Validate the .firebrick.yml file in the working directory
@@ -242,6 +248,9 @@ async fn main() -> Result<()> {
         Commands::Secret(SecretCommands::Set(args)) => set_secret(args, &working_dir).await,
         // Changes the spec file first and only needs the daemon to apply it.
         Commands::Network(command) => run_network_command(command, &working_dir).await,
+        Commands::Upgrade { name } => {
+            manage::upgrade_sandbox(name, &working_dir, &mut client::connect().await?).await
+        }
         command => run_with_daemon(command, working_dir).await,
     }
 }
@@ -305,7 +314,8 @@ async fn run_with_daemon(command: Commands, working_dir: PathBuf) -> Result<()> 
         Commands::Validate
         | Commands::Init { .. }
         | Commands::Secret(SecretCommands::Set(_))
-        | Commands::Network(_) => {
+        | Commands::Network(_)
+        | Commands::Upgrade { .. } => {
             unreachable!("handled before connecting to the daemon")
         }
     }
@@ -461,6 +471,20 @@ mod tests {
         assert!(matches!(
             parse(&["rm", "dev"]).command,
             Commands::Rm { name: Some(name), force: false } if name == "dev"
+        ));
+    }
+
+    #[test]
+    fn upgrade_takes_an_optional_name() {
+        let parse = |args: &[&str]| Cli::try_parse_from(["fbk"].iter().chain(args)).unwrap();
+
+        assert!(matches!(
+            parse(&["upgrade"]).command,
+            Commands::Upgrade { name: None }
+        ));
+        assert!(matches!(
+            parse(&["upgrade", "dev"]).command,
+            Commands::Upgrade { name: Some(name) } if name == "dev"
         ));
     }
 

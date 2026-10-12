@@ -1,10 +1,12 @@
 //! A daemon for unit tests that knows one sandbox and refuses every request that would change
 //! a sandbox, so a test sees whether a command asks the daemon about the sandbox before it
-//! changes it.
+//! changes it. It answers an upgrade to [`UPGRADED_IMAGE`] as done from [`OLD_IMAGE`], and an
+//! upgrade to any other image as up to date with it, so a test sees which image a command asks
+//! for.
 
 use std::pin::Pin;
 use tokio::net::TcpListener;
-use tonic::codegen::tokio_stream::Stream;
+use tonic::codegen::tokio_stream::{self, Stream};
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status, Streaming};
@@ -18,10 +20,10 @@ use crate::api::{
     GetSandboxResponse, ListNetworkActivityRequest, ListNetworkActivityResponse,
     ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse,
     NetworkActivity, RemovePortRequest, RemovePortResponse, RemoveSandboxRequest,
-    RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse, SetSecretRequest,
-    SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
+    RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse, SandboxUpgraded,
+    SetSecretRequest, SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
     StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, UpdateNetworkRequest,
-    UpdateNetworkResponse,
+    UpdateNetworkResponse, UpgradeSandboxRequest, UpgradeSandboxResponse, upgrade_sandbox_response,
 };
 
 type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
@@ -91,6 +93,7 @@ impl SandboxManagementService for FakeDaemon {
     type StartSandboxStream = BoxStream<StartSandboxResponse>;
     type AttachStream = BoxStream<AttachResponse>;
     type SshTunnelStream = BoxStream<SshTunnelResponse>;
+    type UpgradeSandboxStream = BoxStream<UpgradeSandboxResponse>;
 
     async fn start_sandbox(
         &self,
@@ -197,6 +200,32 @@ impl SandboxManagementService for FakeDaemon {
         refused("remove_port", &request.into_inner().name)
     }
 
+    async fn upgrade_sandbox(
+        &self,
+        request: Request<UpgradeSandboxRequest>,
+    ) -> Result<Response<Self::UpgradeSandboxStream>, Status> {
+        let request = request.into_inner();
+
+        if request.name != self.name {
+            return Err(Status::not_found("couldn't find specified sandbox"));
+        }
+
+        let upgraded = SandboxUpgraded {
+            upgraded: request.image == UPGRADED_IMAGE,
+            old_image: if request.image == UPGRADED_IMAGE {
+                OLD_IMAGE.to_string()
+            } else {
+                request.image.clone()
+            },
+            new_image: request.image,
+        };
+        let response = UpgradeSandboxResponse {
+            message: Some(upgrade_sandbox_response::Message::Upgraded(upgraded)),
+        };
+
+        Ok(Response::new(Box::pin(tokio_stream::iter([Ok(response)]))))
+    }
+
     async fn list_network_activity(
         &self,
         request: Request<ListNetworkActivityRequest>,
@@ -213,6 +242,12 @@ impl SandboxManagementService for FakeDaemon {
         }
     }
 }
+
+/// Image the fake daemon upgrades its sandbox to, from [`OLD_IMAGE`].
+pub(crate) const UPGRADED_IMAGE: &str = "example.org/sandbox:2";
+
+/// Image the fake daemon's sandbox runs before an upgrade to [`UPGRADED_IMAGE`].
+pub(crate) const OLD_IMAGE: &str = "example.org/sandbox:1";
 
 /// Host directory the fake daemon's sandbox mounts in tests about another workspace.
 pub(crate) const OTHER_WORKSPACE: &str = "/home/user/other-project";
