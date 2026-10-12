@@ -239,9 +239,14 @@ EOF
 # attaches at /var/lib/docker, and logs to /var/log/dockerd.log. /run lives on the sandbox's
 # persistent root instead of a tmpfs, so the init removes the runtime state of the previous
 # boot first; otherwise a stale docker.pid stops dockerd from starting after fbk stop/start.
+# microsandbox's agent opens session terminals as root and doesn't hand them to the session
+# user, so the agent can't open its own /dev/pts/N by path; `stty -F`, which Quarkus' and other
+# interactive consoles use, fails and Ctrl+C leaves their child processes running. Remounting
+# devpts gives new terminals to the agent group (ADR 0039).
 COPY --chmod=755 <<EOF /sbin/init
 #!/bin/sh
 sysctl -q -p /etc/sysctl.d/99-disable-ipv6.conf
+mount -o remount,gid=1000,mode=0660 /dev/pts
 rm -rf /run/docker.pid /run/docker /run/containerd
 /usr/bin/dockerd >/var/log/dockerd.log 2>&1 &
 (while :; do /usr/local/sbin/firebrick-netlog; sleep 5; done) >>/var/log/firebrick-netlog.log 2>&1 &
