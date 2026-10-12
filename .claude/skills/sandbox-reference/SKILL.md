@@ -109,6 +109,16 @@ build on it when `Cargo.lock` has a newer version.
   gives `RequestError`. Neither type is re-exported by `microsandbox`, so the
   daemon depends on `microsandbox-image` and `oci-client` directly (ADR 0025). A
   failed pull leaves no sandbox behind.
+- The SDK has no call that only pulls an image: `Image` can get, list, inspect,
+  load, save and remove images, but the pull runs inside a create. The default
+  `PullPolicy::IfMissing` uses a cached tag without asking the registry; use
+  `.pull_policy(PullPolicy::Always)` to notice a tag that moved. `fbkd` pulls
+  for `fbk upgrade` by creating and removing a probe sandbox (ADR 0040).
+- A sandbox's config stores the manifest digest of the image it was created from
+  as `manifest_digest`, also after a create from a snapshot, but the field is
+  `pub(crate)`. Read it from `SandboxHandle::config_json()`.
+  `config().spec.image` is `RootfsSource::Oci` with the reference as created; a
+  create from a snapshot sets it to the snapshot's reference.
 
 **Volumes**
 
@@ -163,6 +173,13 @@ build on it when `Cargo.lock` has a newer version.
   `.volume(..owned..)` at the same path gets the captured disk back. Calling
   `.image(..)` afterwards drops the pending snapshot. The new sandbox copies the
   snapshot's payloads, so the snapshot can be removed right after it boots.
+- A snapshot pins its image by manifest digest, so it can't move to another
+  image: a create with another resolved digest fails with `snapshot image digest
+  mismatch`, `.image(..)` drops a pending snapshot, and `RestoreBuilder` has no
+  image setter. Owned volumes are formatted empty at create time and only come
+  back together with the snapshot's root filesystem; a sandbox created from a
+  snapshot keeps its owned disk as a qcow2 chain (`runtime/owned-disks/`)
+  instead of a `disk.raw` (ADR 0040).
 - `RestoreBuilder` also restores a snapshot, but has no setters for init,
   labels, env, workdir or secrets.
 - `Sandbox::remove()` doesn't remove the sandbox's snapshots.

@@ -15,9 +15,9 @@ use firebrick_daemon::api::{
     ListNetworkActivityRequest, ListSandboxesRequest, Mount, NetworkActivity, NetworkActivityKind,
     NetworkPolicy, PortForward, PortForwards, RemovePortRequest, RemovePortResponse,
     RemoveSandboxRequest, RemoveSecretRequest, SandboxResources, SandboxStarted, SandboxStatus,
-    SandboxVolumes, SetSecretRequest, StartSandboxRequest, StartSandboxResponse,
-    StopSandboxRequest, UpdateNetworkRequest, attach_request, attach_response,
-    start_sandbox_response,
+    SandboxUpgraded, SandboxVolumes, SetSecretRequest, StartSandboxRequest, StartSandboxResponse,
+    StopSandboxRequest, UpdateNetworkRequest, UpgradeSandboxRequest, UpgradeSandboxResponse,
+    attach_request, attach_response, start_sandbox_response, upgrade_sandbox_response,
 };
 use firebrick_daemon::open::{self, Opener};
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
@@ -2047,19 +2047,21 @@ async fn after_update(
     }
 }
 
-/// Returns the snapshots that updating the sandbox's network rules left behind.
+/// Returns the snapshots that updating the sandbox's network rules or upgrading it left behind.
 async fn network_snapshots(name: &str) -> Vec<SnapshotHandle> {
-    let prefix = format!("firebrick-network-{name}-");
+    let prefixes = ["network", "upgrade"].map(|kind| format!("firebrick-{kind}-{name}-"));
+    let recreated = |n: &str| prefixes.iter().any(|prefix| n.starts_with(prefix));
 
     Snapshot::list()
         .await
         .expect("failed to list snapshots")
         .into_iter()
-        .filter(|snapshot| snapshot.name().is_some_and(|n| n.starts_with(&prefix)))
+        .filter(|snapshot| snapshot.name().is_some_and(recreated))
         .collect()
 }
 
-/// Returns the names of the snapshots that updating the sandbox's network rules left behind.
+/// Returns the names of the snapshots that updating the sandbox's network rules or upgrading it
+/// left behind.
 async fn leftover_snapshots(name: &str) -> Vec<String> {
     network_snapshots(name)
         .await
@@ -2486,6 +2488,294 @@ async fn update_network_refuses_a_paused_sandbox() {
         format!("sandbox {name} is paused; resume it before updating its network rules")
     );
     assert_eq!(paused, Some(SandboxStatus::Paused));
+}
+
+/// Image upgrade tests create their sandboxes from, before they upgrade them to
+/// [`UPGRADE_IMAGE`].
+const OLD_IMAGE: &str = "alpine:3.21";
+
+/// Image upgrade tests upgrade their sandboxes to. busybox in alpine has `nc`.
+const UPGRADE_IMAGE: &str = "alpine:3.22";
+
+/// Asks the daemon to upgrade the sandbox to the image and reads the stream to the end. Returns
+/// the result of the upgrade, or the status the stream ended with. Fails when a message follows
+/// the result.
+async fn upgrade(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    image: &str,
+) -> Result<SandboxUpgraded, Status> {
+    let request = UpgradeSandboxRequest {
+        name: name.to_string(),
+        image: image.to_string(),
+    };
+    let mut stream = client.upgrade_sandbox(request).await?.into_inner();
+
+    while let Some(UpgradeSandboxResponse { message }) = stream.message().await? {
+        if let Some(upgrade_sandbox_response::Message::Upgraded(upgraded)) = message {
+            let rest = stream.message().await?;
+            assert_eq!(rest, None, "the stream continued after the upgrade");
+            return Ok(upgraded);
+        }
+    }
+
+    panic!("the upgrade stream ended without a result");
+}
+
+/// Returns the version of alpine the sandbox runs.
+async fn alpine_release(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> String {
+    let (output, _) = run_command(client, name, "cat", &["/etc/alpine-release"]).await;
+
+    output
+}
+
+/// Returns the start request of a sandbox from [`OLD_IMAGE`].
+fn old_image_request(name: &str) -> StartSandboxRequest {
+    StartSandboxRequest {
+        image: OLD_IMAGE.to_string(),
+        ..start_request(name)
+    }
+}
+
+/// Returns the labels firebrick stores with the sandbox, such as its host name, ports, mise
+/// setting and egress rules.
+async fn firebrick_labels(name: &str) -> Vec<(String, String)> {
+    sandbox_spec(name)
+        .await
+        .labels
+        .into_iter()
+        .filter(|(key, _)| key.starts_with("firebrick."))
+        .collect()
+}
+
+/// What a sandbox looks like right after an upgrade.
+struct AfterUpgrade {
+    update: AfterUpdate,
+    labels: Vec<(String, String)>,
+    release: String,
+    markers: String,
+    secret: String,
+}
+
+async fn after_upgrade(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> AfterUpgrade {
+    AfterUpgrade {
+        update: after_update(client, name).await,
+        labels: firebrick_labels(name).await,
+        release: alpine_release(client, name).await,
+        markers: read_markers(client, name).await,
+        secret: print_env(client, name, "FIREBRICK_IT_TOKEN").await,
+    }
+}
+
+/// Starts a sandbox from [`OLD_IMAGE`] that allows `example.com`, forwards the host port and
+/// has marker files on its root and Docker disks.
+async fn start_old_sandbox(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    host: u16,
+) {
+    let request = StartSandboxRequest {
+        network: Some(allow_policy(true, &["example.com"])),
+        ports: Some(forward_ports(host, GUEST_PORT)),
+        ..old_image_request(name)
+    };
+
+    start_with_ports(client, request).await;
+    write_markers(client, name).await;
+}
+
+#[tokio::test]
+async fn upgrade_of_running_sandbox_moves_it_to_the_new_image_and_keeps_its_settings() {
+    let name: &str = &sandbox_name("upgrade-running");
+    remove_sandbox_and_snapshots(name).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_with_test_secret(dir.path());
+    let daemon = TestDaemon::start_with_secrets("upgrade-running", store).await;
+    let mut client = daemon.client().await;
+    let host = free_port().await;
+    start_old_sandbox(&mut client, name, host).await;
+    let (before, labels) = (
+        kept_settings(&mut client, name).await,
+        firebrick_labels(name).await,
+    );
+
+    let upgraded = upgrade(&mut client, name, UPGRADE_IMAGE).await;
+
+    let after = after_upgrade(&mut client, name).await;
+    check_forward_both_ways(&mut client, name, host).await;
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
+
+    let expected = SandboxUpgraded {
+        upgraded: true,
+        old_image: OLD_IMAGE.to_string(),
+        new_image: UPGRADE_IMAGE.to_string(),
+    };
+    assert_eq!(upgraded.unwrap(), expected);
+    assert_upgraded_and_kept(&after, &before, &labels);
+}
+
+/// Asserts that the sandbox runs the new image with fresh disks after the upgrade, and kept
+/// its settings, labels, egress rules and secrets.
+fn assert_upgraded_and_kept(
+    after: &AfterUpgrade,
+    before: &KeptSettings,
+    labels: &[(String, String)],
+) {
+    assert_eq!(after.update.status, Some(SandboxStatus::Running));
+    assert_eq!(&after.update.settings, before);
+    assert_eq!(after.labels, labels);
+    let network = &after.update.stored_network;
+    assert!(network.contains("example.com"), "{network}");
+    assert!(
+        after.update.snapshots.is_empty(),
+        "{:?}",
+        after.update.snapshots
+    );
+    assert!(after.release.starts_with("3.22"), "{:?}", after.release);
+    // The root filesystem and the Docker disk start out fresh.
+    assert!(!after.markers.contains("kept"), "{:?}", after.markers);
+    assert!(
+        after.secret.contains("$MSB_FIREBRICK_IT_TOKEN"),
+        "{:?}",
+        after.secret
+    );
+}
+
+#[tokio::test]
+async fn upgrade_of_stopped_sandbox_keeps_it_stopped() {
+    let name: &str = &sandbox_name("upgrade-stopped");
+    remove_sandbox_and_snapshots(name).await;
+
+    let daemon = TestDaemon::start("upgrade-stopped").await;
+    let mut client = daemon.client().await;
+    start_and_wait(&mut client, old_image_request(name)).await;
+    let before = kept_settings(&mut client, name).await;
+    stop_sandbox(&mut client, name).await;
+
+    let upgraded = upgrade(&mut client, name, UPGRADE_IMAGE).await;
+
+    let after = after_update(&mut client, name).await;
+    start_existing(&mut client, name).await;
+    let release = alpine_release(&mut client, name).await;
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
+
+    assert!(upgraded.unwrap().upgraded);
+    assert_eq!(after.status, Some(SandboxStatus::Stopped));
+    assert_eq!(after.settings, before);
+    assert!(after.snapshots.is_empty(), "{:?}", after.snapshots);
+    assert!(release.starts_with("3.22"), "{release:?}");
+}
+
+#[tokio::test]
+async fn upgrade_to_the_image_the_sandbox_has_leaves_it_alone() {
+    let name: &str = &sandbox_name("upgrade-same");
+    remove_sandbox_and_snapshots(name).await;
+
+    let daemon = TestDaemon::start("upgrade-same").await;
+    let mut client = daemon.client().await;
+    let request = StartSandboxRequest {
+        image: UPGRADE_IMAGE.to_string(),
+        ..start_request(name)
+    };
+    start_and_wait(&mut client, request).await;
+    let boot_before = boot_id(&mut client, name).await;
+
+    let upgraded = upgrade(&mut client, name, UPGRADE_IMAGE).await;
+
+    let boot_after = boot_id(&mut client, name).await;
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
+
+    assert_eq!(
+        upgraded.unwrap(),
+        SandboxUpgraded {
+            upgraded: false,
+            old_image: UPGRADE_IMAGE.to_string(),
+            new_image: UPGRADE_IMAGE.to_string(),
+        }
+    );
+    assert_eq!(boot_after, boot_before);
+}
+
+#[tokio::test]
+async fn upgrade_to_an_unknown_image_leaves_the_sandbox_running() {
+    let name: &str = &sandbox_name("upgrade-unknown");
+    remove_sandbox_and_snapshots(name).await;
+
+    let daemon = TestDaemon::start("upgrade-unknown").await;
+    let mut client = daemon.client().await;
+    start_and_wait(&mut client, old_image_request(name)).await;
+    let boot_before = boot_id(&mut client, name).await;
+
+    let status = upgrade(&mut client, name, "alpine:0.0.404").await;
+
+    let running = sandbox_status(&mut client, name).await;
+    let boot_after = boot_id(&mut client, name).await;
+    let release = alpine_release(&mut client, name).await;
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
+
+    let status = status.unwrap_err();
+    assert_eq!(status.code(), Code::NotFound);
+    assert_eq!(
+        status.message(),
+        "failed to create sandbox: image alpine:0.0.404 doesn't exist"
+    );
+    assert_eq!(running, Some(SandboxStatus::Running));
+    assert_eq!(boot_after, boot_before);
+    assert!(release.starts_with("3.21"), "{release:?}");
+}
+
+#[tokio::test]
+async fn upgrade_refuses_a_paused_sandbox() {
+    let name: &str = &sandbox_name("upgrade-paused");
+    remove_sandbox_and_snapshots(name).await;
+
+    let daemon = TestDaemon::start("upgrade-paused").await;
+    let mut client = daemon.client().await;
+    start_and_wait(&mut client, old_image_request(name)).await;
+    let sb = Sandbox::get(name).await.unwrap();
+    sb.pause().await.unwrap();
+
+    let status = upgrade(&mut client, name, UPGRADE_IMAGE).await;
+    let paused = sandbox_status(&mut client, name).await;
+
+    sb.resume().await.unwrap();
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
+
+    let status = status.unwrap_err();
+    assert_eq!(status.code(), Code::FailedPrecondition);
+    assert_eq!(
+        status.message(),
+        format!("sandbox {name} is paused; resume or stop it before upgrading")
+    );
+    assert_eq!(paused, Some(SandboxStatus::Paused));
+}
+
+#[tokio::test]
+async fn upgrade_returns_not_found_for_unknown_sandbox() {
+    let daemon = TestDaemon::start("upgrade-missing").await;
+    let mut client = daemon.client().await;
+
+    let status = upgrade(&mut client, &sandbox_name("upgrade-missing"), UPGRADE_IMAGE).await;
+
+    daemon.stop().await;
+
+    assert_eq!(status.unwrap_err().code(), Code::NotFound);
 }
 
 /// Returns a host port that nothing listens on at the moment.

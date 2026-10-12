@@ -11,10 +11,11 @@ use crate::api::{
     ListSecretsResponse, Mount, NetworkActivity, NetworkActivityKind, NetworkPolicy, PortForward,
     PortForwardFailure, PortForwards, RemovePortRequest, RemovePortResponse, RemoveSandboxRequest,
     RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse, SandboxResources,
-    SandboxStarted, SandboxStatus, SandboxSummary, SecretSummary, SetSecretRequest,
-    SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
+    SandboxStarted, SandboxStatus, SandboxSummary, SandboxUpgraded, SecretSummary,
+    SetSecretRequest, SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
     StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, UpdateNetworkRequest,
-    UpdateNetworkResponse, attach_request, ssh_tunnel_request, start_sandbox_response,
+    UpdateNetworkResponse, UpgradeSandboxRequest, UpgradeSandboxResponse, attach_request,
+    ssh_tunnel_request, start_sandbox_response, upgrade_sandbox_response,
 };
 use crate::forward::{ForwardFailure, ForwardReport};
 use crate::netlog::{ConnectionEntry, DnsEntry, Protocol, Record};
@@ -22,7 +23,7 @@ use crate::network;
 use crate::open::{HostOpener, Opener};
 use crate::pull::PullUpdate;
 use crate::sandboxes::{
-    NewSecret, Resources, SandboxError, SandboxInfo, SandboxManager, StartSandbox,
+    NewSecret, Resources, SandboxError, SandboxInfo, SandboxManager, StartSandbox, Upgrade,
 };
 use crate::secrets::{Secret, SecretStore};
 use crate::session::{self, SessionCommand};
@@ -160,16 +161,50 @@ fn start_sandbox_response(message: start_sandbox_response::Message) -> StartSand
     }
 }
 
+/// Converts the progress of an image pull to its protobuf message.
+fn image_pull_progress(update: PullUpdate) -> ImagePullProgress {
+    ImagePullProgress {
+        image: update.image,
+        downloaded_bytes: update.downloaded_bytes,
+        total_bytes: update.total_bytes,
+        complete: update.complete,
+    }
+}
+
 /// Converts the progress of an image pull to a response of the start stream.
 fn pull_progress_response(update: PullUpdate) -> StartSandboxResponse {
     start_sandbox_response(start_sandbox_response::Message::PullProgress(
-        ImagePullProgress {
-            image: update.image,
-            downloaded_bytes: update.downloaded_bytes,
-            total_bytes: update.total_bytes,
-            complete: update.complete,
+        image_pull_progress(update),
+    ))
+}
+
+/// Wraps a message in the response of the upgrade stream.
+fn upgrade_sandbox_response(message: upgrade_sandbox_response::Message) -> UpgradeSandboxResponse {
+    UpgradeSandboxResponse {
+        message: Some(message),
+    }
+}
+
+/// Converts the result of an upgrade to the message that ends the upgrade stream.
+fn sandbox_upgraded(upgrade: Upgrade) -> UpgradeSandboxResponse {
+    upgrade_sandbox_response(upgrade_sandbox_response::Message::Upgraded(
+        SandboxUpgraded {
+            upgraded: upgrade.upgraded,
+            old_image: upgrade.old_image,
+            new_image: upgrade.new_image,
         },
     ))
+}
+
+/// Fails with `InvalidArgument` when the upgrade request names no sandbox.
+fn check_upgrade_request(request: &UpgradeSandboxRequest) -> Result<(), Status> {
+    if request.name.is_empty() {
+        return Err(Status::invalid_argument(
+            "the sandbox name must not be empty",
+        ));
+    }
+
+    Ok(())
 }
 
 /// Converts a mapping to its protobuf message.
@@ -281,6 +316,10 @@ type AttachStream = Pin<Box<dyn Stream<Item = Result<AttachResponse, Status>> + 
 /// Stream of image pull progress that ends with the started sandbox.
 type StartSandboxStream = Pin<Box<dyn Stream<Item = Result<StartSandboxResponse, Status>> + Send>>;
 
+/// Stream of image pull progress that ends with the result of an upgrade.
+type UpgradeSandboxStream =
+    Pin<Box<dyn Stream<Item = Result<UpgradeSandboxResponse, Status>> + Send>>;
+
 /// Stream of SSH protocol bytes sent back to the client through a tunnel.
 type SshTunnelStream = Pin<Box<dyn Stream<Item = Result<SshTunnelResponse, Status>> + Send>>;
 
@@ -289,6 +328,7 @@ impl SandboxManagementService for FirebrickServer {
     type StartSandboxStream = StartSandboxStream;
     type AttachStream = AttachStream;
     type SshTunnelStream = SshTunnelStream;
+    type UpgradeSandboxStream = UpgradeSandboxStream;
 
     /// Starts an existing sandbox or creates a new one when it doesn't exist, streaming the
     /// progress of the image pull. The start runs in its own task, so it finishes even when
@@ -352,6 +392,39 @@ impl SandboxManagementService for FirebrickServer {
             })??;
 
         Ok(Response::new(UpdateNetworkResponse { updated }))
+    }
+
+    /// Recreates an existing sandbox from the latest version of an image unless it already has
+    /// it, streaming the progress of the image pull. The upgrade runs in its own task, so a
+    /// client that disconnects can't stop a recreate halfway and leave its snapshot behind.
+    async fn upgrade_sandbox(
+        &self,
+        request: Request<UpgradeSandboxRequest>,
+    ) -> Result<Response<Self::UpgradeSandboxStream>, Status> {
+        let request_data = request.into_inner();
+        check_upgrade_request(&request_data)?;
+        let sandboxes = Arc::clone(&self.sandboxes);
+        let (tx, rx) = mpsc::channel(16);
+
+        tokio::spawn(async move {
+            let progress_tx = tx.clone();
+            let result = sandboxes
+                .upgrade(&request_data.name, &request_data.image, |progress| {
+                    // Progress is best-effort: drop it when the client is slow or gone.
+                    let message = upgrade_sandbox_response::Message::PullProgress(
+                        image_pull_progress(progress),
+                    );
+                    let _ = progress_tx.try_send(Ok(upgrade_sandbox_response(message)));
+                })
+                .await;
+
+            // The client may be gone; the upgrade finished anyway.
+            let _ = tx
+                .send(result.map(sandbox_upgraded).map_err(Status::from))
+                .await;
+        });
+
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 
     /// Stores a secret and adds it to the existing sandboxes in its scope. Running sandboxes
@@ -1439,6 +1512,42 @@ mod tests {
         assert_eq!(
             network_activity(Record::default(), &NetworkSpec::default()),
             []
+        );
+    }
+
+    #[tokio::test]
+    async fn upgrade_sandbox_rejects_an_empty_name() {
+        let server = FirebrickServer::new(unused_store(), Arc::new(HostOpener));
+
+        let status = server
+            .upgrade_sandbox(Request::new(UpgradeSandboxRequest {
+                name: String::new(),
+                image: String::new(),
+            }))
+            .await
+            .err()
+            .expect("an empty name should be rejected");
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn sandbox_upgraded_keeps_the_result() {
+        let response = sandbox_upgraded(Upgrade {
+            upgraded: true,
+            old_image: "alpine:3.21".to_string(),
+            new_image: "alpine:3.22".to_string(),
+        });
+
+        assert_eq!(
+            response.message,
+            Some(upgrade_sandbox_response::Message::Upgraded(
+                SandboxUpgraded {
+                    upgraded: true,
+                    old_image: "alpine:3.21".to_string(),
+                    new_image: "alpine:3.22".to_string(),
+                }
+            ))
         );
     }
 

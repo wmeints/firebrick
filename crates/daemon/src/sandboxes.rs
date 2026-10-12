@@ -15,8 +15,8 @@ use crate::vscode;
 use crate::zed;
 use firebrick_spec::{MountSpec, NetworkSpec, PortMapping, VolumesSpec, with_port};
 use microsandbox::sandbox::{
-    HostPermissions, MountBuilder, OwnedVolumeStorage, SandboxBuilder, SandboxHandle,
-    SandboxStatus, VolumeMount,
+    HostPermissions, MountBuilder, OwnedVolumeStorage, PullPolicy, RootfsSource, SandboxBuilder,
+    SandboxHandle, SandboxSpec, SandboxStatus, VolumeMount,
 };
 use microsandbox::snapshot::Snapshot;
 use microsandbox::{MicrosandboxError, Sandbox};
@@ -25,6 +25,7 @@ use oci_client::errors::{OciDistributionError, OciEnvelope, OciErrorCode};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -158,6 +159,68 @@ impl SandboxInfo {
             workspace_host_path: workspace_host_path_of(handle),
         }
     }
+}
+
+/// The result of upgrading a sandbox to the latest version of an image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Upgrade {
+    /// Whether the sandbox was recreated. False when its image already had the pulled digest.
+    pub upgraded: bool,
+    /// Image the sandbox was created from before the upgrade.
+    pub old_image: String,
+    /// Image the sandbox was upgraded to, or is already up to date with.
+    pub new_image: String,
+}
+
+/// A change that recreates a sandbox: new egress rules on its own disk, or a new image.
+#[derive(Debug, Clone, Copy)]
+enum Change<'a> {
+    /// New egress rules. The sandbox comes back from the snapshot of its disk.
+    Network,
+    /// A new image. The sandbox gets a fresh root filesystem and Docker disk from the image.
+    Image(&'a str),
+}
+
+impl Change<'_> {
+    /// Returns what the change does to the sandbox, for messages such as "failed to {what}".
+    fn what(self, name: &str) -> String {
+        match self {
+            Change::Network => format!("update the network rules of {name}"),
+            Change::Image(_) => format!("upgrade sandbox {name}"),
+        }
+    }
+
+    /// Returns what the sandbox keeps when the change fails before it's removed.
+    fn kept(self) -> &'static str {
+        match self {
+            Change::Network => "it keeps its old rules",
+            Change::Image(_) => "it keeps its old image",
+        }
+    }
+
+    /// Returns the word that names the snapshots of the change.
+    fn snapshot_kind(self) -> &'static str {
+        match self {
+            Change::Network => "network",
+            Change::Image(_) => "upgrade",
+        }
+    }
+
+    /// Returns what the change did, for messages about failures after it's done.
+    fn done(self, name: &str) -> String {
+        match self {
+            Change::Network => format!("updated the network rules of {name}"),
+            Change::Image(_) => format!("upgraded sandbox {name}"),
+        }
+    }
+}
+
+/// How to recreate a sandbox: with its settings and egress rules, and the change.
+#[derive(Debug, Clone, Copy)]
+struct Recreation<'a> {
+    settings: &'a SandboxSettings,
+    network: &'a NetworkSpec,
+    change: Change<'a>,
 }
 
 /// Returns the guest path a sandbox mounts its workspace at, which is its working directory.
@@ -725,7 +788,8 @@ impl SandboxManager {
     ) -> Result<bool, SandboxError> {
         let _guard = self.lock_sandbox(name).await;
         let sb = get_sandbox(name).await?;
-        let settings = SandboxSettings::of(&sb).map_err(|err| update_failed(name, &err))?;
+        let settings =
+            SandboxSettings::of(&sb).map_err(|err| change_failed(name, Change::Network, &err))?;
 
         if settings.labels.get(network::RULES_LABEL) == Some(&network::rules_label(network)) {
             return Ok(false);
@@ -737,12 +801,92 @@ impl SandboxManager {
             )));
         }
 
+        let recreation = Recreation {
+            settings: &settings,
+            network,
+            change: Change::Network,
+        };
+        self.recreate_and_reopen(&sb, &recreation).await?;
+
+        Ok(true)
+    }
+
+    /// Recreates an existing sandbox from the latest version of `image`, or the default image
+    /// when it's empty, passing the progress of the image pull to `on_pull`. The image is
+    /// pulled first, so a failed pull leaves the sandbox alone. The sandbox keeps its settings,
+    /// secrets, egress rules and ports, but gets a fresh root filesystem and Docker disk, and
+    /// ends in the state it was in. A sandbox whose image already has the pulled digest is left
+    /// alone. A paused sandbox is refused. When the create fails, the snapshot of the old disk
+    /// is kept so the user can recover the sandbox, and the error names it.
+    pub async fn upgrade(
+        &self,
+        name: &str,
+        image: &str,
+        on_pull: impl FnMut(PullUpdate) + Send,
+    ) -> Result<Upgrade, SandboxError> {
+        let _guard = self.lock_sandbox(name).await;
+        let sb = get_sandbox(name).await?;
+
+        if sb.status_snapshot() == SandboxStatus::Paused {
+            return Err(SandboxError::failed_precondition(format!(
+                "sandbox {name} is paused; resume or stop it before upgrading"
+            )));
+        }
+
+        let image = sandbox_image(image);
+        let config = sb
+            .config()
+            .map_err(|err| change_failed(name, Change::Image(image), &err))?;
+        let digest = pull_image(image, on_pull).await?;
+        let upgraded = manifest_digest(&sb).as_deref() != Some(digest.as_str());
+
+        if upgraded {
+            self.recreate_from_image(&sb, &config.spec, image).await?;
+        }
+
+        Ok(Upgrade {
+            upgraded,
+            old_image: image_reference(&config.spec.image),
+            new_image: image.to_string(),
+        })
+    }
+
+    /// Recreates the sandbox with the `spec` from the pulled image, with the egress rules from
+    /// its label.
+    async fn recreate_from_image(
+        &self,
+        sb: &SandboxHandle,
+        spec: &SandboxSpec,
+        image: &str,
+    ) -> Result<(), SandboxError> {
+        let change = Change::Image(image);
+        let settings =
+            SandboxSettings::of(sb).map_err(|err| change_failed(sb.name(), change, &err))?;
+        let recreation = Recreation {
+            settings: &settings,
+            network: &network::rules_of(spec),
+            change,
+        };
+
+        self.recreate_and_reopen(sb, &recreation).await
+    }
+
+    /// Listens for the sandbox's network log, replaces the sandbox as the recreation says,
+    /// then syncs the SSH config and the editor settings and reopens its forwards and URL relay
+    /// when it runs, also when replacing it failed.
+    async fn recreate_and_reopen(
+        &self,
+        sb: &SandboxHandle,
+        recreation: &Recreation<'_>,
+    ) -> Result<(), SandboxError> {
+        let name = sb.name();
+
         self.netlogs.listen(name).await;
-        let result = self.replace(&sb, &settings, network).await;
+        let result = self.replace(sb, recreation).await;
         sync_ssh_config().await;
         self.reopen_forwards_and_relay(name).await;
 
-        result.map(|()| true)
+        result
     }
 
     /// Opens the stored forwards and starts the URL relay of the sandbox when it runs after an
@@ -767,77 +911,88 @@ impl SandboxManager {
         }
     }
 
-    /// Stops the sandbox when it's live, replaces it with one created from a snapshot of its
-    /// disk with the egress rules, and stops that one again when the sandbox was stopped.
+    /// Stops the sandbox when it's live, takes a snapshot of its disk and replaces it with one
+    /// created with the change and the egress rules, and stops that one again when the sandbox
+    /// was stopped. A new image gets the workspace's mise tools when the sandbox has mise
+    /// enabled; a failed install is returned once the sandbox is in the state it was in.
     async fn replace(
         &self,
         sb: &SandboxHandle,
-        settings: &SandboxSettings,
-        network: &NetworkSpec,
+        recreation: &Recreation<'_>,
     ) -> Result<(), SandboxError> {
         let name = sb.name();
+        let change = recreation.change;
         let was_live = is_live(sb.status_snapshot());
 
         if was_live {
             stop_or_kill(sb, STOP_TIMEOUT)
                 .await
-                .map_err(|err| update_failed(name, &err))?;
+                .map_err(|err| change_failed(name, change, &err))?;
             self.forwards.close(name).await;
             self.relays.forget(name);
         }
 
-        let snapshot = match snapshot_and_remove(sb).await {
+        let snapshot = match snapshot_and_remove(sb, change).await {
             Ok(snapshot) => snapshot,
-            Err(err) => return Err(snapshot_failed(sb, was_live, &err).await),
+            Err(err) => return Err(snapshot_failed(sb, was_live, change, &err).await),
         };
 
-        self.recreate(settings, network, &snapshot).await?;
+        let recreated = self.recreate(recreation, &snapshot).await?;
+        let installed = install_tools_after(change, &recreated, recreation.settings).await;
 
         // The recreated sandbox boots, so stop it again when it was stopped before.
         if !was_live {
-            stop_recreated(name).await?;
+            stop_recreated(name, change).await?;
         }
 
-        Ok(())
+        installed
     }
 
-    /// Creates the removed sandbox again from the snapshot with the new egress rules, then
-    /// deletes the snapshot.
+    /// Creates the removed sandbox again with the change and the egress rules, then deletes
+    /// the snapshot of its disk.
     async fn recreate(
         &self,
-        settings: &SandboxSettings,
-        network: &NetworkSpec,
+        recreation: &Recreation<'_>,
         snapshot: &str,
-    ) -> Result<(), SandboxError> {
+    ) -> Result<Sandbox, SandboxError> {
+        let Recreation {
+            settings,
+            network,
+            change,
+        } = *recreation;
         let name = &settings.name;
+        let builder = match change {
+            // `image(..)` would discard the pending snapshot, so the builder must not set one.
+            Change::Network => settings.builder(&self.netlogs).override_snapshot(snapshot),
+            Change::Image(image) => settings.builder(&self.netlogs).image(image),
+        };
 
-        if let Err(err) = self.create_from_snapshot(settings, network, snapshot).await {
-            return Err(recreate_failed(name, snapshot, &err).await);
-        }
+        let sb = match self.create_from(settings, network, builder).await {
+            Ok(sb) => sb,
+            Err(err) => return Err(recreate_failed(name, snapshot, change, &err).await),
+        };
 
         remove_snapshot(snapshot).await;
-        tracing::info!("updated the network rules of sandbox {name}");
+        tracing::info!("{}", change.done(name));
 
-        Ok(())
+        Ok(sb)
     }
 
-    /// Creates the sandbox from the snapshot with its settings, its secrets and the egress
+    /// Creates the sandbox of the settings from the builder with its secrets and the egress
     /// rules. microsandbox boots it.
-    async fn create_from_snapshot(
+    async fn create_from(
         &self,
         settings: &SandboxSettings,
         network: &NetworkSpec,
-        snapshot: &str,
+        builder: SandboxBuilder,
     ) -> Result<Sandbox, String> {
         let _secrets_guard = self.secrets_lock.lock().await;
         let secrets = self
             .load_secrets_for(&settings.name)
             .map_err(|err| err.to_string())?;
 
-        // `image(..)` would discard the pending snapshot, so the builder must not set one.
-        let builder = settings.builder(&self.netlogs).override_snapshot(snapshot);
-
-        // A snapshot has no image to pull, so there's no progress to report.
+        // A snapshot has no image to pull, and a new image was pulled before, so there's no
+        // progress to report.
         create_with(builder, &secrets, network, |_| {})
             .await
             .map_err(|err| format!("{err:?}"))
@@ -1089,9 +1244,12 @@ async fn sandbox_name_by_hostname(hostname: &str) -> Result<String, SandboxError
 
 /// Takes a disk snapshot of the stopped sandbox, then removes the sandbox. Returns the path of
 /// the snapshot. When the sandbox can't be removed, the snapshot is deleted again.
-async fn snapshot_and_remove(sb: &SandboxHandle) -> Result<String, MicrosandboxError> {
+async fn snapshot_and_remove(
+    sb: &SandboxHandle,
+    change: Change<'_>,
+) -> Result<String, MicrosandboxError> {
     let name = sb.name();
-    let snapshot = Snapshot::builder(snapshot_name(name))
+    let snapshot = Snapshot::builder(snapshot_name(name, change))
         .from_sandbox(name)
         .create()
         .await?;
@@ -1112,10 +1270,11 @@ async fn snapshot_and_remove(sb: &SandboxHandle) -> Result<String, MicrosandboxE
 async fn snapshot_failed(
     sb: &SandboxHandle,
     was_live: bool,
+    change: Change<'_>,
     err: &MicrosandboxError,
 ) -> SandboxError {
     let name = sb.name();
-    let message = format!("failed to update the network rules of {name}; it keeps its old rules");
+    let message = format!("failed to {}; {}", change.what(name), change.kept());
     tracing::error!(error = ?err, "failed to snapshot and remove sandbox {name}");
 
     if !was_live {
@@ -1131,29 +1290,50 @@ async fn snapshot_failed(
     }
 }
 
-/// Stops a sandbox that was recreated while it was stopped. By then it has the new rules, so
-/// the error says so.
-async fn stop_recreated(name: &str) -> Result<(), SandboxError> {
+/// Stops a sandbox that was recreated while it was stopped. By then the change is done, so the
+/// error says so.
+async fn stop_recreated(name: &str, change: Change<'_>) -> Result<(), SandboxError> {
     let result = match Sandbox::get(name).await {
         Ok(sb) => stop_or_kill(&sb, STOP_TIMEOUT).await,
         Err(err) => Err(err),
     };
 
     result.map_err(|err| {
-        tracing::error!(error = ?err, "failed to stop sandbox {name} after updating its rules");
+        tracing::error!(error = ?err, "failed to stop sandbox {name} after recreating it");
         SandboxError::internal(format!(
-            "updated the network rules of {name}, but failed to stop it again"
+            "{}, but failed to stop it again",
+            change.done(name)
         ))
     })
 }
 
-/// Returns a snapshot name for the sandbox that no other update uses.
-fn snapshot_name(sandbox: &str) -> String {
+/// Trusts and installs the workspace's mise tools in a sandbox that got a new image, because
+/// its fresh root filesystem doesn't have them, when the sandbox has mise enabled. A sandbox
+/// recreated from its own disk keeps them.
+async fn install_tools_after(
+    change: Change<'_>,
+    sb: &Sandbox,
+    settings: &SandboxSettings,
+) -> Result<(), SandboxError> {
+    match (change, &settings.workspace) {
+        (Change::Image(_), Some(workspace)) if mise::is_enabled(&settings.labels) => {
+            install_mise_tools(sb, &workspace.guest).await
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Returns a snapshot name for the change of the sandbox that no other change uses.
+fn snapshot_name(sandbox: &str, change: Change<'_>) -> String {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
 
-    format!("firebrick-network-{sandbox}-{}-{nonce}", std::process::id())
+    format!(
+        "firebrick-{}-{sandbox}-{}-{nonce}",
+        change.snapshot_kind(),
+        std::process::id()
+    )
 }
 
 /// Deletes the snapshot, logging a warning when that fails. A leftover snapshot only takes up
@@ -1185,15 +1365,21 @@ fn is_in_use(err: &MicrosandboxError) -> bool {
     matches!(err, MicrosandboxError::Custom(message) if message.starts_with("snapshot is in use"))
 }
 
-/// Logs why updating the network rules failed and returns the error the client sees.
-fn update_failed(name: &str, err: &MicrosandboxError) -> SandboxError {
-    tracing::error!(error = ?err, "failed to update the network rules of sandbox {name}");
-    SandboxError::internal(format!("failed to update the network rules of {name}"))
+/// Logs why the change failed and returns the error the client sees.
+fn change_failed(name: &str, change: Change<'_>, err: &MicrosandboxError) -> SandboxError {
+    let message = format!("failed to {}", change.what(name));
+    tracing::error!(error = ?err, "{message}");
+    SandboxError::internal(message)
 }
 
 /// Removes what a failed recreate left of the sandbox, logs the error and the snapshot that
 /// still holds the sandbox's disk, and returns the error the client sees.
-async fn recreate_failed(name: &str, snapshot: &str, err: &str) -> SandboxError {
+async fn recreate_failed(
+    name: &str,
+    snapshot: &str,
+    change: Change<'_>,
+    err: &str,
+) -> SandboxError {
     if let Ok(sb) = Sandbox::get(name).await {
         let _ = stop_or_kill(&sb, STOP_TIMEOUT).await;
 
@@ -1208,9 +1394,92 @@ async fn recreate_failed(name: &str, snapshot: &str, err: &str) -> SandboxError 
     );
 
     SandboxError::internal(format!(
-        "failed to update the network rules of {name}; the sandbox was kept as snapshot \
-         {snapshot}"
+        "failed to {}; the sandbox was kept as snapshot {snapshot}",
+        change.what(name)
     ))
+}
+
+/// Counts the probe sandboxes this process created, so each gets its own name.
+static PROBES: AtomicU32 = AtomicU32::new(0);
+
+/// Returns a name for a probe sandbox that no other probe uses.
+fn probe_name() -> String {
+    let probe = PROBES.fetch_add(1, Ordering::Relaxed);
+
+    format!("fbk-upgrade-{}-{probe}", std::process::id())
+}
+
+/// Pulls the latest version of the image, passing the progress to `on_pull`, and returns its
+/// manifest digest. microsandbox only pulls images while it creates a sandbox, so this creates
+/// a short-lived probe sandbox without network from the image, reads the digest it was created
+/// from and removes it again. Fails like a create of a sandbox from the image.
+async fn pull_image(
+    image: &str,
+    on_pull: impl FnMut(PullUpdate) + Send,
+) -> Result<String, SandboxError> {
+    let name = probe_name();
+    let builder = Sandbox::builder(&name)
+        .image(image)
+        // A tag such as `node:22` can move, so ask the registry for its manifest.
+        .pull_policy(PullPolicy::Always)
+        .disable_network()
+        .detached(true);
+    let result = match builder.create_detached_with_pull_progress() {
+        Ok((progress, task)) => pull::wait_for_create(progress, task, on_pull).await,
+        Err(err) => Err(err),
+    };
+    let digest = match &result {
+        Ok(_) => Sandbox::get(&name)
+            .await
+            .ok()
+            .and_then(|sb| manifest_digest(&sb)),
+        Err(_) => None,
+    };
+
+    remove_probe(&name).await;
+
+    if let Err(err) = result {
+        tracing::error!(error = ?err, "failed to pull image {image}");
+        return Err(create_error(image, &err));
+    }
+
+    digest.ok_or_else(|| {
+        tracing::error!("the probe sandbox of image {image} has no manifest digest");
+        SandboxError::internal(format!("failed to pull image {image}"))
+    })
+}
+
+/// Kills and removes the probe sandbox, if there is one, logging a warning when that fails.
+async fn remove_probe(name: &str) {
+    let Ok(sb) = Sandbox::get(name).await else {
+        return;
+    };
+
+    if is_live(sb.status_snapshot())
+        && let Err(err) = sb.kill().await
+    {
+        tracing::warn!(error = ?err, "failed to kill probe sandbox {name}");
+    }
+
+    if let Err(err) = sb.remove().await {
+        tracing::warn!(error = ?err, "failed to remove probe sandbox {name}");
+    }
+}
+
+/// Returns the manifest digest of the image the sandbox was created from. microsandbox keeps
+/// it in the sandbox's config, but doesn't expose it, so it's read from the config's JSON.
+fn manifest_digest(sb: &SandboxHandle) -> Option<String> {
+    let config: serde_json::Value = serde_json::from_str(sb.config_json()).ok()?;
+
+    config.get("manifest_digest")?.as_str().map(str::to_string)
+}
+
+/// Returns the image reference of an OCI root filesystem, or an empty string for another one.
+fn image_reference(image: &RootfsSource) -> String {
+    match image {
+        RootfsSource::Oci(oci) => oci.reference.clone(),
+        _ => String::new(),
+    }
 }
 
 /// Adds the egress rules, the label that records them and the secrets to the builder and
