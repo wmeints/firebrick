@@ -78,6 +78,7 @@ export default defineConfig({
         "docs",
         "docs/installation",
         "docs/quickstart",
+        "docs/agents",
         "docs/configuration",
         "docs/networking",
         "docs/secrets",
