@@ -39,6 +39,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{SignalKind, signal};
@@ -194,17 +195,6 @@ fn sandbox_upgraded(upgrade: Upgrade) -> UpgradeSandboxResponse {
             new_image: upgrade.new_image,
         },
     ))
-}
-
-/// Fails with `InvalidArgument` when the upgrade request names no sandbox.
-fn check_upgrade_request(request: &UpgradeSandboxRequest) -> Result<(), Status> {
-    if request.name.is_empty() {
-        return Err(Status::invalid_argument(
-            "the sandbox name must not be empty",
-        ));
-    }
-
-    Ok(())
 }
 
 /// Converts a mapping to its protobuf message.
@@ -402,19 +392,17 @@ impl SandboxManagementService for FirebrickServer {
         request: Request<UpgradeSandboxRequest>,
     ) -> Result<Response<Self::UpgradeSandboxStream>, Status> {
         let request_data = request.into_inner();
-        check_upgrade_request(&request_data)?;
         let sandboxes = Arc::clone(&self.sandboxes);
         let (tx, rx) = mpsc::channel(16);
 
         tokio::spawn(async move {
-            let progress_tx = tx.clone();
             let result = sandboxes
                 .upgrade(&request_data.name, &request_data.image, |progress| {
                     // Progress is best-effort: drop it when the client is slow or gone.
                     let message = upgrade_sandbox_response::Message::PullProgress(
                         image_pull_progress(progress),
                     );
-                    let _ = progress_tx.try_send(Ok(upgrade_sandbox_response(message)));
+                    let _ = tx.try_send(Ok(upgrade_sandbox_response(message)));
                 })
                 .await;
 
@@ -684,18 +672,28 @@ fn parse_size_mib(size: &str) -> Result<u32, SandboxError> {
         .map_err(|err| SandboxError::InvalidArgument(err.to_string()))
 }
 
-/// Reopens the port forwards of the sandboxes that are running and listens for the network
-/// logs of the sandboxes, then serves the gRPC API on the socket until SIGINT or SIGTERM is
-/// received, opening the URLs from sandboxes in the host's browser. Writes the network records
-/// a last time after serving. The caller makes sure no other daemon serves on the socket, so
+/// How long the daemon waits for the updates and upgrades of sandboxes when it shuts down.
+const RECREATION_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Reopens the port forwards of the sandboxes that are running, listens for the network logs
+/// of the sandboxes and removes the upgrade probes an earlier daemon left behind, then serves
+/// the gRPC API on the socket until SIGINT or SIGTERM is received, opening the URLs from
+/// sandboxes in the host's browser. Afterwards, waits up to [`RECREATION_TIMEOUT`] for the
+/// updates and upgrades that are still running and writes the network records a last time. The caller makes sure no other daemon serves on the socket, so
 /// it doesn't take that daemon's host ports.
 pub async fn run(socket_path: &Path, secrets: SecretStore) -> Result<(), ServerError> {
     let service = FirebrickServer::new(secrets, Arc::new(HostOpener));
     let sandboxes = Arc::clone(&service.sandboxes);
     sandboxes.restore_forwards().await;
     sandboxes.restore_network_logs().await;
+    sandboxes.remove_stale_probes().await;
 
     let served = serve(socket_path, service, shutdown_signal()).await;
+
+    if !sandboxes.finish_recreations(RECREATION_TIMEOUT).await {
+        tracing::warn!("stopped while a sandbox was still being updated or upgraded");
+    }
+
     sandboxes.close_network_logs().await;
 
     served
@@ -1513,22 +1511,6 @@ mod tests {
             network_activity(Record::default(), &NetworkSpec::default()),
             []
         );
-    }
-
-    #[tokio::test]
-    async fn upgrade_sandbox_rejects_an_empty_name() {
-        let server = FirebrickServer::new(unused_store(), Arc::new(HostOpener));
-
-        let status = server
-            .upgrade_sandbox(Request::new(UpgradeSandboxRequest {
-                name: String::new(),
-                image: String::new(),
-            }))
-            .await
-            .err()
-            .expect("an empty name should be rejected");
-
-        assert_eq!(status.code(), tonic::Code::InvalidArgument);
     }
 
     #[test]

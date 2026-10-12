@@ -16,7 +16,7 @@ use crate::zed;
 use firebrick_spec::{MountSpec, NetworkSpec, PortMapping, VolumesSpec, with_port};
 use microsandbox::sandbox::{
     HostPermissions, MountBuilder, OwnedVolumeStorage, PullPolicy, RootfsSource, SandboxBuilder,
-    SandboxHandle, SandboxSpec, SandboxStatus, VolumeMount,
+    SandboxHandle, SandboxStatus, VolumeMount,
 };
 use microsandbox::snapshot::Snapshot;
 use microsandbox::{MicrosandboxError, Sandbox};
@@ -25,7 +25,6 @@ use oci_client::errors::{OciDistributionError, OciEnvelope, OciErrorCode};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -364,6 +363,9 @@ pub struct SandboxManager {
     // Held while the ports of a sandbox are read or stored and its forwards are reconciled, so a
     // request with stale ports can't undo the forwards of a newer one.
     ports_lock: tokio::sync::Mutex<()>,
+    // Held for reading while a sandbox is updated or upgraded, and for writing when the daemon
+    // shuts down, so it waits for a recreate instead of leaving the sandbox removed.
+    recreations: tokio::sync::RwLock<()>,
 }
 
 /// The locks of the sandboxes that are in use, by sandbox name.
@@ -409,7 +411,17 @@ impl SandboxManager {
             secrets_lock: tokio::sync::Mutex::new(()),
             sandbox_locks: std::sync::Mutex::new(HashMap::new()),
             ports_lock: tokio::sync::Mutex::new(()),
+            recreations: tokio::sync::RwLock::new(()),
         }
+    }
+
+    /// Waits up to `timeout` for the updates and upgrades of sandboxes that are running.
+    /// Returns whether they finished. Used when the daemon shuts down, after it stopped taking
+    /// requests.
+    pub async fn finish_recreations(&self, timeout: Duration) -> bool {
+        tokio::time::timeout(timeout, self.recreations.write())
+            .await
+            .is_ok()
     }
 
     /// Waits for and takes the lock of the sandbox with the name.
@@ -786,6 +798,7 @@ impl SandboxManager {
         name: &str,
         network: &NetworkSpec,
     ) -> Result<bool, SandboxError> {
+        let _recreation = self.recreations.read().await;
         let _guard = self.lock_sandbox(name).await;
         let sb = get_sandbox(name).await?;
         let settings =
@@ -824,39 +837,44 @@ impl SandboxManager {
         image: &str,
         on_pull: impl FnMut(PullUpdate) + Send,
     ) -> Result<Upgrade, SandboxError> {
-        let _guard = self.lock_sandbox(name).await;
-        let sb = get_sandbox(name).await?;
-
-        if sb.status_snapshot() == SandboxStatus::Paused {
-            return Err(SandboxError::failed_precondition(format!(
-                "sandbox {name} is paused; resume or stop it before upgrading"
-            )));
-        }
-
+        let _recreation = self.recreations.read().await;
         let image = sandbox_image(image);
+        refuse_paused(&get_sandbox(name).await?)?;
+
+        // The pull can take minutes, so it runs before the sandbox is locked.
+        let digest = pull_image(name, image, on_pull).await?;
+
+        let _guard = self.lock_sandbox(name).await;
+        // Get the sandbox again, because it may have changed while the image was pulled.
+        let sb = get_sandbox(name).await?;
+        refuse_paused(&sb)?;
         let config = sb
             .config()
             .map_err(|err| change_failed(name, Change::Image(image), &err))?;
-        let digest = pull_image(image, on_pull).await?;
-        let upgraded = manifest_digest(&sb).as_deref() != Some(digest.as_str());
+        let network = network::rules_of(&config.spec);
+        let old_image = image_reference(config.spec.image).ok_or_else(|| {
+            SandboxError::failed_precondition(format!(
+                "sandbox {name} wasn't created from an image, so it can't be upgraded"
+            ))
+        })?;
+        let upgraded = current_digest(&sb)? != digest;
 
         if upgraded {
-            self.recreate_from_image(&sb, &config.spec, image).await?;
+            self.recreate_from_image(&sb, &network, image).await?;
         }
 
         Ok(Upgrade {
             upgraded,
-            old_image: image_reference(&config.spec.image),
+            old_image,
             new_image: image.to_string(),
         })
     }
 
-    /// Recreates the sandbox with the `spec` from the pulled image, with the egress rules from
-    /// its label.
+    /// Recreates the sandbox from the pulled image with the egress rules.
     async fn recreate_from_image(
         &self,
         sb: &SandboxHandle,
-        spec: &SandboxSpec,
+        network: &NetworkSpec,
         image: &str,
     ) -> Result<(), SandboxError> {
         let change = Change::Image(image);
@@ -864,11 +882,32 @@ impl SandboxManager {
             SandboxSettings::of(sb).map_err(|err| change_failed(sb.name(), change, &err))?;
         let recreation = Recreation {
             settings: &settings,
-            network: &network::rules_of(spec),
+            network,
             change,
         };
 
         self.recreate_and_reopen(sb, &recreation).await
+    }
+
+    /// Removes the upgrade probes that an earlier daemon left behind, for example because it
+    /// was killed during a pull, logging a warning when they can't be listed. Used when the
+    /// daemon starts, so only the probes of other processes are removed.
+    pub async fn remove_stale_probes(&self) {
+        let sandboxes = match list_all_sandboxes().await {
+            Ok(sandboxes) => sandboxes,
+            Err(err) => {
+                tracing::warn!("failed to remove stale upgrade probes: {err}");
+                return;
+            }
+        };
+        let own = format!("{PROBE_PREFIX}{}-", std::process::id());
+
+        for sb in sandboxes
+            .iter()
+            .filter(|sb| is_probe(sb) && !sb.name().starts_with(&own))
+        {
+            remove_leftover(sb.name(), "stale upgrade probe").await;
+        }
     }
 
     /// Listens for the sandbox's network log, replaces the sandbox as the recreation says,
@@ -1325,14 +1364,10 @@ async fn install_tools_after(
 
 /// Returns a snapshot name for the change of the sandbox that no other change uses.
 fn snapshot_name(sandbox: &str, change: Change<'_>) -> String {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos());
-
     format!(
-        "firebrick-{}-{sandbox}-{}-{nonce}",
+        "firebrick-{}-{sandbox}-{}",
         change.snapshot_kind(),
-        std::process::id()
+        unique_suffix()
     )
 }
 
@@ -1380,13 +1415,7 @@ async fn recreate_failed(
     change: Change<'_>,
     err: &str,
 ) -> SandboxError {
-    if let Ok(sb) = Sandbox::get(name).await {
-        let _ = stop_or_kill(&sb, STOP_TIMEOUT).await;
-
-        if let Err(err) = sb.remove().await {
-            tracing::warn!(error = ?err, "failed to remove sandbox {name} after a failed recreate");
-        }
-    }
+    remove_leftover(name, "sandbox after a failed recreate").await;
 
     tracing::error!(
         error = err,
@@ -1399,86 +1428,136 @@ async fn recreate_failed(
     ))
 }
 
-/// Counts the probe sandboxes this process created, so each gets its own name.
-static PROBES: AtomicU32 = AtomicU32::new(0);
+/// Label of an upgrade probe sandbox. Its value is the name of the sandbox it pulls the image
+/// for.
+pub const PROBE_LABEL: &str = "firebrick.upgrade-probe";
 
-/// Returns a name for a probe sandbox that no other probe uses.
-fn probe_name() -> String {
-    let probe = PROBES.fetch_add(1, Ordering::Relaxed);
+/// Start of the names of upgrade probe sandboxes, followed by the daemon's process id.
+const PROBE_PREFIX: &str = "fbk-upgrade-";
 
-    format!("fbk-upgrade-{}-{probe}", std::process::id())
+/// Whether the sandbox is an upgrade probe.
+fn is_probe(sb: &SandboxHandle) -> bool {
+    sb.config()
+        .is_ok_and(|config| config.spec.labels.contains_key(PROBE_LABEL))
 }
 
-/// Pulls the latest version of the image, passing the progress to `on_pull`, and returns its
-/// manifest digest. microsandbox only pulls images while it creates a sandbox, so this creates
-/// a short-lived probe sandbox without network from the image, reads the digest it was created
-/// from and removes it again. Fails like a create of a sandbox from the image.
+/// Returns a suffix for a name that no other name of this process uses: the process id and
+/// the current time in nanoseconds.
+fn unique_suffix() -> String {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+
+    format!("{}-{nonce}", std::process::id())
+}
+
+/// Pulls the latest version of the image for the sandbox, passing the progress to `on_pull`,
+/// and returns its manifest digest. microsandbox only pulls images while it creates a sandbox,
+/// so this creates a short-lived probe sandbox without network from the image, labeled with
+/// the sandbox's name, reads the digest it was created from and removes it again. Fails like
+/// a create of a sandbox from the image.
 async fn pull_image(
+    sandbox: &str,
     image: &str,
     on_pull: impl FnMut(PullUpdate) + Send,
 ) -> Result<String, SandboxError> {
-    let name = probe_name();
+    let name = format!("{PROBE_PREFIX}{}", unique_suffix());
     let builder = Sandbox::builder(&name)
         .image(image)
+        .label(PROBE_LABEL, sandbox)
         // A tag such as `node:22` can move, so ask the registry for its manifest.
         .pull_policy(PullPolicy::Always)
         .disable_network()
         .detached(true);
-    let result = match builder.create_detached_with_pull_progress() {
+    let created = match builder.create_detached_with_pull_progress() {
         Ok((progress, task)) => pull::wait_for_create(progress, task, on_pull).await,
         Err(err) => Err(err),
     };
-    let digest = match &result {
-        Ok(_) => Sandbox::get(&name)
-            .await
-            .ok()
-            .and_then(|sb| manifest_digest(&sb)),
-        Err(_) => None,
+    let digest = match created {
+        Ok(_) => probe_digest(&name).await.map_err(|err| {
+            tracing::error!("failed to read the digest of image {image}: {err}");
+            SandboxError::internal(format!("failed to pull image {image}"))
+        }),
+        Err(err) => {
+            tracing::error!(error = ?err, "failed to pull image {image}");
+            Err(create_error(image, &err))
+        }
     };
 
-    remove_probe(&name).await;
+    remove_leftover(&name, "upgrade probe").await;
 
-    if let Err(err) = result {
-        tracing::error!(error = ?err, "failed to pull image {image}");
-        return Err(create_error(image, &err));
-    }
+    digest
+}
 
-    digest.ok_or_else(|| {
-        tracing::error!("the probe sandbox of image {image} has no manifest digest");
-        SandboxError::internal(format!("failed to pull image {image}"))
+/// Returns the manifest digest the probe sandbox was created from, or why it can't be read.
+async fn probe_digest(name: &str) -> Result<String, String> {
+    let sb = Sandbox::get(name)
+        .await
+        .map_err(|err| format!("failed to get probe sandbox {name}: {err}"))?;
+
+    manifest_digest(&sb)
+}
+
+/// Returns the manifest digest of the image the sandbox was created from. Fails with
+/// `Internal` when it can't be read, so a sandbox whose image is unknown isn't recreated.
+fn current_digest(sb: &SandboxHandle) -> Result<String, SandboxError> {
+    manifest_digest(sb).map_err(|err| {
+        tracing::error!(
+            "failed to read the image digest of sandbox {}: {err}",
+            sb.name()
+        );
+        SandboxError::internal(format!(
+            "failed to read the image digest of sandbox {}",
+            sb.name()
+        ))
     })
 }
 
-/// Kills and removes the probe sandbox, if there is one, logging a warning when that fails.
-async fn remove_probe(name: &str) {
+/// Returns the manifest digest of the image the sandbox was created from, or why it can't be
+/// read. microsandbox keeps it in the sandbox's config, but doesn't expose it, so it's read
+/// from the config's JSON.
+fn manifest_digest(sb: &SandboxHandle) -> Result<String, String> {
+    let config: serde_json::Value = serde_json::from_str(sb.config_json())
+        .map_err(|err| format!("the config isn't valid JSON: {err}"))?;
+
+    config
+        .get("manifest_digest")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "the config has no manifest_digest".to_string())
+}
+
+/// Stops and removes the sandbox when it exists, logging a warning that names it as `what`
+/// when it can't be removed.
+async fn remove_leftover(name: &str, what: &str) {
     let Ok(sb) = Sandbox::get(name).await else {
         return;
     };
-
-    if is_live(sb.status_snapshot())
-        && let Err(err) = sb.kill().await
-    {
-        tracing::warn!(error = ?err, "failed to kill probe sandbox {name}");
-    }
+    let _ = stop_or_kill(&sb, STOP_TIMEOUT).await;
 
     if let Err(err) = sb.remove().await {
-        tracing::warn!(error = ?err, "failed to remove probe sandbox {name}");
+        tracing::warn!(error = ?err, "failed to remove {what} {name}");
     }
 }
 
-/// Returns the manifest digest of the image the sandbox was created from. microsandbox keeps
-/// it in the sandbox's config, but doesn't expose it, so it's read from the config's JSON.
-fn manifest_digest(sb: &SandboxHandle) -> Option<String> {
-    let config: serde_json::Value = serde_json::from_str(sb.config_json()).ok()?;
+/// Fails with `FailedPrecondition` when the sandbox is paused, because an upgrade can't pause
+/// it again.
+fn refuse_paused(sb: &SandboxHandle) -> Result<(), SandboxError> {
+    if sb.status_snapshot() != SandboxStatus::Paused {
+        return Ok(());
+    }
 
-    config.get("manifest_digest")?.as_str().map(str::to_string)
+    Err(SandboxError::failed_precondition(format!(
+        "sandbox {} is paused; resume or stop it before upgrading",
+        sb.name()
+    )))
 }
 
-/// Returns the image reference of an OCI root filesystem, or an empty string for another one.
-fn image_reference(image: &RootfsSource) -> String {
+/// Returns the image reference of an OCI root filesystem, or `None` for another one.
+fn image_reference(image: RootfsSource) -> Option<String> {
     match image {
-        RootfsSource::Oci(oci) => oci.reference.clone(),
-        _ => String::new(),
+        RootfsSource::Oci(oci) => Some(oci.reference),
+        _ => None,
     }
 }
 

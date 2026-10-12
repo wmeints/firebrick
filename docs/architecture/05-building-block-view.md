@@ -244,8 +244,9 @@ C4Component
   sure the microsandbox runtime and the SSH keys exist, makes the microsandbox
   `db` directory readable by the user only, syncs the SSH config and serves the
   API until `SIGINT` or `SIGTERM`. Before serving, `server` reopens the port
-  forwards of the sandboxes that are running, and when it stops, their listeners
-  close.
+  forwards of the sandboxes that are running and removes the upgrade probes an
+  earlier daemon left behind. When it stops, their listeners close, and it waits
+  up to 60 seconds for updates and upgrades of sandboxes that are still running.
 - `server` - Adapts `SandboxManagementService` to the modules below: it converts
   each request into plain values, calls `sandboxes`, `session` or `tunnel`, and
   converts the result into a response. It converts requested resources and

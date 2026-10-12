@@ -124,6 +124,8 @@ version, nothing changes. Other changes to `.firebrick.yml`, such as `mounts` or
 $ fbk upgrade
 Upgraded sandbox myproject-3f2a1c from ghcr.io/wmeints/firebrick-base:v0.7.0 to ghcr.io/wmeints/firebrick-base:v0.8.0
 Connect with: ssh myproject.fbk
+Open in VS Code: code --folder-uri vscode-remote://ssh-remote+myproject.fbk/workspaces/myproject
+Open in Zed: zed ssh://myproject.fbk/workspaces/myproject
 
 $ fbk upgrade
 Sandbox myproject-3f2a1c is already up to date (ghcr.io/wmeints/firebrick-base:v0.8.0)

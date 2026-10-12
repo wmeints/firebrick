@@ -834,7 +834,6 @@ sequenceDiagram
         CLI-->>Dev: Error, nothing changes
     end
     CLI->>D: UpgradeSandbox(name, image)
-    D->>D: Lock the sandbox
     alt Paused
         D-->>CLI: FAILED_PRECONDITION
         CLI-->>Dev: Error
@@ -845,6 +844,11 @@ sequenceDiagram
     D->>MS: Read the probe's manifest digest, remove the probe
     alt Pull fails
         D-->>CLI: NOT_FOUND, UNAVAILABLE or INTERNAL
+        CLI-->>Dev: Error, the sandbox is left alone
+    end
+    D->>D: Lock the sandbox, check it isn't paused
+    alt Its own digest can't be read
+        D-->>CLI: INTERNAL
         CLI-->>Dev: Error, the sandbox is left alone
     else Digest matches the sandbox's
         D-->>CLI: upgraded: false
@@ -883,11 +887,16 @@ sequenceDiagram
 ```
 
 microsandbox only pulls an image while it creates a sandbox, so `fbkd` creates a
-probe sandbox named `fbk-upgrade-<pid>-<n>` to pull it, without network and
-without `init`. The pull policy `Always` asks the registry for the manifest
-again, so a moving tag such as `node:22` that points to a new digest is
-upgraded. The digest of the sandbox's own image is in the config microsandbox
-stores for it.
+probe sandbox named `fbk-upgrade-<pid>-<nonce>` to pull it, without network and
+without `init`, with a `firebrick.upgrade-probe` label that names the sandbox.
+The pull policy `Always` asks the registry for the manifest again, so a moving
+tag such as `node:22` that points to a new digest is upgraded. The pull runs
+before `fbkd` takes the sandbox's lock, so other requests for the sandbox don't
+wait for a long download. The digest of the sandbox's own image is in the config
+microsandbox stores for it; when it can't be read, `fbkd` refuses the upgrade
+instead of recreating a sandbox that may be up to date. When `fbkd` starts, it
+removes the probes of earlier daemon processes, for example of one that was
+killed during a pull.
 
 The upgraded sandbox keeps its name, labels (and so its SSH host name, mise
 setting, stored ports and `firebrick.network` rules), workspace mount, extra
@@ -901,7 +910,9 @@ sandbox from it.
 
 Like `UpdateNetwork`, `fbkd` runs the upgrade in a task of its own, so a client
 that disconnects can't stop it halfway, and other requests for the sandbox wait
-for its lock.
+for its lock while it recreates the sandbox. When `fbkd` shuts down, it waits up
+to 60 seconds for the updates and upgrades that are still running, so it doesn't
+stop between removing a sandbox and creating it again.
 
 ## Connecting via SSH
 

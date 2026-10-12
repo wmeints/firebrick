@@ -10,13 +10,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
 use tonic::Code;
+use tonic::Streaming;
 use tonic::transport::Channel;
 
 use crate::api::{
-    GetSandboxRequest, GetSandboxResponse, ListSandboxesRequest, ListSandboxesResponse, Mount,
-    NetworkPolicy, PortForward, PortForwards, RemoveSandboxRequest, SandboxResources,
-    SandboxStarted, SandboxStatus, SandboxSummary, SandboxUpgraded, SandboxVolumes,
-    StartSandboxRequest, StopSandboxRequest, UpgradeSandboxRequest,
+    GetSandboxRequest, GetSandboxResponse, ImagePullProgress, ListSandboxesRequest,
+    ListSandboxesResponse, Mount, NetworkPolicy, PortForward, PortForwards, RemoveSandboxRequest,
+    SandboxResources, SandboxStarted, SandboxStatus, SandboxSummary, SandboxUpgraded,
+    SandboxVolumes, StartSandboxRequest, StopSandboxRequest, UpgradeSandboxRequest,
     sandbox_management_service_client::SandboxManagementServiceClient, start_sandbox_response,
     upgrade_sandbox_response,
 };
@@ -193,23 +194,17 @@ async fn send_start_request(
     request: StartSandboxRequest,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<SandboxStarted> {
-    let mut stream = client.start_sandbox(request).await?.into_inner();
-    let mut pull = PullProgressView::stderr();
-
-    while let Some(response) = stream.message().await? {
-        match response.message {
-            Some(start_sandbox_response::Message::PullProgress(progress)) => {
-                pull.update(&progress);
-            }
-            Some(start_sandbox_response::Message::Started(started)) => {
-                pull.finish();
-                return Ok(started);
-            }
-            None => {}
+    let stream = client.start_sandbox(request).await?.into_inner();
+    let started = follow_pull(stream, |response| match response.message {
+        Some(start_sandbox_response::Message::PullProgress(progress)) => {
+            Streamed::Progress(progress)
         }
-    }
+        Some(start_sandbox_response::Message::Started(started)) => Streamed::Done(started),
+        None => Streamed::Empty,
+    })
+    .await?;
 
-    bail!("the daemon ended the start without starting the sandbox")
+    started.context("the daemon ended the start without starting the sandbox")
 }
 
 /// Turns the ports of a spec into their API message.
@@ -538,8 +533,11 @@ pub async fn upgrade_sandbox(
     }
 
     let sandbox = client
-        .get_sandbox(GetSandboxRequest { name })
-        .await?
+        .get_sandbox(GetSandboxRequest { name: name.clone() })
+        .await
+        .with_context(|| {
+            format!("upgraded sandbox {name}, but failed to read its connect instructions")
+        })?
         .into_inner();
 
     if sandbox.status() == SandboxStatus::Running {
@@ -622,28 +620,65 @@ async fn send_upgrade_request(
     request: UpgradeSandboxRequest,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<SandboxUpgraded> {
-    let status_error = |status: tonic::Status| anyhow!("{}", status.message());
-    let mut stream = client
+    let stream = client
         .upgrade_sandbox(request)
         .await
-        .map_err(status_error)?
+        .map_err(daemon_error)?
         .into_inner();
+    let upgraded = follow_pull(stream, |response| match response.message {
+        Some(upgrade_sandbox_response::Message::PullProgress(progress)) => {
+            Streamed::Progress(progress)
+        }
+        Some(upgrade_sandbox_response::Message::Upgraded(upgraded)) => Streamed::Done(upgraded),
+        None => Streamed::Empty,
+    })
+    .await
+    .map_err(daemon_error)?;
+
+    upgraded.context("the daemon ended the upgrade without a result")
+}
+
+/// Turns a status the daemon sends on purpose for a request it refuses into an error with
+/// just its message, and keeps other statuses, such as a broken connection, whole.
+fn daemon_error(status: tonic::Status) -> anyhow::Error {
+    match status.code() {
+        Code::FailedPrecondition | Code::NotFound | Code::InvalidArgument => {
+            anyhow!("{}", status.message())
+        }
+        _ => status.into(),
+    }
+}
+
+/// What a message of a stream with image pull progress holds.
+enum Streamed<T> {
+    /// The progress of the image pull.
+    Progress(ImagePullProgress),
+    /// The result that ends the stream.
+    Done(T),
+    /// Nothing the client knows.
+    Empty,
+}
+
+/// Reads the stream, showing the progress of the image pull, until the message `classify`
+/// finds the result in. Returns the result, or `None` when the stream ends without one.
+async fn follow_pull<R, T>(
+    mut stream: Streaming<R>,
+    classify: impl Fn(R) -> Streamed<T>,
+) -> Result<Option<T>, tonic::Status> {
     let mut pull = PullProgressView::stderr();
 
-    while let Some(response) = stream.message().await.map_err(status_error)? {
-        match response.message {
-            Some(upgrade_sandbox_response::Message::PullProgress(progress)) => {
-                pull.update(&progress);
-            }
-            Some(upgrade_sandbox_response::Message::Upgraded(upgraded)) => {
+    while let Some(response) = stream.message().await? {
+        match classify(response) {
+            Streamed::Progress(progress) => pull.update(&progress),
+            Streamed::Done(result) => {
                 pull.finish();
-                return Ok(upgraded);
+                return Ok(Some(result));
             }
-            None => {}
+            Streamed::Empty => {}
         }
     }
 
-    bail!("the daemon ended the upgrade without a result")
+    Ok(None)
 }
 
 /// Returns the message for the result of the upgrade of the sandbox.
@@ -1245,14 +1280,40 @@ mod tests {
     async fn upgrade_returns_the_daemons_result() {
         let mut client = fake_daemon::serve("dev", "").await;
 
-        let upgraded = send_upgrade_request(upgrade("dev", "alpine:3.22"), &mut client)
+        let up_to_date = send_upgrade_request(upgrade("dev", "alpine:3.22"), &mut client)
             .await
             .unwrap();
+        let upgraded =
+            send_upgrade_request(upgrade("dev", fake_daemon::UPGRADED_IMAGE), &mut client)
+                .await
+                .unwrap();
 
         assert_eq!(
-            upgrade_message("dev", &upgraded),
-            "Sandbox dev is already up to date (alpine:3.22)"
+            up_to_date,
+            SandboxUpgraded {
+                upgraded: false,
+                old_image: "alpine:3.22".to_string(),
+                new_image: "alpine:3.22".to_string(),
+            }
         );
+        assert_eq!(
+            upgraded,
+            SandboxUpgraded {
+                upgraded: true,
+                old_image: fake_daemon::OLD_IMAGE.to_string(),
+                new_image: fake_daemon::UPGRADED_IMAGE.to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn upgrade_reads_the_upgraded_sandbox_afterwards() {
+        let dir = workspace_with_image("dev", fake_daemon::UPGRADED_IMAGE);
+        let mut client = serve_sandbox_of("dev", dir.path()).await;
+
+        let result = upgrade_sandbox(None, dir.path(), &mut client).await;
+
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[tokio::test]
@@ -1264,6 +1325,20 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.to_string(), "couldn't find specified sandbox");
+    }
+
+    #[test]
+    fn daemon_error_keeps_the_code_of_unexpected_statuses() {
+        let refused = daemon_error(tonic::Status::failed_precondition("sandbox dev is paused"));
+        let broken = daemon_error(tonic::Status::unknown("h2 protocol error"));
+
+        assert_eq!(refused.to_string(), "sandbox dev is paused");
+        assert_eq!(
+            broken
+                .downcast_ref::<tonic::Status>()
+                .map(tonic::Status::code),
+            Some(Code::Unknown)
+        );
     }
 
     #[test]

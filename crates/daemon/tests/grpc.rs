@@ -201,9 +201,17 @@ fn sandbox_name(test: &str) -> String {
     format!("{SANDBOX_PREFIX}{}-{test}", std::process::id())
 }
 
-/// Returns the id of the test process that created the sandbox, if the name has one.
+/// Start of the names of the probe sandboxes the daemon pulls images with for an upgrade,
+/// followed by the id of the process that created them.
+const PROBE_PREFIX: &str = "fbk-upgrade-";
+
+/// Returns the id of the test process that created the sandbox or upgrade probe, if the name
+/// has one.
 fn sandbox_pid(name: &str) -> Option<u32> {
-    let (pid, _) = name.strip_prefix(SANDBOX_PREFIX)?.split_once('-')?;
+    let rest = name
+        .strip_prefix(SANDBOX_PREFIX)
+        .or_else(|| name.strip_prefix(PROBE_PREFIX))?;
+    let (pid, _) = rest.split_once('-')?;
     pid.parse().ok()
 }
 
@@ -2522,6 +2530,20 @@ async fn upgrade(
     panic!("the upgrade stream ended without a result");
 }
 
+/// Succeeds when neither marker file of `write_markers` exists.
+const NO_MARKERS: &str = "test ! -e /var/tmp/marker && test ! -e /var/lib/docker/marker";
+
+/// Returns the names of the probe sandboxes an upgrade of the sandbox left behind.
+async fn leftover_probes(name: &str) -> Vec<String> {
+    Sandbox::list_with(|opt| opt.label(sandboxes::PROBE_LABEL, name))
+        .await
+        .expect("failed to list probe sandboxes")
+        .sandboxes
+        .iter()
+        .map(|sb| sb.name().to_string())
+        .collect()
+}
+
 /// Returns the version of alpine the sandbox runs.
 async fn alpine_release(
     client: &mut SandboxManagementServiceClient<Channel>,
@@ -2556,8 +2578,10 @@ struct AfterUpgrade {
     update: AfterUpdate,
     labels: Vec<(String, String)>,
     release: String,
-    markers: String,
+    /// The output and exit code of a check that the marker files are gone.
+    fresh_disks: (String, i32),
     secret: String,
+    probes: Vec<String>,
 }
 
 async fn after_upgrade(
@@ -2568,8 +2592,9 @@ async fn after_upgrade(
         update: after_update(client, name).await,
         labels: firebrick_labels(name).await,
         release: alpine_release(client, name).await,
-        markers: read_markers(client, name).await,
+        fresh_disks: run_command(client, name, "sh", &["-c", NO_MARKERS]).await,
         secret: print_env(client, name, "FIREBRICK_IT_TOKEN").await,
+        probes: leftover_probes(name).await,
     }
 }
 
@@ -2642,7 +2667,8 @@ fn assert_upgraded_and_kept(
     );
     assert!(after.release.starts_with("3.22"), "{:?}", after.release);
     // The root filesystem and the Docker disk start out fresh.
-    assert!(!after.markers.contains("kept"), "{:?}", after.markers);
+    assert_eq!(after.fresh_disks.1, 0, "{:?}", after.fresh_disks.0);
+    assert!(after.probes.is_empty(), "{:?}", after.probes);
     assert!(
         after.secret.contains("$MSB_FIREBRICK_IT_TOKEN"),
         "{:?}",
@@ -2694,6 +2720,7 @@ async fn upgrade_to_the_image_the_sandbox_has_leaves_it_alone() {
     let upgraded = upgrade(&mut client, name, UPGRADE_IMAGE).await;
 
     let boot_after = boot_id(&mut client, name).await;
+    let probes = leftover_probes(name).await;
 
     daemon.stop().await;
     remove_sandbox_and_snapshots(name).await;
@@ -2707,6 +2734,7 @@ async fn upgrade_to_the_image_the_sandbox_has_leaves_it_alone() {
         }
     );
     assert_eq!(boot_after, boot_before);
+    assert!(probes.is_empty(), "{probes:?}");
 }
 
 #[tokio::test]
@@ -2724,10 +2752,12 @@ async fn upgrade_to_an_unknown_image_leaves_the_sandbox_running() {
     let running = sandbox_status(&mut client, name).await;
     let boot_after = boot_id(&mut client, name).await;
     let release = alpine_release(&mut client, name).await;
+    let probes = leftover_probes(name).await;
 
     daemon.stop().await;
     remove_sandbox_and_snapshots(name).await;
 
+    assert!(probes.is_empty(), "{probes:?}");
     let status = status.unwrap_err();
     assert_eq!(status.code(), Code::NotFound);
     assert_eq!(

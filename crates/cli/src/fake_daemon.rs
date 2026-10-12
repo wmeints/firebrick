@@ -1,7 +1,8 @@
 //! A daemon for unit tests that knows one sandbox and refuses every request that would change
 //! a sandbox, so a test sees whether a command asks the daemon about the sandbox before it
-//! changes it. It answers an upgrade as up to date with the requested image, so a test sees
-//! which image a command asks for.
+//! changes it. It answers an upgrade to [`UPGRADED_IMAGE`] as done from [`OLD_IMAGE`], and an
+//! upgrade to any other image as up to date with it, so a test sees which image a command asks
+//! for.
 
 use std::pin::Pin;
 use tokio::net::TcpListener;
@@ -210,8 +211,12 @@ impl SandboxManagementService for FakeDaemon {
         }
 
         let upgraded = SandboxUpgraded {
-            upgraded: false,
-            old_image: request.image.clone(),
+            upgraded: request.image == UPGRADED_IMAGE,
+            old_image: if request.image == UPGRADED_IMAGE {
+                OLD_IMAGE.to_string()
+            } else {
+                request.image.clone()
+            },
             new_image: request.image,
         };
         let response = UpgradeSandboxResponse {
@@ -237,6 +242,12 @@ impl SandboxManagementService for FakeDaemon {
         }
     }
 }
+
+/// Image the fake daemon upgrades its sandbox to, from [`OLD_IMAGE`].
+pub(crate) const UPGRADED_IMAGE: &str = "example.org/sandbox:2";
+
+/// Image the fake daemon's sandbox runs before an upgrade to [`UPGRADED_IMAGE`].
+pub(crate) const OLD_IMAGE: &str = "example.org/sandbox:1";
 
 /// Host directory the fake daemon's sandbox mounts in tests about another workspace.
 pub(crate) const OTHER_WORKSPACE: &str = "/home/user/other-project";
