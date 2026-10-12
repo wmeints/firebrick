@@ -760,6 +760,16 @@ switch is already set, they print `the network is already disabled` or `the
 network is already enabled`, and for a sandbox that doesn't exist yet `updated
 .firebrick.yml; the change applies when my-project starts`.
 
+`fbk network presets apply <preset>...` is `fbk network allow` with the rules of
+the named presets, so it goes through the same steps below. The presets are
+compiled into `fbk`; `fbk network presets show` prints them without reading
+`.firebrick.yml` or contacting `fbkd`, and `all` selects every preset. A rule
+that two named presets share is added once, and once applied the rules are
+ordinary `allow` rules: the file doesn't record which presets were applied, so
+the user removes or narrows them like any other rule. clap rejects an unknown
+preset name before anything is written and lists the valid names (see
+[ADR 0040](decisions/0040-compile-the-network-presets-into-fbk.md)).
+
 ```mermaid
 sequenceDiagram
     actor Dev as Developer
