@@ -8,21 +8,23 @@ use crate::api::{
     AttachRequest, AttachResponse, AttachStart, ForwardPortRequest, ForwardPortResponse,
     GetSandboxRequest, GetSandboxResponse, ImagePullProgress, ListNetworkActivityRequest,
     ListNetworkActivityResponse, ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest,
-    ListSecretsResponse, Mount, NetworkActivity, NetworkActivityKind, NetworkPolicy, PortForward,
-    PortForwardFailure, PortForwards, RemovePortRequest, RemovePortResponse, RemoveSandboxRequest,
-    RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse, SandboxResources,
-    SandboxStarted, SandboxStatus, SandboxSummary, SecretSummary, SetSecretRequest,
-    SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
-    StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, UpdateNetworkRequest,
-    UpdateNetworkResponse, attach_request, ssh_tunnel_request, start_sandbox_response,
+    ListSecretsResponse, MiseInstallProgress, Mount, NetworkActivity, NetworkActivityKind,
+    NetworkPolicy, PortForward, PortForwardFailure, PortForwards, RemovePortRequest,
+    RemovePortResponse, RemoveSandboxRequest, RemoveSandboxResponse, RemoveSecretRequest,
+    RemoveSecretResponse, SandboxResources, SandboxStarted, SandboxStatus, SandboxSummary,
+    SecretSummary, SetSecretRequest, SetSecretResponse, SshTunnelRequest, SshTunnelResponse,
+    StartSandboxRequest, StartSandboxResponse, StopSandboxRequest, StopSandboxResponse,
+    UpdateNetworkRequest, UpdateNetworkResponse, attach_request, ssh_tunnel_request,
+    start_sandbox_response,
 };
 use crate::forward::{ForwardFailure, ForwardReport};
+use crate::mise::MiseUpdate;
 use crate::netlog::{ConnectionEntry, DnsEntry, Protocol, Record};
 use crate::network;
 use crate::open::{HostOpener, Opener};
 use crate::pull::PullUpdate;
 use crate::sandboxes::{
-    NewSecret, Resources, SandboxError, SandboxInfo, SandboxManager, StartSandbox,
+    NewSecret, Resources, SandboxError, SandboxInfo, SandboxManager, StartProgress, StartSandbox,
 };
 use crate::secrets::{Secret, SecretStore};
 use crate::session::{self, SessionCommand};
@@ -160,6 +162,24 @@ fn start_sandbox_response(message: start_sandbox_response::Message) -> StartSand
     }
 }
 
+/// Converts the progress of a start to a response of the start stream.
+fn start_progress_response(progress: StartProgress) -> StartSandboxResponse {
+    match progress {
+        StartProgress::Pull(update) => pull_progress_response(update),
+        StartProgress::Mise(update) => mise_progress_response(update),
+    }
+}
+
+/// Converts the progress of installing the mise tools to a response of the start stream.
+fn mise_progress_response(update: MiseUpdate) -> StartSandboxResponse {
+    start_sandbox_response(start_sandbox_response::Message::MiseProgress(
+        MiseInstallProgress {
+            line: update.line,
+            complete: update.complete,
+        },
+    ))
+}
+
 /// Converts the progress of an image pull to a response of the start stream.
 fn pull_progress_response(update: PullUpdate) -> StartSandboxResponse {
     start_sandbox_response(start_sandbox_response::Message::PullProgress(
@@ -291,8 +311,8 @@ impl SandboxManagementService for FirebrickServer {
     type SshTunnelStream = SshTunnelStream;
 
     /// Starts an existing sandbox or creates a new one when it doesn't exist, streaming the
-    /// progress of the image pull. The start runs in its own task, so it finishes even when
-    /// the client disconnects.
+    /// progress of the image pull and the mise install. The start runs in its own task, so it
+    /// finishes even when the client disconnects.
     async fn start_sandbox(
         &self,
         request: Request<StartSandboxRequest>,
@@ -312,7 +332,7 @@ impl SandboxManagementService for FirebrickServer {
                     || sandbox_resources(&request_data),
                     // Progress is best-effort: drop it when the client is slow or gone.
                     |progress| {
-                        let _ = progress_tx.try_send(Ok(pull_progress_response(progress)));
+                        let _ = progress_tx.try_send(Ok(start_progress_response(progress)));
                     },
                 )
                 .await;
@@ -899,6 +919,61 @@ mod tests {
 
             assert_eq!(status.code(), tonic::Code::InvalidArgument, "{ports:?}");
         }
+    }
+
+    #[test]
+    fn start_progress_response_keeps_the_mise_progress() {
+        let update = MiseUpdate {
+            line: "mise node@22.11.0 download".to_string(),
+            complete: false,
+        };
+
+        assert_eq!(
+            start_progress_response(StartProgress::Mise(update)),
+            StartSandboxResponse {
+                message: Some(start_sandbox_response::Message::MiseProgress(
+                    MiseInstallProgress {
+                        line: "mise node@22.11.0 download".to_string(),
+                        complete: false,
+                    }
+                )),
+            }
+        );
+    }
+
+    #[test]
+    fn start_progress_response_marks_the_last_mise_progress() {
+        let update = MiseUpdate {
+            line: String::new(),
+            complete: true,
+        };
+
+        assert_eq!(
+            start_progress_response(StartProgress::Mise(update)),
+            StartSandboxResponse {
+                message: Some(start_sandbox_response::Message::MiseProgress(
+                    MiseInstallProgress {
+                        line: String::new(),
+                        complete: true,
+                    }
+                )),
+            }
+        );
+    }
+
+    #[test]
+    fn start_progress_response_keeps_the_pull_progress() {
+        let update = PullUpdate {
+            image: "alpine:3.22".to_string(),
+            downloaded_bytes: 100,
+            total_bytes: None,
+            complete: false,
+        };
+
+        assert_eq!(
+            start_progress_response(StartProgress::Pull(update.clone())),
+            pull_progress_response(update)
+        );
     }
 
     #[test]

@@ -20,7 +20,7 @@ use crate::api::{
     start_sandbox_response,
 };
 use crate::approval::{Approver, Settings};
-use crate::progress::PullProgressView;
+use crate::progress::{MiseProgressView, PullProgressView};
 use crate::table;
 
 /// Name of the spec file `fbk` looks for in the working directory.
@@ -186,22 +186,28 @@ fn new_sandbox_settings(request: &StartSandboxRequest, network: NetworkSpec) -> 
     }
 }
 
-/// Sends the start request and shows the progress of the image pull while the daemon creates
-/// the sandbox. Returns the message that ends the stream.
+/// Sends the start request and shows the progress of the image pull and of installing the mise
+/// tools while the daemon starts the sandbox. Returns the message that ends the stream.
 async fn send_start_request(
     request: StartSandboxRequest,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<SandboxStarted> {
     let mut stream = client.start_sandbox(request).await?.into_inner();
     let mut pull = PullProgressView::stderr();
+    let mut mise = MiseProgressView::stderr();
 
     while let Some(response) = stream.message().await? {
         match response.message {
             Some(start_sandbox_response::Message::PullProgress(progress)) => {
                 pull.update(&progress);
             }
+            Some(start_sandbox_response::Message::MiseProgress(progress)) => {
+                pull.finish();
+                mise.update(&progress);
+            }
             Some(start_sandbox_response::Message::Started(started)) => {
                 pull.finish();
+                mise.finish();
                 return Ok(started);
             }
             None => {}

@@ -85,10 +85,18 @@ sequenceDiagram
                 D-->>CLI: ImagePullProgress (stream)
                 CLI-->>Dev: Progress bar on stderr
             end
+            opt Workspace has a mise config
+                D-->>CLI: MiseInstallProgress (stream)
+                CLI-->>Dev: Spinner on stderr
+            end
             D-->>CLI: SandboxStarted, ends the stream
         else Stopped or Crashed
             CLI->>D: StartSandbox(name, workspace)
             Note over D,MS: Starts the sandbox, see Starting a sandbox
+            opt Workspace has a mise config
+                D-->>CLI: MiseInstallProgress (stream)
+                CLI-->>Dev: Spinner on stderr
+            end
         else Starting
             CLI->>CLI: Wait 250ms and poll again
         else Stopping or Paused
@@ -350,6 +358,31 @@ later `StartSandbox` follows the label, because `fbk start <name>` and `fbk run`
 send `StartSandbox` without the spec. A sandbox without the label was created
 before the option existed and installs the tools, like a request without `mise`.
 
+`mise install` can take many minutes, so fbkd streams its progress on the start
+stream, next to the image pull progress. It runs mise with `exec_stream_with`
+and sends a `MiseInstallProgress` message when the first mise command starts,
+one with the latest non-empty line mise wrote to stdout or stderr, at most one
+every 100 ms, and a last one with `complete` set once `mise install` succeeded.
+A line that is throttled is sent once the 100 ms have passed, unless a newer
+line replaced it, so the latest line shows even when mise goes quiet. fbkd
+splits the output into lines itself, also on carriage returns, and removes
+control characters with `strip_control` before it sends a line, because mise's
+output is guest output. A workspace without a mise config, a sandbox with mise
+off and an image without mise send no `MiseInstallProgress`. fbkd enforces the
+timeouts with `tokio::time::timeout` and kills mise when they expire. fbk shows
+a spinner on stderr with the elapsed time and the latest line, truncated to the
+terminal width, and clears it when the install ends or fails:
+
+```sh
+$ fbk start
+Creating sandbox firebrick...
+⠹ Installing mise tools (1m12s): mise node@22.11.0 download node-v22.11.0-linux-x64.tar.gz
+```
+
+When stderr isn't a terminal, fbk prints `Installing mise tools...` when the
+install starts and `Installed mise tools` when it ends, without the lines in
+between.
+
 An SSH connection to a stopped sandbox starts it through the tunnel instead of
 `StartSandbox`, and doesn't install the mise tools, so the SSH handshake never
 waits for a long `mise install`. The tools from an earlier install stay on the
@@ -476,7 +509,16 @@ sequenceDiagram
 
     opt Sandbox was created or started, mise on, workspace has a mise config file
         D->>MS: mise trust <file> per config file at the workspace root
+        D-->>CLI: MiseInstallProgress, once the first mise command starts
         D->>MS: mise install --yes in /workspaces/project
+        loop While mise writes lines (at most every 100 ms)
+            MS-->>D: stdout and stderr chunks
+            D-->>CLI: MiseInstallProgress(line without control characters)
+            CLI-->>Dev: ⠹ Installing mise tools (1m12s): LINE
+        end
+        opt mise install succeeded
+            D-->>CLI: MiseInstallProgress(complete)
+        end
         alt mise exits non-zero or times out
             Note over D: Result: FAILED_PRECONDITION (mise install failed), sandbox keeps running
         else Image has no mise

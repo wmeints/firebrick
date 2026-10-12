@@ -11,8 +11,8 @@ use std::time::Duration;
 use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use firebrick_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, ForwardPortRequest,
-    ForwardPortResponse, GetSandboxRequest, GetSandboxResponse, ImagePullProgress,
-    ListNetworkActivityRequest, ListSandboxesRequest, Mount, NetworkActivity, NetworkActivityKind,
+    ForwardPortResponse, GetSandboxRequest, GetSandboxResponse, ListNetworkActivityRequest,
+    ListSandboxesRequest, MiseInstallProgress, Mount, NetworkActivity, NetworkActivityKind,
     NetworkPolicy, PortForward, PortForwards, RemovePortRequest, RemovePortResponse,
     RemoveSandboxRequest, RemoveSecretRequest, SandboxResources, SandboxStarted, SandboxStatus,
     SandboxVolumes, SetSecretRequest, StartSandboxRequest, StartSandboxResponse,
@@ -1076,24 +1076,24 @@ async fn start_running_sandbox(client: &mut SandboxManagementServiceClient<Chann
     start_and_wait(client, start_request(name)).await;
 }
 
-/// Sends the start request and reads its stream to the end. Returns the pull progress and the
-/// started sandbox, or the status the stream ended with. Fails when a message follows the
+/// Sends the start request and reads its stream to the end. Returns the progress messages and
+/// the started sandbox, or the status the stream ended with. Fails when a message follows the
 /// started sandbox.
 async fn start_stream(
     client: &mut SandboxManagementServiceClient<Channel>,
     request: StartSandboxRequest,
-) -> Result<(Vec<ImagePullProgress>, SandboxStarted), Status> {
+) -> Result<(Vec<start_sandbox_response::Message>, SandboxStarted), Status> {
     let mut stream = client.start_sandbox(request).await?.into_inner();
     let mut progress = vec![];
 
     while let Some(StartSandboxResponse { message }) = stream.message().await? {
         match message.expect("empty start response") {
-            start_sandbox_response::Message::PullProgress(message) => progress.push(message),
             start_sandbox_response::Message::Started(started) => {
                 let rest = stream.message().await?;
                 assert_eq!(rest, None, "the stream continued after the start");
                 return Ok((progress, started));
             }
+            message => progress.push(message),
         }
     }
 
@@ -1745,6 +1745,33 @@ async fn remove_sandbox_removes_its_scoped_secrets() {
     remove_sandbox(name).await;
 }
 
+/// Creates the sandbox, then stops and restarts it. Returns the mise progress messages that
+/// each start sent.
+async fn mise_progress_of_create_and_restart(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> [Vec<MiseInstallProgress>; 2] {
+    let created = start_stream(client, start_request(name))
+        .await
+        .expect("failed to create sandbox");
+    wait_for_status(client, name, SandboxStatus::Running).await;
+    stop_sandbox(client, name).await;
+    let restarted = start_stream(client, start_request(name))
+        .await
+        .expect("failed to restart sandbox");
+    wait_for_status(client, name, SandboxStatus::Running).await;
+
+    [created.0, restarted.0].map(|messages| {
+        messages
+            .into_iter()
+            .filter_map(|message| match message {
+                start_sandbox_response::Message::MiseProgress(progress) => Some(progress),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
 #[tokio::test]
 async fn start_sandbox_skips_mise_when_image_has_none() {
     let name: &str = &sandbox_name("mise-missing");
@@ -1759,8 +1786,25 @@ async fn start_sandbox_skips_mise_when_image_has_none() {
     )
     .unwrap();
 
-    start_running_sandbox(&mut client, name).await;
-    restart_sandbox(&mut client, name).await;
+    let progress = mise_progress_of_create_and_restart(&mut client, name).await;
+
+    assert_eq!(progress, [vec![], vec![]]);
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+}
+
+#[tokio::test]
+async fn start_sandbox_sends_no_mise_progress_without_a_mise_config() {
+    let name: &str = &sandbox_name("mise-no-config");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("mise-no-config").await;
+    let mut client = daemon.client().await;
+
+    let progress = mise_progress_of_create_and_restart(&mut client, name).await;
+
+    assert_eq!(progress, [vec![], vec![]]);
 
     daemon.stop().await;
     remove_sandbox(name).await;
