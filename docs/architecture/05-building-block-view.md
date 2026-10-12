@@ -638,16 +638,18 @@ images. It builds on `ubuntu:26.04` and adds:
   `sudo`. The image runs as this user and starts `/bin/bash` by default. The
   `ubuntu` user that the base image ships with UID 1000 is removed.
 - `/sbin/init` - a script that disables guest IPv6 with the settings in
-  `/etc/sysctl.d/99-disable-ipv6.conf`, removes Docker's runtime state from the
-  previous boot, which survives in `/run` because it sits on the persistent
-  root, starts `dockerd` in the background with its output in
-  `/var/log/dockerd.log`, starts the network logger in a loop that restarts it 5
-  seconds after it exits, with its output in `/var/log/firebrick-netlog.log`,
-  and then hands PID 1 to `tini`, which reaps zombie processes. It doesn't wait
-  for `dockerd` to be ready, and the sandbox boots even when `dockerd` fails.
-  `fbkd` runs it as PID 1 unless the spec sets `init: false`; then nothing
-  starts `dockerd`, and the agent can start it in the background with `sudo sh
-  -c 'dockerd >/var/log/dockerd.log 2>&1 &'`. See
+  `/etc/sysctl.d/99-disable-ipv6.conf`, remounts `/dev/pts` so new session
+  terminals belong to the `agent` group with mode `0660` (see
+  [ADR 0039](decisions/0039-give-guest-terminals-to-the-agent-group.md)),
+  removes Docker's runtime state from the previous boot, which survives in
+  `/run` because it sits on the persistent root, starts `dockerd` in the
+  background with its output in `/var/log/dockerd.log`, starts the network
+  logger in a loop that restarts it 5 seconds after it exits, with its output in
+  `/var/log/firebrick-netlog.log`, and then hands PID 1 to `tini`, which reaps
+  zombie processes. It doesn't wait for `dockerd` to be ready, and the sandbox
+  boots even when `dockerd` fails. `fbkd` runs it as PID 1 unless the spec sets
+  `init: false`; then nothing starts `dockerd`, and the agent can start it in
+  the background with `sudo sh -c 'dockerd >/var/log/dockerd.log 2>&1 &'`. See
   [ADR 0007](decisions/0007-disable-guest-ipv6-in-the-base-image.md).
 - `/usr/local/bin/firebrick-open` - a stand-in for a browser, symlinked as
   `/usr/local/bin/xdg-open` and set as `BROWSER`, so `gh auth login --web`,

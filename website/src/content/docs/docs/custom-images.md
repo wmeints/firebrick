@@ -24,8 +24,9 @@ repository, for `linux/amd64` and `linux/arm64`:
   passwordless `sudo` and membership of the `docker` group. The image's `ubuntu`
   user is removed.
 - An `/sbin/init` that disables guest IPv6 (see
-  [Networking](/docs/networking/#ipv6)), starts `dockerd` and the network logger
-  in the background and hands PID 1 to tini, which reaps zombie processes.
+  [Networking](/docs/networking/#ipv6)), gives session terminals to the `agent`
+  group, starts `dockerd` and the network logger in the background and hands PID
+  1 to tini, which reaps zombie processes.
 - `firebrick-netlog`, the network logger, which reports the domains and IP
   addresses the sandbox contacts to `fbkd`. It logs to
   `/var/log/firebrick-netlog.log`. See
@@ -106,6 +107,11 @@ based on `firebrick-base` must:
   install `python3` and `tcpdump`, and start the logger as root from
   `/sbin/init`, if Firebrick should record the network activity of the sandbox.
   Without it, the sandbox's network record stays empty.
+- Run `mount -o remount,gid=1000,mode=0660 /dev/pts` as root from `/sbin/init`,
+  if programs should be able to open their own terminal. Without it, session
+  terminals belong to `root` with mode `600`, so `stty -F $(tty)` fails with
+  `Permission denied`, and interactive consoles such as Quarkus dev mode fall
+  back to a basic mode in which Ctrl+C can leave child processes running.
 
 The workspace is mounted at `/workspaces/<leaf>`, and its files show up as owned
 by `agent`, whatever the UID of your user on the host is.
@@ -136,7 +142,8 @@ internet access the sandbox can't download from servers that have an IPv6
 address. Nothing starts `dockerd` either, and `docker` reports `Cannot connect
 to the Docker daemon`; start it in the background with `sudo sh -c
 'dockerd >/var/log/dockerd.log 2>&1 &'`. Nothing starts the network logger
-either, so Firebrick records no network activity for the sandbox.
+either, so Firebrick records no network activity for the sandbox, and session
+terminals stay owned by `root` with mode `600`.
 
 Sandboxes created by an older version of Firebrick run `ubuntu:26.04`, which has
 no `agent` user, so SSH can no longer log in to them. Recreate them with `fbk

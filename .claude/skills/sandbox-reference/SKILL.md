@@ -250,6 +250,17 @@ build on it when `Cargo.lock` has a newer version.
   `vm-tests` wait in the shell after such a command (`fetch` in
   `tests/grpc.rs`).
 
+- agentd opens a TTY exec's terminal as root and doesn't chown it to the session
+  user, and mounts devpts without `gid` or `mode`, so `/dev/pts/N` is
+  `root:root` `600`. A non-root session can't open its own terminal by path
+  (`stty -F $(tty)` fails with `Permission denied`). `firebrick-base`'s init
+  remounts devpts with `gid=1000,mode=0660` (ADR 0039).
+- agentd sends `ExecExited` for a TTY exec only after the terminal reads EOF,
+  that is, after every process holding the terminal has closed it
+  (`pty_reader_task` in `crates/agentd/lib/session.rs` upstream). A background
+  process that keeps the terminal open keeps the session, and `fbk run`, open
+  after the shell exits.
+
 **Host state**
 
 - State lives in `$MSB_HOME`: `bin/msb`, `db/msb.db`, `config.json`, `tls/` (the
