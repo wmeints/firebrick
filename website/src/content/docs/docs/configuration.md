@@ -179,9 +179,20 @@ installs them when `fbk start` or `fbk run` creates or starts the sandbox, but
 not when an SSH connection starts it. It trusts the `mise.toml`, `.mise.toml`,
 `mise/config.toml`, `.config/mise.toml` and `.tool-versions` files at the root
 of the project and runs `mise install`, so `fbk start` returns with the tools
-ready. When `mise install` fails, `fbk start` prints mise's error and the
-sandbox keeps running, so you can connect and fix the config. Images without
-mise skip this step. Set `mise: false` to turn it off.
+ready. While mise installs the tools, `fbk start` shows how long it has been
+running and the latest line mise wrote:
+
+```sh
+$ fbk start
+Creating sandbox firebrick...
+⠹ Installing mise tools (1m12s): mise node@22.11.0 download node-v22.11.0-linux-x64.tar.gz
+```
+
+The line disappears once the tools are installed. When the output isn't a
+terminal, for example in CI, `fbk start` prints `Installing mise tools...` and
+`Installed mise tools` instead. When `mise install` fails, `fbk start` prints
+mise's error and the sandbox keeps running, so you can connect and fix the
+config. Images without mise skip this step. Set `mise: false` to turn it off.
 
 ## Docker data disk
 

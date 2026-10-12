@@ -12,6 +12,26 @@ use tokio::time::Instant;
 /// Minimum time between two progress messages, except the last one of a pull.
 pub const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Limits progress messages to one every [`PROGRESS_INTERVAL`].
+#[derive(Debug, Default)]
+pub struct Throttle {
+    last_sent: Option<Instant>,
+}
+
+impl Throttle {
+    /// Whether a message may be sent at `now`: no message was sent less than
+    /// [`PROGRESS_INTERVAL`] before it.
+    pub fn ready(&self, now: Instant) -> bool {
+        self.last_sent
+            .is_none_or(|last| now.duration_since(last) >= PROGRESS_INTERVAL)
+    }
+
+    /// Records that a message was sent at `now`.
+    pub fn sent(&mut self, now: Instant) {
+        self.last_sent = Some(now);
+    }
+}
+
 /// How far the download of an image has got.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullUpdate {
@@ -32,7 +52,7 @@ pub struct PullTracker {
     total_bytes: Option<u64>,
     layer_bytes: HashMap<usize, u64>,
     downloading: bool,
-    last_sent: Option<Instant>,
+    throttle: Throttle,
 }
 
 impl PullTracker {
@@ -86,10 +106,7 @@ impl PullTracker {
     /// Returns a progress message unless the last one was sent less than
     /// [`PROGRESS_INTERVAL`] before `now`.
     fn throttled(&mut self, now: Instant) -> Option<PullUpdate> {
-        if self
-            .last_sent
-            .is_some_and(|last| now.duration_since(last) < PROGRESS_INTERVAL)
-        {
+        if !self.throttle.ready(now) {
             return None;
         }
 
@@ -102,7 +119,7 @@ impl PullTracker {
             return None;
         }
 
-        self.last_sent = Some(now);
+        self.throttle.sent(now);
         Some(self.message(false))
     }
 

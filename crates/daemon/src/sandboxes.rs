@@ -4,7 +4,7 @@
 //! projects.
 
 use crate::forward::{self, ForwardReport, Forwards, SshConnector};
-use crate::mise::{self, MiseError};
+use crate::mise::{self, MiseError, MiseUpdate};
 use crate::netlog::{NetLogs, Record};
 use crate::network;
 use crate::open::{Opener, Relays};
@@ -108,6 +108,15 @@ pub struct NewSecret {
     pub allowed_hosts: Vec<String>,
     /// Sandbox the secret belongs to, or `None` for a global secret.
     pub sandbox: Option<String>,
+}
+
+/// Progress of starting a sandbox, which the start stream reports to the client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartProgress {
+    /// The image of a new sandbox is being downloaded.
+    Pull(PullUpdate),
+    /// The mise tools of the workspace are being installed.
+    Mise(MiseUpdate),
 }
 
 /// The sandbox to start, and the workspace and image to create it from when it doesn't exist.
@@ -374,23 +383,24 @@ impl SandboxManager {
     /// settings, also when starting failed. Listens for the sandbox's network log first. Once
     /// the sandbox runs, stores the requested ports, opens its forwards and starts its URL
     /// relay, also when it was already running.
-    /// `resources` is only called when the sandbox is created, and `on_pull` only gets the
-    /// progress of an image that is downloaded for a new sandbox.
+    /// `resources` is only called when the sandbox is created. `on_progress` gets the progress
+    /// of an image that is downloaded for a new sandbox, and of installing the mise tools.
     pub async fn start(
         &self,
         request: StartSandbox<'_>,
         resources: impl FnOnce() -> Result<Resources, SandboxError>,
-        on_pull: impl FnMut(PullUpdate) + Send,
+        mut on_progress: impl FnMut(StartProgress) + Send,
     ) -> Result<ForwardReport, SandboxError> {
         let _guard = self.lock_sandbox(request.name).await;
         let result = match Sandbox::get(request.name).await {
             Ok(existing_sb) => {
                 self.listen_if_routed(&existing_sb).await;
-                start_existing_sandbox(&existing_sb, request).await
+                start_existing_sandbox(&existing_sb, request, mise_progress(&mut on_progress)).await
             }
             Err(_) => {
                 self.netlogs.listen(request.name).await;
-                self.create_and_install(request, resources, on_pull).await
+                self.create_and_install(request, resources, on_progress)
+                    .await
             }
         };
 
@@ -974,17 +984,21 @@ impl SandboxManager {
     }
 
     /// Creates a sandbox, then installs its workspace's mise tools when the request enables
-    /// mise.
+    /// mise, passing the progress of both to `on_progress`.
     async fn create_and_install(
         &self,
         request: StartSandbox<'_>,
         resources: impl FnOnce() -> Result<Resources, SandboxError>,
-        on_pull: impl FnMut(PullUpdate) + Send,
+        mut on_progress: impl FnMut(StartProgress) + Send,
     ) -> Result<(), SandboxError> {
-        let (sb, guest_path) = self.create_sandbox(request, resources, on_pull).await?;
+        let (sb, guest_path) = self
+            .create_sandbox(request, resources, |update| {
+                on_progress(StartProgress::Pull(update))
+            })
+            .await?;
 
         if request.mise {
-            install_mise_tools(&sb, &guest_path).await?;
+            install_mise_tools(&sb, &guest_path, mise_progress(&mut on_progress)).await?;
         }
 
         Ok(())
@@ -1350,11 +1364,12 @@ fn is_live(status: SandboxStatus) -> bool {
 }
 
 /// Starts an existing sandbox, first giving it a host name when it has none, then installs its
-/// workspace's mise tools when the sandbox has mise enabled. Does nothing when the sandbox is
-/// already running or starting.
+/// workspace's mise tools when the sandbox has mise enabled, passing their progress to
+/// `on_mise`. Does nothing when the sandbox is already running or starting.
 async fn start_existing_sandbox(
     sb: &SandboxHandle,
     request: StartSandbox<'_>,
+    on_mise: impl FnMut(MiseUpdate) + Send,
 ) -> Result<(), SandboxError> {
     // Sandboxes created before SSH support have no host name yet.
     if ssh::hostname_of(sb).is_none() {
@@ -1381,7 +1396,9 @@ async fn start_existing_sandbox(
     tracing::info!("started sandbox {}", request.name);
 
     match workspace_path_of(sb) {
-        Some(workspace) if mise_enabled(sb) => install_mise_tools(&started, &workspace).await,
+        Some(workspace) if mise_enabled(sb) => {
+            install_mise_tools(&started, &workspace, on_mise).await
+        }
         _ => Ok(()),
     }
 }
@@ -1450,10 +1467,22 @@ fn mise_enabled(sb: &SandboxHandle) -> bool {
         .is_ok_and(|config| mise::is_enabled(&config.spec.labels))
 }
 
-/// Trusts and installs the mise tools of the workspace. An image without mise only logs a
-/// warning, because mise is a convenience the developer of a custom image may leave out.
-async fn install_mise_tools(sb: &Sandbox, workspace: &str) -> Result<(), SandboxError> {
-    match mise::install_tools(sb, workspace).await {
+/// Passes the progress of installing the mise tools on to `on_progress` as start progress.
+fn mise_progress(
+    on_progress: &mut (impl FnMut(StartProgress) + Send),
+) -> impl FnMut(MiseUpdate) + Send + '_ {
+    move |update| on_progress(StartProgress::Mise(update))
+}
+
+/// Trusts and installs the mise tools of the workspace, passing the progress to `on_progress`.
+/// An image without mise only logs a warning, because mise is a convenience the developer of a
+/// custom image may leave out.
+async fn install_mise_tools(
+    sb: &Sandbox,
+    workspace: &str,
+    on_progress: impl FnMut(MiseUpdate) + Send,
+) -> Result<(), SandboxError> {
+    match mise::install_tools(sb, workspace, on_progress).await {
         Ok(()) => Ok(()),
         Err(err @ MiseError::Failed { .. }) => {
             tracing::warn!("{err}");

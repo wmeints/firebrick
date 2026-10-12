@@ -95,8 +95,8 @@ message SandboxVolumes {
   string docker = 1;
 }
 
-// A stream of image pull progress, ending with the started sandbox. Errors end the stream with
-// a status instead.
+// A stream of image pull and mise install progress, ending with the started sandbox. Errors end
+// the stream with a status instead.
 message StartSandboxResponse {
   reserved 1, 2;
   reserved "forwards", "failed_forwards";
@@ -107,7 +107,19 @@ message StartSandboxResponse {
     ImagePullProgress pull_progress = 3;
     // The last message of the stream, sent once the sandbox runs.
     SandboxStarted started = 4;
+    // Sent while fbkd installs the mise tools of the workspace. Never sent when the workspace
+    // has no mise config, mise is disabled or the image has no mise. Best-effort: fbkd may
+    // skip messages.
+    MiseInstallProgress mise_progress = 5;
   }
+}
+
+message MiseInstallProgress {
+  // The latest line mise wrote, without control characters. Empty on the first message, sent
+  // when the install starts, and on the last one.
+  string line = 1;
+  // Set on the last message, once mise installed the tools.
+  bool complete = 2;
 }
 
 message ImagePullProgress {
