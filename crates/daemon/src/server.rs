@@ -921,59 +921,62 @@ mod tests {
         }
     }
 
-    #[test]
-    fn start_progress_response_keeps_the_mise_progress() {
-        let update = MiseUpdate {
-            line: "mise node@22.11.0 download".to_string(),
-            complete: false,
-        };
-
-        assert_eq!(
-            start_progress_response(StartProgress::Mise(update)),
-            StartSandboxResponse {
-                message: Some(start_sandbox_response::Message::MiseProgress(
-                    MiseInstallProgress {
-                        line: "mise node@22.11.0 download".to_string(),
-                        complete: false,
-                    }
-                )),
-            }
-        );
+    fn mise_update(line: &str, complete: bool) -> StartProgress {
+        StartProgress::Mise(MiseUpdate {
+            line: line.to_string(),
+            complete,
+        })
     }
 
-    #[test]
-    fn start_progress_response_marks_the_last_mise_progress() {
-        let update = MiseUpdate {
-            line: String::new(),
-            complete: true,
-        };
-
-        assert_eq!(
-            start_progress_response(StartProgress::Mise(update)),
-            StartSandboxResponse {
-                message: Some(start_sandbox_response::Message::MiseProgress(
-                    MiseInstallProgress {
-                        line: String::new(),
-                        complete: true,
-                    }
-                )),
-            }
-        );
+    fn mise_response(line: &str, complete: bool) -> StartSandboxResponse {
+        start_sandbox_response(start_sandbox_response::Message::MiseProgress(
+            MiseInstallProgress {
+                line: line.to_string(),
+                complete,
+            },
+        ))
     }
 
-    #[test]
-    fn start_progress_response_keeps_the_pull_progress() {
-        let update = PullUpdate {
+    fn pull_update() -> StartProgress {
+        StartProgress::Pull(PullUpdate {
             image: "alpine:3.22".to_string(),
             downloaded_bytes: 100,
-            total_bytes: None,
+            total_bytes: Some(400),
             complete: false,
-        };
+        })
+    }
 
-        assert_eq!(
-            start_progress_response(StartProgress::Pull(update.clone())),
-            pull_progress_response(update)
-        );
+    fn pull_response() -> StartSandboxResponse {
+        StartSandboxResponse {
+            message: Some(start_sandbox_response::Message::PullProgress(
+                ImagePullProgress {
+                    image: "alpine:3.22".to_string(),
+                    downloaded_bytes: 100,
+                    total_bytes: Some(400),
+                    complete: false,
+                },
+            )),
+        }
+    }
+
+    #[test]
+    fn start_progress_response_converts_each_kind_of_progress() {
+        let cases = [
+            (
+                mise_update("mise node@22 download", false),
+                mise_response("mise node@22 download", false),
+            ),
+            (mise_update("", true), mise_response("", true)),
+            (pull_update(), pull_response()),
+        ];
+
+        for (progress, expected) in cases {
+            assert_eq!(
+                start_progress_response(progress.clone()),
+                expected,
+                "{progress:?}"
+            );
+        }
     }
 
     #[test]

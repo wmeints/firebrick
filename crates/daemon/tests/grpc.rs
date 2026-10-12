@@ -1745,31 +1745,123 @@ async fn remove_sandbox_removes_its_scoped_secrets() {
     remove_sandbox(name).await;
 }
 
-/// Creates the sandbox, then stops and restarts it. Returns the mise progress messages that
-/// each start sent.
+/// Creates the sandbox with `mise_toml` as the workspace's `mise.toml`, if any, then stops and
+/// restarts it. Returns the mise progress messages that each start sent.
 async fn mise_progress_of_create_and_restart(
     client: &mut SandboxManagementServiceClient<Channel>,
     name: &str,
+    mise_toml: Option<&str>,
 ) -> [Vec<MiseInstallProgress>; 2] {
-    let created = start_stream(client, start_request(name))
+    // `start_request` empties the workspace, so the config is written after it and the restart
+    // reuses the request.
+    let request = start_request(name);
+    if let Some(config) = mise_toml {
+        std::fs::write(workspace_path(name).join("mise.toml"), config).unwrap();
+    }
+    let created = start_stream(client, request.clone())
         .await
         .expect("failed to create sandbox");
     wait_for_status(client, name, SandboxStatus::Running).await;
     stop_sandbox(client, name).await;
-    let restarted = start_stream(client, start_request(name))
+    let restarted = start_stream(client, request)
         .await
         .expect("failed to restart sandbox");
     wait_for_status(client, name, SandboxStatus::Running).await;
 
-    [created.0, restarted.0].map(|messages| {
-        messages
-            .into_iter()
-            .filter_map(|message| match message {
-                start_sandbox_response::Message::MiseProgress(progress) => Some(progress),
-                _ => None,
-            })
-            .collect()
-    })
+    [created.0, restarted.0].map(mise_progress)
+}
+
+/// Returns the mise progress messages among the progress messages of a start.
+fn mise_progress(messages: Vec<start_sandbox_response::Message>) -> Vec<MiseInstallProgress> {
+    messages
+        .into_iter()
+        .filter_map(|message| match message {
+            start_sandbox_response::Message::MiseProgress(progress) => Some(progress),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Creates the sandbox and gives it a fake `mise` that runs `install` for `mise install` and
+/// does nothing for `mise trust`. Then adds a `mise.toml` to the workspace and restarts the
+/// sandbox, so the restart installs the tools. Returns the result of the restart.
+async fn restart_with_fake_mise(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    install: &str,
+) -> Result<(Vec<start_sandbox_response::Message>, SandboxStarted), Status> {
+    // `start_request` empties the workspace, so the restart reuses the request.
+    let request = start_request(name);
+    start_and_wait(client, request.clone()).await;
+    let workspace = workspace_path(name);
+    let script = format!("#!/bin/sh\n[ \"$1\" = install ] || exit 0\n{install}\n");
+    std::fs::write(workspace.join("fake-mise"), script).unwrap();
+    let copy = format!(
+        "cp {}/fake-mise /usr/local/bin/mise && chmod +x /usr/local/bin/mise",
+        guest_workspace(&workspace)
+    );
+    let (output, code) = run_command(client, name, "sh", &["-c", &copy]).await;
+    assert_eq!(code, 0, "failed to install the fake mise: {output}");
+
+    std::fs::write(workspace.join("mise.toml"), "[tools]\n").unwrap();
+    stop_sandbox(client, name).await;
+
+    start_stream(client, request).await
+}
+
+#[tokio::test]
+async fn start_sandbox_streams_mise_progress_without_control_characters() {
+    let name: &str = &sandbox_name("mise-progress");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("mise-progress").await;
+    let mut client = daemon.client().await;
+    let install = r"printf 'mise \033[1;32minstalling\033[0m node\n'; printf 'mise done\n' >&2";
+
+    let (messages, _) = restart_with_fake_mise(&mut client, name, install)
+        .await
+        .expect("failed to restart sandbox");
+    let progress = mise_progress(messages);
+
+    let ends =
+        [progress.first(), progress.last()].map(|p| p.map(|p| (p.line.as_str(), p.complete)));
+    assert_eq!(ends, [Some(("", false)), Some(("", true))], "{progress:?}");
+    assert!(
+        progress.iter().any(|p| p.line.contains("installing")),
+        "{progress:?}"
+    );
+    assert!(
+        progress
+            .iter()
+            .all(|p| !p.line.chars().any(char::is_control)),
+        "{progress:?}"
+    );
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+}
+
+#[tokio::test]
+async fn start_sandbox_reports_the_stderr_of_a_failed_mise_install() {
+    let name: &str = &sandbox_name("mise-failed");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("mise-failed").await;
+    let mut client = daemon.client().await;
+    let install = r"printf 'mise ERROR \033]52;c;ZXZpbA==\007no such version\n' >&2; exit 1";
+
+    let status = restart_with_fake_mise(&mut client, name, install)
+        .await
+        .expect_err("the failed install started the sandbox");
+
+    assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+    assert_eq!(
+        status.message(),
+        format!("mise install failed in sandbox {name}: mise ERROR ]52;c;ZXZpbA==no such version")
+    );
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
@@ -1780,13 +1872,9 @@ async fn start_sandbox_skips_mise_when_image_has_none() {
     let daemon = TestDaemon::start("mise-missing").await;
     let mut client = daemon.client().await;
     // The test image has no mise, so both the create and the restart only log a warning.
-    std::fs::write(
-        test_workspace(name).join("mise.toml"),
-        "[tools]\nnode = \"22\"\n",
-    )
-    .unwrap();
+    let config = "[tools]\nnode = \"22\"\n";
 
-    let progress = mise_progress_of_create_and_restart(&mut client, name).await;
+    let progress = mise_progress_of_create_and_restart(&mut client, name, Some(config)).await;
 
     assert_eq!(progress, [vec![], vec![]]);
 
@@ -1802,7 +1890,7 @@ async fn start_sandbox_sends_no_mise_progress_without_a_mise_config() {
     let daemon = TestDaemon::start("mise-no-config").await;
     let mut client = daemon.client().await;
 
-    let progress = mise_progress_of_create_and_restart(&mut client, name).await;
+    let progress = mise_progress_of_create_and_restart(&mut client, name, None).await;
 
     assert_eq!(progress, [vec![], vec![]]);
 

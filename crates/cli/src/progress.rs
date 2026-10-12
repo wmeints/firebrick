@@ -49,10 +49,17 @@ pub struct PullProgressView<W: Write = Stderr> {
 impl PullProgressView {
     /// Returns a view that shows a bar when stderr is a terminal, and lines otherwise.
     pub fn stderr() -> Self {
+        Self::new(Output::stderr())
+    }
+}
+
+impl Output<Stderr> {
+    /// Returns a bar on stderr when it is a terminal, and lines on stderr otherwise.
+    fn stderr() -> Self {
         if io::stderr().is_terminal() {
-            Self::new(Output::bar(ProgressDrawTarget::stderr()))
+            Self::bar(ProgressDrawTarget::stderr())
         } else {
-            Self::new(Output::Lines(io::stderr()))
+            Self::Lines(io::stderr())
         }
     }
 }
@@ -162,11 +169,7 @@ pub struct MiseProgressView<W: Write = Stderr> {
 impl MiseProgressView {
     /// Returns a view that shows a spinner when stderr is a terminal, and lines otherwise.
     pub fn stderr() -> Self {
-        if io::stderr().is_terminal() {
-            Self::new(Output::bar(ProgressDrawTarget::stderr()))
-        } else {
-            Self::new(Output::Lines(io::stderr()))
-        }
+        Self::new(Output::stderr())
     }
 }
 

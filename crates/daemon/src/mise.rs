@@ -2,7 +2,7 @@
 //! project's tools ready, and reports the lines mise writes meanwhile as throttled
 //! [`MiseUpdate`]s.
 
-use crate::pull::PROGRESS_INTERVAL;
+use crate::pull::{PROGRESS_INTERVAL, Throttle};
 use firebrick_utils::strip_control;
 use microsandbox::protocol::exec::{ExecFailed, ExecFailureKind};
 use microsandbox::sandbox::exec::{ExecEvent, ExecHandle};
@@ -307,7 +307,7 @@ struct Reporter<F> {
     on_progress: F,
     started: bool,
     pending: Option<String>,
-    last_sent: Option<Instant>,
+    throttle: Throttle,
 }
 
 impl<F: FnMut(MiseUpdate)> Reporter<F> {
@@ -316,7 +316,7 @@ impl<F: FnMut(MiseUpdate)> Reporter<F> {
             on_progress,
             started: false,
             pending: None,
-            last_sent: None,
+            throttle: Throttle::default(),
         }
     }
 
@@ -340,15 +340,12 @@ impl<F: FnMut(MiseUpdate)> Reporter<F> {
 
     /// Reports the line that is waiting, when [`PROGRESS_INTERVAL`] passed since the last one.
     fn flush(&mut self, now: Instant) {
-        if self
-            .last_sent
-            .is_some_and(|last| now.duration_since(last) < PROGRESS_INTERVAL)
-        {
+        if !self.throttle.ready(now) {
             return;
         }
 
         if let Some(line) = self.pending.take() {
-            self.last_sent = Some(now);
+            self.throttle.sent(now);
             self.send(line, false);
         }
     }
@@ -506,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn line_splitter_removes_terminal_escape_sequences() {
+    fn line_splitter_removes_control_characters() {
         let mut splitter = LineSplitter::default();
 
         assert_eq!(
@@ -594,6 +591,31 @@ mod tests {
 
         assert!(matches!(exited, ControlFlow::Break(Exit::Code(3))));
         assert!(matches!(lost, ControlFlow::Break(Exit::Lost)));
+    }
+
+    #[test]
+    fn output_breaks_when_mise_is_missing() {
+        let (mut reporter, updates) = recording();
+        let mut output = Output::default();
+        let failure = ExecFailed {
+            kind: ExecFailureKind::NotFound,
+            errno: Some(2),
+            errno_name: Some("ENOENT".to_string()),
+            message: "mise: not found".to_string(),
+            stage: Some("execvp".to_string()),
+        };
+
+        let failed = output.handle(
+            Some(ExecEvent::Failed(failure)),
+            &mut reporter,
+            Instant::now(),
+        );
+
+        assert!(matches!(
+            failed,
+            ControlFlow::Break(Exit::Failed(failure)) if failure.kind == ExecFailureKind::NotFound
+        ));
+        assert_eq!(*updates.borrow(), vec![]);
     }
 
     #[test]
