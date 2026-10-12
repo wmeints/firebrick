@@ -170,10 +170,6 @@ mod tests {
             .collect()
     }
 
-    fn preset(name: &str) -> &'static Preset {
-        PRESETS.iter().find(|preset| preset.name == name).unwrap()
-    }
-
     /// Returns every preset paired with each of its rules and the rules after it.
     fn preset_rules()
     -> impl Iterator<Item = (&'static Preset, &'static str, &'static [&'static str])> {
@@ -222,49 +218,48 @@ mod tests {
     }
 
     #[test]
-    fn names_lists_all_then_every_preset() {
+    fn names_lists_all_then_every_preset_in_order() {
         let names: Vec<&str> = names().collect();
 
-        assert_eq!(names[0], ALL);
-        assert_eq!(names.len(), PRESETS.len() + 1);
-        assert!(PRESETS.iter().all(|preset| names.contains(&preset.name)));
+        assert_eq!(
+            names,
+            [
+                "all", "claude", "copilot", "github", "codex", "node", "dotnet", "java", "rust",
+                "go", "python", "mise", "ruby",
+            ]
+        );
     }
 
     #[test]
-    fn rules_returns_the_rules_of_the_named_presets() {
-        // In the order of PRESETS, whatever the order of the names.
-        let expected: Vec<&str> = preset("claude")
-            .rules
-            .iter()
-            .chain(preset("rust").rules)
-            .copied()
+    fn rules_returns_the_rules_of_the_named_presets_once_in_preset_order() {
+        let rust = ["*.crates.io", "*.rust-lang.org", "*.rustup.rs", "docs.rs"];
+        let claude_and_rust: Vec<&str> = ["*.anthropic.com", "*.claude.ai", "*.claude.com"]
+            .into_iter()
+            .chain(rust)
             .collect();
 
-        assert_eq!(rule_strings(&["rust", "claude"]), expected);
+        for (names, expected) in [
+            (["rust", "claude"].as_slice(), claude_and_rust.as_slice()),
+            (&["rust", "rust"], &rust),
+        ] {
+            assert_eq!(rule_strings(names), expected, "{names:?}");
+        }
     }
 
     #[test]
-    fn all_selects_the_rules_of_every_preset() {
-        let expected: Vec<&str> = preset_rules()
-            .filter(|(preset, rule, _)| {
-                // Skip a rule an earlier preset already has.
-                PRESETS
-                    .iter()
-                    .take_while(|earlier| earlier.name != preset.name)
-                    .all(|earlier| !earlier.rules.contains(rule))
-            })
-            .map(|(_, rule, _)| rule)
-            .collect();
+    fn all_selects_every_rule_of_every_preset_once() {
+        let all = rule_strings(&["all"]);
 
-        assert_eq!(rule_strings(&["all"]), expected);
-        assert_eq!(rule_strings(&["rust", "all"]), expected);
+        for (preset, rule, _) in preset_rules() {
+            assert!(all.iter().any(|r| r == rule), "{rule} of {}", preset.name);
+        }
+        for (index, rule) in all.iter().enumerate() {
+            assert!(!all[index + 1..].contains(rule), "{rule} twice");
+        }
+        assert_eq!(rule_strings(&["rust", "all"]), all);
     }
 
-    #[test]
-    fn a_preset_named_twice_adds_its_rules_once() {
-        assert_eq!(rule_strings(&["rust", "rust"]), rule_strings(&["rust"]));
-    }
-
+    // No two real presets share a rule, so this calls the private `select` with presets that do.
     #[test]
     fn a_rule_shared_by_two_presets_is_selected_once() {
         let presets = [

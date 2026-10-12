@@ -120,6 +120,7 @@ project needs instead of working out every domain yourself:
 
 ```sh
 $ fbk network policy enable
+updated the network rules of my-project
 $ fbk network presets apply claude github rust node
 updated the network rules of my-project
 ```

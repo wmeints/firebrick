@@ -241,15 +241,7 @@ async fn main() -> Result<()> {
         Commands::Init { force } => init_spec(&working_dir, force),
         Commands::Secret(SecretCommands::Set(args)) => set_secret(args, &working_dir).await,
         // Changes the spec file first and only needs the daemon to apply it.
-        // Showing the presets reads neither the spec nor the daemon.
-        Commands::Network(NetworkCommands::Presets(PresetCommands::Show)) => {
-            print!("{}", presets::show()?);
-            Ok(())
-        }
-        Commands::Network(command) => match network_change(command)? {
-            Some((change, yes)) => network::update(change, &working_dir, yes).await,
-            None => network::log(&working_dir, &mut client::connect().await?).await,
-        },
+        Commands::Network(command) => run_network_command(command, &working_dir).await,
         command => run_with_daemon(command, working_dir).await,
     }
 }
@@ -354,10 +346,33 @@ async fn ssh_proxy(
     std::process::exit(0);
 }
 
-/// Returns the change to the network section of the spec, validating the rules, with whether
-/// `--yes` approves it, or `None` for `log` and `presets show`, which change nothing.
-fn network_change(command: NetworkCommands) -> Result<Option<(NetworkChange, bool)>> {
-    Ok(Some(match command {
+/// What an `fbk network` subcommand does.
+#[derive(Debug, PartialEq, Eq)]
+enum NetworkAction {
+    /// Change the network section of the spec, approved without asking when the flag is set.
+    Change(NetworkChange, bool),
+    /// Show the sandbox's network activity.
+    Log,
+    /// Show the presets, which reads neither the spec nor the daemon.
+    ShowPresets,
+}
+
+/// Runs an `fbk network` subcommand in the working directory.
+async fn run_network_command(command: NetworkCommands, working_dir: &Path) -> Result<()> {
+    match network_action(command)? {
+        NetworkAction::Change(change, yes) => network::update(change, working_dir, yes).await,
+        NetworkAction::Log => network::log(working_dir, &mut client::connect().await?).await,
+        NetworkAction::ShowPresets => {
+            print!("{}", presets::show()?);
+            Ok(())
+        }
+    }
+}
+
+/// Returns what the subcommand does: for a change to the network section of the spec, the
+/// change with its rules validated and whether `--yes` approves it.
+fn network_action(command: NetworkCommands) -> Result<NetworkAction> {
+    let (change, yes) = match command {
         NetworkCommands::Allow { rules, approve } => (NetworkChange::allow(&rules)?, approve.yes),
         NetworkCommands::Presets(PresetCommands::Apply { presets, approve }) => {
             (NetworkChange::Allow(presets::rules(&presets)?), approve.yes)
@@ -371,8 +386,11 @@ fn network_change(command: NetworkCommands) -> Result<Option<(NetworkChange, boo
         }
         NetworkCommands::Enable(approve) => (NetworkChange::Enable(true), approve.yes),
         NetworkCommands::Disable(approve) => (NetworkChange::Enable(false), approve.yes),
-        NetworkCommands::Log | NetworkCommands::Presets(PresetCommands::Show) => return Ok(None),
-    }))
+        NetworkCommands::Log => return Ok(NetworkAction::Log),
+        NetworkCommands::Presets(PresetCommands::Show) => return Ok(NetworkAction::ShowPresets),
+    };
+
+    Ok(NetworkAction::Change(change, yes))
 }
 
 /// Returns the secret value from the arguments, or from stdin with `--from-stdin`.
@@ -659,11 +677,10 @@ mod tests {
 
     /// Returns whether `--yes` approves the change of the parsed `fbk network` arguments.
     fn network_yes(args: &[&str]) -> bool {
-        let (_, yes) = network_change(parse_network(args).unwrap())
-            .unwrap()
-            .expect("a change");
-
-        yes
+        match network_action(parse_network(args).unwrap()).unwrap() {
+            NetworkAction::Change(_, yes) => yes,
+            action => panic!("expected a change, got {action:?}"),
+        }
     }
 
     #[test]
@@ -734,33 +751,34 @@ mod tests {
     }
 
     #[test]
-    fn network_change_maps_the_commands() {
-        let change = |args: &[&str]| network_change(parse_network(args).unwrap()).unwrap();
+    fn network_action_maps_the_commands() {
+        let change = |args: &[&str]| network_action(parse_network(args).unwrap()).unwrap();
 
         assert_eq!(
             change(&["allow", "example.org"]),
-            Some((
+            NetworkAction::Change(
                 NetworkChange::allow(&["example.org".to_string()]).unwrap(),
                 false
-            ))
+            )
         );
         assert_eq!(
             change(&["policy", "enable"]),
-            Some((NetworkChange::Enforce(true), false))
+            NetworkAction::Change(NetworkChange::Enforce(true), false)
         );
         assert_eq!(
             change(&["policy", "disable"]),
-            Some((NetworkChange::Enforce(false), false))
+            NetworkAction::Change(NetworkChange::Enforce(false), false)
         );
         assert_eq!(
             change(&["enable"]),
-            Some((NetworkChange::Enable(true), false))
+            NetworkAction::Change(NetworkChange::Enable(true), false)
         );
         assert_eq!(
             change(&["disable"]),
-            Some((NetworkChange::Enable(false), false))
+            NetworkAction::Change(NetworkChange::Enable(false), false)
         );
-        assert_eq!(change(&["log"]), None);
+        assert_eq!(change(&["log"]), NetworkAction::Log);
+        assert_eq!(change(&["presets", "show"]), NetworkAction::ShowPresets);
     }
 
     #[test]
@@ -779,10 +797,6 @@ mod tests {
             NetworkCommands::Presets(PresetCommands::Show)
         ));
         assert!(parse_network(&["presets", "show", "rust"]).is_err());
-        assert_eq!(
-            network_change(parse_network(&["presets", "show"]).unwrap()).unwrap(),
-            None
-        );
     }
 
     #[test]
@@ -844,35 +858,61 @@ mod tests {
         }
     }
 
+    /// Returns the action of `fbk network presets apply` with the arguments.
+    fn presets_apply_action(args: &[&str]) -> NetworkAction {
+        let args: Vec<&str> = ["presets", "apply"].iter().chain(args).copied().collect();
+
+        network_action(parse_network(&args).unwrap()).unwrap()
+    }
+
+    /// Returns the change that allows the rules.
+    fn allow(rules: impl IntoIterator<Item = &'static str>) -> NetworkChange {
+        let rules: Vec<String> = rules.into_iter().map(String::from).collect();
+
+        NetworkChange::allow(&rules).unwrap()
+    }
+
     #[test]
-    fn network_change_maps_presets_apply_to_allow_the_preset_rules() {
-        let change = |args: &[&str]| network_change(parse_network(args).unwrap()).unwrap();
+    fn network_action_maps_presets_apply_to_allow_the_preset_rules() {
+        let rules = [
+            "*.github.com",
+            "*.githubusercontent.com",
+            "*.githubassets.com",
+            "ghcr.io",
+            "*.crates.io",
+            "*.rust-lang.org",
+            "*.rustup.rs",
+            "docs.rs",
+        ];
 
         assert_eq!(
-            change(&["presets", "apply", "rust", "github", "-y"]),
-            Some((
-                NetworkChange::Allow(presets::rules(&["rust", "github"]).unwrap()),
-                true
-            ))
-        );
-        assert_eq!(
-            change(&["presets", "apply", "all"]),
-            Some((
-                NetworkChange::Allow(presets::rules(&["all"]).unwrap()),
-                false
-            ))
+            presets_apply_action(&["rust", "github", "-y"]),
+            NetworkAction::Change(allow(rules), true)
         );
     }
 
     #[test]
-    fn network_change_rejects_invalid_rules() {
+    fn network_action_maps_presets_apply_all_to_allow_every_preset_rule() {
+        let rules = presets::PRESETS
+            .iter()
+            .flat_map(|preset| preset.rules)
+            .copied();
+
+        assert_eq!(
+            presets_apply_action(&["all"]),
+            NetworkAction::Change(allow(rules), false)
+        );
+    }
+
+    #[test]
+    fn network_action_rejects_invalid_rules() {
         let deny = NetworkCommands::Deny {
             rules: vec!["https://example.org".to_string()],
             approve: ApproveArgs::default(),
         };
 
         assert!(
-            network_change(deny)
+            network_action(deny)
                 .unwrap_err()
                 .to_string()
                 .starts_with("invalid network rule \"https://example.org\"")
