@@ -182,4 +182,4 @@ Dependabot proposes new SHAs weekly, seven days after a release at the earliest.
 installs the tools with `--locked`, so each download must match the checksum in
 `mise.lock`; run `mise lock` after changing a version in `mise.toml`. The
 release jobs install only `rust` and `protoc`. See
-[ADR 0042](decisions/0042-pin-github-actions-and-ci-tools-to-checksums.md).
+[ADR 0043](decisions/0043-pin-github-actions-and-ci-tools-to-checksums.md).

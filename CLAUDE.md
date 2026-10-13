@@ -178,7 +178,7 @@ These checks enforce the rules above, so don't try to bypass them:
   after changing a version in `mise.toml`.
 - Workflows pin every action to a full commit SHA with the version in a comment
   (`actions/checkout@<sha> # v7.0.1`), never a tag; Dependabot updates the pins
-  (ADR 0042).
+  (ADR 0043).
 - `.cargo/config.toml` sets `MSB_HOME=/tmp/firebrick-msb` for every cargo
   command, so builds and the `vm-tests` use their own microsandbox runtime,
   database and images instead of `~/.microsandbox`. A `msb` that migrated the

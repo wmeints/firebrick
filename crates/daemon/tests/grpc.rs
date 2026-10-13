@@ -3510,7 +3510,7 @@ async fn forward_port_fails_for_a_stored_port_that_is_still_busy() {
 /// Returns the host socket fbkd listens on for the sandbox's network log.
 fn netlog_socket(name: &str) -> PathBuf {
     firebrick_utils::netlog_socket_dir()
-        .expect("XDG_RUNTIME_DIR must be an absolute path for the network log tests")
+        .expect("set XDG_RUNTIME_DIR to an absolute path for the network log tests on Linux")
         .join(format!("{name}.sock"))
 }
 

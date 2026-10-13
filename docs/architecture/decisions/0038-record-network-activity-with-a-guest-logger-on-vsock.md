@@ -55,7 +55,9 @@ stops the sandbox from booting.
   sandbox an event comes from without trusting the guest to say so. When the
   path is too long for a unix socket, or `XDG_RUNTIME_DIR` isn't set, the
   sandbox gets no route. The sockets never fall back to the shared temp
-  directory, where another user could take them over.
+  directory, where another user could take them over. On macOS, which has no
+  `XDG_RUNTIME_DIR`, they're in a checked `/private/tmp/fbk-<uid>` instead
+  ([ADR 0042](0042-put-the-network-log-sockets-in-a-checked-tmp-directory-on-macos.md)).
 - **Treat events as untrusted input.** The agent has root through `sudo`, so it
   can stop the logger or send false events. `fbkd` checks each line, ignores the
   guest's timestamp, accepts at most 4 connections per sandbox, and bounds the

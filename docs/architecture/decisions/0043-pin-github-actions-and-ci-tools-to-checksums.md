@@ -1,4 +1,4 @@
-# 42. Pin GitHub Actions and CI tools to checksums
+# 43. Pin GitHub Actions and CI tools to checksums
 
 ## Status
 

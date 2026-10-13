@@ -486,32 +486,39 @@ C4Component
   and
   [Recording network activity](06-runtime-view.md#recording-network-activity)).
   `NetLogs::add_route` adds a stream route from guest vsock port `52000` to
-  `$XDG_RUNTIME_DIR/firebrick/netlog/<sandbox>.sock`. Without an absolute
-  `XDG_RUNTIME_DIR` there are no sockets: unlike the daemon socket, they never
-  fall back to the shared temp directory, where another user could create the
-  directory first and take them over. `fbkd` logs that once when it starts. When
-  the path doesn't fit in a unix socket address (108 bytes), it adds no route
-  either and logs a warning, because microsandbox would refuse to boot the
-  sandbox. `NetLogs::listen` binds the socket unless `fbkd` already listens on
-  it, replacing a listener that stopped, for example because it panicked: it
-  creates the directory with mode `0700`, leaves a socket that another process
-  answers on alone, and removes a stale socket file first. A socket that can't
-  be bound is logged as an error and the sandbox starts without a record. File
-  reads and writes run off the async runtime. Each line the guest writes is
-  untrusted: a line longer than 4 KiB, invalid JSON, an unknown `kind`, a name
-  that isn't a valid DNS name, an invalid IPv4 address or port 0 is dropped, and
-  the connection stays open. A sandbox gets at most 4 connections at a time;
-  further ones are closed. Warnings about the guest's input and about failures
-  on the host, such as a record that can't be written, are each logged at most
-  once a minute per sandbox, so the guest can't hide host failures. A panicking
-  connection or listener is logged as an error. The valid events are aggregated
-  per destination: a DNS entry per name (lowercase, without a trailing dot) with
-  its resolved IPv4 addresses, and a connection entry per address and protocol
-  with its ports, each with a count and the first and last time `fbkd` received
-  it (the guest's own timestamp is ignored). A record holds at most 10,000
-  destinations, after which new ones are dropped with one warning while known
-  ones keep updating, and at most 64 addresses or ports per entry. The record is
-  written to `$XDG_STATE_HOME/firebrick/network/<sandbox>.json` (falling back to
+  `$XDG_RUNTIME_DIR/firebrick/netlog/<sandbox>.sock`, or on macOS without
+  `XDG_RUNTIME_DIR` to `/private/tmp/fbk-<uid>/<sandbox>.sock`
+  ([ADR 0042](decisions/0042-put-the-network-log-sockets-in-a-checked-tmp-directory-on-macos.md)).
+  On Linux without an absolute `XDG_RUNTIME_DIR` there are no sockets: unlike
+  the daemon socket, they never fall back to the shared temp directory, where
+  another user could create the directory first and take them over. `fbkd` logs
+  that once when it starts. `NetLogs::from_env` also creates the directory with
+  mode `0700` through `firebrick_utils::create_private_dir`, which refuses a
+  symlink and a directory owned by another user or with group or other access; a
+  refused directory gives no sandbox a route, with a warning naming it. When the
+  path doesn't fit in a unix socket address (104 bytes on macOS, 108 on Linux),
+  it adds no route either and logs a warning, because microsandbox would refuse
+  to boot the sandbox. `NetLogs::listen` binds the socket unless `fbkd` already
+  listens on it, replacing a listener that stopped, for example because it
+  panicked: it checks the directory again the same way, leaves a socket that
+  another process answers on alone, and removes a stale socket file first. A
+  socket that can't be bound is logged as an error and the sandbox starts
+  without a record. File reads and writes run off the async runtime. Each line
+  the guest writes is untrusted: a line longer than 4 KiB, invalid JSON, an
+  unknown `kind`, a name that isn't a valid DNS name, an invalid IPv4 address or
+  port 0 is dropped, and the connection stays open. A sandbox gets at most 4
+  connections at a time; further ones are closed. Warnings about the guest's
+  input and about failures on the host, such as a record that can't be written,
+  are each logged at most once a minute per sandbox, so the guest can't hide
+  host failures. A panicking connection or listener is logged as an error. The
+  valid events are aggregated per destination: a DNS entry per name (lowercase,
+  without a trailing dot) with its resolved IPv4 addresses, and a connection
+  entry per address and protocol with its ports, each with a count and the first
+  and last time `fbkd` received it (the guest's own timestamp is ignored). A
+  record holds at most 10,000 destinations, after which new ones are dropped
+  with one warning while known ones keep updating, and at most 64 addresses or
+  ports per entry. The record is written to
+  `$XDG_STATE_HOME/firebrick/network/<sandbox>.json` (falling back to
   `~/.local/state/firebrick/network`) with `write_private`, at most once a
   second while it changes, and a last time when `fbkd` shuts down
   (`NetLogs::close`). A corrupt record file is logged as a warning and replaced
