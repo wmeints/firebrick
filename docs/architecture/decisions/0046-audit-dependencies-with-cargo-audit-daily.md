@@ -44,8 +44,9 @@ check that only runs when `Cargo.lock` changes misses most of them.
 - A dependency with a vulnerability can merge, and the next daily run fails.
 - The first run reported RUSTSEC-2023-0071 (the Marvin Attack timing side
   channel in `rsa`), which has no fixed version. russh enables its `rsa` feature
-  by default and microsandbox depends on russh with the default features, so the
-  crate can't be removed. Firebrick and microsandbox only create and use Ed25519
-  keys, so `.cargo/audit.toml` ignores it.
+  by default, and firebrick-daemon and microsandbox both depend on russh with
+  its default features, so the crate can't be removed. Firebrick and
+  microsandbox only create and use Ed25519 keys, so `.cargo/audit.toml` ignores
+  it.
 - The cargo-audit release has no native macOS arm64 build; mise installs the
   x86_64 binary there, which runs under Rosetta.

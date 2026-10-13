@@ -167,12 +167,15 @@ workflow by hand. See
 | `**/*.md`, `dprint.json`, `mise.*`, `markdown.yaml`                                      | `markdown.yaml`   | `dprint check`                                       |
 | `.github/workflows/**`, `mise.*`                                                         | `actionlint.yaml` | `actionlint`, with `shellcheck` on the `run` steps   |
 | `Dockerfile`, `image.yaml`                                                               | `image.yaml`      | Builds the `firebrick-base` image                    |
+| `audit.yaml`, and daily                                                                  | `audit.yaml`      | `cargo audit` against `Cargo.lock`                   |
 
-`mise.toml` pins the Rust toolchain, Node, pnpm, dprint, actionlint and
-shellcheck, and `mise.lock` records their checksums, so `mise.*` stands for both
-files and runs every workflow except `image.yaml`. A pull request that changes
-only the website or the docs runs no `CI` jobs. `main` has no required status
-checks, so a workflow that its filter skipped doesn't block a merge.
+`mise.toml` pins the Rust toolchain, Node, pnpm, dprint, actionlint, shellcheck
+and cargo-audit, and `mise.lock` records their checksums, so `mise.*` stands for
+both files and runs every workflow except `image.yaml` and `audit.yaml`. The
+audit runs daily anyway, so a change to cargo-audit's pin surfaces the next day.
+A pull request that changes only the website or the docs runs no `CI` jobs.
+`main` has no required status checks, so a workflow that its filter skipped
+doesn't block a merge.
 
 The `check` job of `ci.yaml` runs clippy and then the unit tests; there's no
 separate build step, because both compile every target. The `integration` job
