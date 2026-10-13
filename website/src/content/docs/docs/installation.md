@@ -225,8 +225,8 @@ Make sure that directory is on your `PATH`, as in step 2:
 git clone https://github.com/wmeints/firebrick.git
 cd firebrick
 mise install
-cargo install-cli     # cargo install --locked --path crates/cli
-cargo install-daemon  # cargo install --locked --path crates/daemon
+cargo install --locked --path crates/cli
+cargo install --locked --path crates/daemon
 ```
 
 A build from source that isn't a release defaults to a `firebrick-base` image

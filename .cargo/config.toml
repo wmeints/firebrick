@@ -1,16 +1,3 @@
-# Shortcuts for the common development commands. Run them as `cargo <alias>`.
-[alias]
-# Lint every crate, including the `vm-tests` integration tests.
-lint = "clippy --workspace --all-targets --all-features -- -D warnings"
-# Run the unit tests.
-unit-tests = "test --workspace"
-# Run the integration tests that boot real microsandbox VMs.
-integration-tests = "test -p firebrick-daemon --features vm-tests"
-# Install the `fbk` CLI into `~/.cargo/bin`.
-install-cli = "install --locked --path crates/cli"
-# Install the `fbkd` daemon into `~/.cargo/bin`.
-install-daemon = "install --locked --path crates/daemon"
-
 [env]
 # Keep microsandbox's runtime, database and images for builds and tests out of
 # the user's `~/.microsandbox`, so a newer `msb` migrating that database can't

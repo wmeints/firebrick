@@ -48,13 +48,17 @@ mise install
 
 ### Commands
 
-| Command                   | Description                                   |
-| ------------------------- | --------------------------------------------- |
-| `cargo build`             | Build the `fbk` and `fbkd` binaries.          |
-| `cargo unit-tests`        | Run the unit tests.                           |
-| `cargo integration-tests` | Run the integration tests that boot real VMs. |
-| `cargo lint`              | Run the linter.                               |
-| `cargo fmt --all`         | Format the code.                              |
+| Command                      | Description                                                                          |
+| ---------------------------- | ------------------------------------------------------------------------------------ |
+| `cargo build`                | Build the `fbk` and `fbkd` binaries.                                                 |
+| `mise run unit-tests`        | Run the unit tests.                                                                  |
+| `mise run integration-tests` | Run the integration tests that boot real VMs.                                        |
+| `mise run lint`              | Run the linter.                                                                      |
+| `mise run registry`          | Start the local image registry on `127.0.0.1:5000`.                                  |
+| `mise run install-dev`       | Install `fbk` and `fbkd`, and push the `firebrick-base` image to the local registry. |
+| `cargo fmt --all`            | Format the code.                                                                     |
+
+`mise tasks` lists the tasks, which are defined in `mise.toml`.
 
 Cargo commands in this repository use `/tmp/firebrick-msb` as the microsandbox
 home (`MSB_HOME`, set in `.cargo/config.toml`), so the integration tests don't
@@ -67,14 +71,16 @@ by runs that were killed.
 
 The default sandbox image is the `firebrick-base` image of the same release, so
 it doesn't exist for a version that hasn't been released yet. To run a
-development build, push an image built from the [`Dockerfile`](Dockerfile) to a
-local registry and set `image` in `.firebrick.yml` to it:
+development build, install the binaries and push an image built from the
+[`Dockerfile`](Dockerfile) to a local registry, then set `image` in
+`.firebrick.yml` to `localhost:5000/firebrick-base:dev`:
 
 ```sh
-docker run -d -p 127.0.0.1:5000:5000 --name registry registry:2
-docker build -t localhost:5000/firebrick-base:dev .
-docker push localhost:5000/firebrick-base:dev
+mise run install-dev
 ```
+
+The task starts a `registry` container on `127.0.0.1:5000` first when it isn't
+running, and needs Docker.
 
 The local registry speaks plain HTTP, so allow it in `config.json` in the
 microsandbox home (`$MSB_HOME`, or `~/.local/state/firebrick/msb`) before `fbkd`
