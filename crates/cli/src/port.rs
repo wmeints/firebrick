@@ -11,7 +11,7 @@ use tonic::transport::Channel;
 
 use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use crate::api::{ForwardPortRequest, PortForward, RemovePortRequest};
-use crate::manage::{self, SPEC_FILE_NAME, Selection};
+use crate::manage::{self, SPEC_FILE_NAME};
 use crate::validate;
 
 /// Forwards the host port to the guest port of the working directory's sandbox, replacing the
@@ -37,7 +37,7 @@ pub async fn forward(
             port.host, port.guest
         )
     });
-    manage::warn_if_outdated(client, &spec.name, Selection::WorkingDir).await;
+    manage::warn_if_outdated(client, &spec.name).await;
 
     Ok(())
 }
@@ -65,7 +65,7 @@ pub async fn remove(
     print_outcome(&spec.name, running, || {
         format!("Stopped forwarding localhost:{host}")
     });
-    manage::warn_if_outdated(client, &spec.name, Selection::WorkingDir).await;
+    manage::warn_if_outdated(client, &spec.name).await;
 
     Ok(())
 }

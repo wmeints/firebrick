@@ -38,7 +38,7 @@ pub async fn start_sandbox(
     assume_yes: bool,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
-    let selection = Selection::of(name.as_deref());
+    let named = name.is_some();
     let (name, started) = match name {
         Some(name) => start_named_sandbox(name, client).await?,
         None => start_working_dir_sandbox(working_dir, assume_yes, client).await?,
@@ -49,7 +49,7 @@ pub async fn start_sandbox(
         .await?
         .into_inner();
 
-    if let Some(warning) = outdated_warning(&sandbox, selection) {
+    if let Some(warning) = outdated_warning(&sandbox, named) {
         eprintln!("{warning}");
     }
     print!("{}", forward_lines(&started));
@@ -58,72 +58,73 @@ pub async fn start_sandbox(
     Ok(())
 }
 
-/// How the user selected the sandbox of a command, which decides how the command that upgrades
-/// it is spelled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Selection {
-    /// The sandbox of the working directory.
-    WorkingDir,
-    /// The sandbox named on the command line.
-    Named,
-}
-
-impl Selection {
-    /// Returns the selection of a command that got the sandbox name, if any.
-    pub(crate) fn of(name: Option<&str>) -> Self {
-        match name {
-            Some(_) => Selection::Named,
-            None => Selection::WorkingDir,
-        }
-    }
-}
-
-/// Prints a warning to stderr when the sandbox runs an older `firebrick-base` image than the
-/// daemon's. Skips the warning when the sandbox can't be looked up, so it never changes the
-/// command's outcome.
+/// Prints a warning to stderr when the working directory's sandbox runs an older
+/// `firebrick-base` image than the daemon's. Skips the warning when the sandbox can't be looked
+/// up, so it never changes the command's outcome.
 pub(crate) async fn warn_if_outdated(
     client: &mut SandboxManagementServiceClient<Channel>,
     name: &str,
-    selection: Selection,
 ) {
-    if let Some(warning) = outdated_warning_of(client, name, selection).await {
+    if let Some(warning) = outdated_warning_of(client, name).await {
         eprintln!("{warning}");
     }
 }
 
-/// Looks up the sandbox and returns its warning from [`outdated_warning`], or `None` when the
-/// lookup fails.
+/// Looks up the working directory's sandbox and returns its warning from [`outdated_warning`],
+/// or `None` when the lookup fails.
 async fn outdated_warning_of(
     client: &mut SandboxManagementServiceClient<Channel>,
     name: &str,
-    selection: Selection,
 ) -> Option<String> {
     let request = GetSandboxRequest {
         name: name.to_string(),
     };
     let sandbox = client.get_sandbox(request).await.ok()?.into_inner();
 
-    outdated_warning(&sandbox, selection)
+    outdated_warning(&sandbox, false)
 }
 
-/// Returns the warning for a sandbox that the daemon reports as outdated, pointing at the
-/// `fbk upgrade` command for the selection, or `None` when it's up to date.
-fn outdated_warning(sandbox: &GetSandboxResponse, selection: Selection) -> Option<String> {
+/// Returns the warning for a sandbox that the daemon reports as outdated, or `None` when it's
+/// up to date. It points at `fbk upgrade`, with the sandbox's name when the command was `named`
+/// it. When the spec in the sandbox's workspace pins the image the sandbox runs, `fbk upgrade`
+/// would keep that image, so the warning asks to change the spec first.
+fn outdated_warning(sandbox: &GetSandboxResponse, named: bool) -> Option<String> {
     if sandbox.upgrade_image.is_empty() {
         return None;
     }
 
     let name = &sandbox.name;
-    let command = match selection {
-        Selection::WorkingDir => "fbk upgrade".to_string(),
-        Selection::Named => format!("fbk upgrade {name}"),
+    let command = if named {
+        format!("fbk upgrade {name}")
+    } else {
+        "fbk upgrade".to_string()
+    };
+    let hint = match pinned_spec(sandbox) {
+        Some(spec_path) => format!(
+            "Set `image` in {} to {} or remove it, then run `{command}` to upgrade it.",
+            spec_path.display(),
+            sandbox.upgrade_image
+        ),
+        None => format!("Run `{command}` to upgrade it."),
     };
 
     Some(format!(
-        "warning: sandbox {name} runs {}, but this firebrick release uses {}. Run `{command}` \
-         to upgrade it.",
+        "warning: sandbox {name} runs {}, but this firebrick release uses {}. {hint}",
         sandbox.image, sandbox.upgrade_image
     ))
+}
+
+/// Returns the path of the spec file in the sandbox's workspace when it names the image the
+/// sandbox runs. A missing or unreadable spec pins nothing.
+fn pinned_spec(sandbox: &GetSandboxResponse) -> Option<PathBuf> {
+    if sandbox.workspace_host_path.is_empty() {
+        return None;
+    }
+
+    let workspace = Path::new(&sandbox.workspace_host_path);
+    let image = read_spec_file(workspace).ok()??.image?;
+
+    (image == sandbox.image).then(|| workspace.join(SPEC_FILE_NAME))
 }
 
 /// Returns a line per open forward of the sandbox.
@@ -1005,31 +1006,66 @@ mod tests {
         }
     }
 
-    fn outdated(name: &str) -> GetSandboxResponse {
+    const OLD_BASE: &str = "ghcr.io/wmeints/firebrick-base:v0.7.0";
+    const NEW_BASE: &str = "ghcr.io/wmeints/firebrick-base:v0.8.0";
+
+    /// Returns the sandbox `name`, outdated by [`NEW_BASE`], that mounts the workspace.
+    fn outdated(name: &str, workspace: &str) -> GetSandboxResponse {
         GetSandboxResponse {
             name: name.to_string(),
-            image: "ghcr.io/wmeints/firebrick-base:v0.7.0".to_string(),
-            upgrade_image: "ghcr.io/wmeints/firebrick-base:v0.8.0".to_string(),
+            workspace_host_path: workspace.to_string(),
+            image: OLD_BASE.to_string(),
+            upgrade_image: NEW_BASE.to_string(),
             ..Default::default()
         }
     }
 
     #[test]
-    fn outdated_warning_points_at_fbk_upgrade_for_the_working_directory() {
+    fn outdated_warning_points_at_fbk_upgrade_with_the_name_it_was_given() {
+        let sandbox = outdated("myproject-3f2a1c", "");
+        let warning = |command: &str| {
+            format!(
+                "warning: sandbox myproject-3f2a1c runs {OLD_BASE}, but this firebrick release \
+                 uses {NEW_BASE}. Run `{command}` to upgrade it."
+            )
+        };
+
         assert_eq!(
-            outdated_warning(&outdated("myproject-3f2a1c"), Selection::WorkingDir).unwrap(),
-            "warning: sandbox myproject-3f2a1c runs ghcr.io/wmeints/firebrick-base:v0.7.0, but \
-             this firebrick release uses ghcr.io/wmeints/firebrick-base:v0.8.0. Run \
-             `fbk upgrade` to upgrade it."
+            outdated_warning(&sandbox, false),
+            Some(warning("fbk upgrade"))
+        );
+        assert_eq!(
+            outdated_warning(&sandbox, true),
+            Some(warning("fbk upgrade myproject-3f2a1c"))
         );
     }
 
     #[test]
-    fn outdated_warning_names_the_sandbox_that_was_selected_by_name() {
-        let warning = outdated_warning(&outdated("dev"), Selection::Named).unwrap();
+    fn outdated_warning_asks_to_change_a_spec_that_pins_the_old_image() {
+        let dir = workspace_with_image("dev", OLD_BASE);
+        let sandbox = outdated("dev", dir.path().to_str().unwrap());
+        let spec_path = dir.path().join(SPEC_FILE_NAME);
+
+        assert_eq!(
+            outdated_warning(&sandbox, false),
+            Some(format!(
+                "warning: sandbox dev runs {OLD_BASE}, but this firebrick release uses \
+                 {NEW_BASE}. Set `image` in {} to {NEW_BASE} or remove it, then run \
+                 `fbk upgrade` to upgrade it.",
+                spec_path.display()
+            ))
+        );
+    }
+
+    #[test]
+    fn outdated_warning_points_at_fbk_upgrade_when_the_spec_names_another_image() {
+        let dir = workspace_with_image("dev", "alpine:3.22");
+        let sandbox = outdated("dev", dir.path().to_str().unwrap());
+
+        let warning = outdated_warning(&sandbox, false).unwrap();
 
         assert!(
-            warning.ends_with("Run `fbk upgrade dev` to upgrade it."),
+            warning.ends_with(". Run `fbk upgrade` to upgrade it."),
             "{warning}"
         );
     }
@@ -1038,47 +1074,42 @@ mod tests {
     fn up_to_date_sandbox_gets_no_warning() {
         let sandbox = GetSandboxResponse {
             upgrade_image: String::new(),
-            ..outdated("dev")
+            ..outdated("dev", "")
         };
 
-        assert_eq!(outdated_warning(&sandbox, Selection::WorkingDir), None);
+        assert_eq!(outdated_warning(&sandbox, false), None);
     }
 
     #[tokio::test]
     async fn outdated_check_warns_about_the_daemons_outdated_sandbox() {
-        let mut client = fake_daemon::serve_outdated("dev", "/home/user/project").await;
+        let mut client = fake_daemon::serve_outdated("dev", "").await;
 
-        let warning = outdated_warning_of(&mut client, "dev", Selection::Named)
-            .await
-            .unwrap();
+        let warning = outdated_warning_of(&mut client, "dev").await;
 
         assert_eq!(
             warning,
-            format!(
+            Some(format!(
                 "warning: sandbox dev runs {}, but this firebrick release uses {}. Run \
-                 `fbk upgrade dev` to upgrade it.",
+                 `fbk upgrade` to upgrade it.",
                 fake_daemon::OLD_IMAGE,
                 fake_daemon::UPGRADED_IMAGE
-            )
+            ))
         );
     }
 
     #[tokio::test]
     async fn outdated_check_skips_an_up_to_date_sandbox() {
-        let mut client = fake_daemon::serve("dev", "/home/user/project").await;
+        let mut client = fake_daemon::serve("dev", "").await;
 
-        let warning = outdated_warning_of(&mut client, "dev", Selection::WorkingDir).await;
-
-        assert_eq!(warning, None);
+        assert_eq!(outdated_warning_of(&mut client, "dev").await, None);
     }
 
     #[tokio::test]
     async fn outdated_check_skips_the_warning_when_the_lookup_fails() {
-        let mut client = fake_daemon::serve_outdated("dev", "/home/user/project").await;
+        let mut client = fake_daemon::serve_outdated("dev", "").await;
 
-        let missing = outdated_warning_of(&mut client, "missing", Selection::WorkingDir).await;
-        let unreachable =
-            outdated_warning_of(&mut unreachable_client(), "dev", Selection::WorkingDir).await;
+        let missing = outdated_warning_of(&mut client, "missing").await;
+        let unreachable = outdated_warning_of(&mut unreachable_client(), "dev").await;
 
         assert_eq!((missing, unreachable), (None, None));
     }

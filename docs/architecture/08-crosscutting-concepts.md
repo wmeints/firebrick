@@ -134,11 +134,14 @@ sandboxes from its own `DEFAULT_IMAGE` and `fbk` can be another version:
 
 `fbk start`, `fbk run`, the `fbk network` changes and `fbk port forward|rm`
 print a warning to stderr for an outdated sandbox that points to `fbk upgrade`,
-or to `fbk upgrade <name>` when the command got the sandbox's name. `fbk run`
-prints it before the session takes over the terminal. A failed lookup skips the
-warning, which never changes the exit code. Commands that don't boot or change
-the sandbox, and `fbk ssh-proxy`, whose stderr would end up in the SSH session,
-don't print it.
+or to `fbk upgrade <name>` when the command got the sandbox's name. When the
+`.firebrick.yml` in the sandbox's workspace names the image the sandbox runs,
+`fbk upgrade` would keep it, so the warning asks to change or remove `image`
+first. `fbk init` leaves `image` out of the spec for that reason, so a sandbox
+follows the release's default image. `fbk run` prints it before the session
+takes over the terminal. A failed lookup skips the warning, which never changes
+the exit code. Commands that don't boot or change the sandbox, and `fbk
+ssh-proxy`, whose stderr would end up in the SSH session, don't print it.
 
 ## Securing the daemon socket
 

@@ -111,9 +111,9 @@ C4Component
   it names the sandbox after the full working directory path. Before it creates
   a sandbox, it has `approval` check the resolved mounts and the network
   section. `ls` prints the name, status and host name of each sandbox as a
-  table, or as a JSON array with `--format json`. `warn_if_outdated` prints the
-  outdated image warning for `start`, `run`, the `network` changes and the
-  `port` commands (see
+  table, or as a JSON array with `--format json`. `start`, `run`, the `network`
+  changes and the `port` commands print the outdated image warning from
+  `outdated_warning` (see
   [Outdated sandbox images](08-crosscutting-concepts.md#outdated-sandbox-images)).
 - `session` - Runs a command in the sandbox through the `Attach` stream. It
   makes sure the sandbox runs first, puts the terminal in raw mode and forwards
@@ -361,13 +361,13 @@ C4Component
   settings (`disabled` for a sandbox without a network device, whatever its
   rules) and refuses a paused one. It closes the forwards while it stops the
   sandbox and reopens them when the sandbox runs afterwards. The recreated
-  sandbox keeps its extra mounts and its labels, including `firebrick.ports`. A
-  new sandbox records the image reference it was created from in the
-  `firebrick.image` label, and `UpgradeSandbox` sets it to the new image.
-  `GetSandbox` returns that image and, for an outdated `firebrick-base` image,
-  the daemon's default image as `upgrade_image`. Creating and recreating a
-  sandbox share one builder chain, which also sets that label. A lock per
-  sandbox name, held by start, stop, remove, connect, `ForwardPort`,
+  sandbox keeps its extra mounts and its labels, including `firebrick.ports`.
+  Creating and recreating a sandbox share one builder chain, which also sets the
+  `firebrick.network` label. A new sandbox records the image reference it was
+  created from in the `firebrick.image` label, and `UpgradeSandbox` sets it to
+  the new image. `GetSandbox` returns that image and, for an outdated
+  `firebrick-base` image, the daemon's default image as `upgrade_image`. A lock
+  per sandbox name, held by start, stop, remove, connect, `ForwardPort`,
   `RemovePort`, `UpdateNetwork` and `UpgradeSandbox`, keeps those operations
   from interleaving with a recreate; a lock is dropped when no task holds or
   waits for it. `ForwardPort` adds one mapping to the stored ports, replacing
@@ -623,8 +623,9 @@ C4Component
   `NetworkRule` parses a rule: a host name, `*.` plus a domain of at least two
   labels, an IPv4 or IPv6 address or a CIDR range. `*` alone, other wildcards,
   URLs, ports and paths are invalid. It owns the defaults
-  (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`, `mise: true`, 2
-  vCPUs, `4 GiB` of memory, a `20 GiB` Docker volume in
+  (`ghcr.io/wmeints/firebrick-base:v<version>` as `DEFAULT_IMAGE`, which
+  `default_spec` leaves out of the spec so it follows the release, `init: true`,
+  `mise: true`, 2 vCPUs, `4 GiB` of memory, a `20 GiB` Docker volume in
   `VolumesSpec::default()`) and `parse_size_mib`, which reads memory and volume
   sizes in `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon both use them.
   `NetworkSpec::allow` and `NetworkSpec::deny` move rules between the lists,

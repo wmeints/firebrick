@@ -2796,6 +2796,13 @@ fn assert_upgraded_and_kept(
 ) {
     assert_eq!(after.update.status, Some(SandboxStatus::Running));
     assert_eq!(&after.update.settings, before);
+    let image_label = |image: &str| (sandboxes::IMAGE_LABEL.to_string(), image.to_string());
+    assert!(labels.contains(&image_label(OLD_IMAGE)), "{labels:?}");
+    assert!(
+        after.labels.contains(&image_label(UPGRADE_IMAGE)),
+        "{:?}",
+        after.labels
+    );
     assert_eq!(after.labels, with_image_label(labels, UPGRADE_IMAGE));
     let network = &after.update.stored_network;
     assert!(network.contains("example.com"), "{network}");

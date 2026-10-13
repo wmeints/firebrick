@@ -135,8 +135,11 @@ A paused sandbox has to be resumed or stopped first.
 
 When a sandbox still runs the `firebrick-base` image of an older Firebrick
 release, `fbk start`, `fbk run`, `fbk network allow|deny|enable|disable` and
-`fbk port forward|rm` warn about it and point to `fbk upgrade`. The command
-still does its job. Sandboxes with another image never get the warning.
+`fbk port forward|rm` warn about it and point to `fbk upgrade`, or to `fbk
+upgrade <name>` when you gave the command the sandbox's name. When
+`.firebrick.yml` names the old image, the warning asks you to change or remove
+`image` first, because `fbk upgrade` uses that image. The command still does its
+job. Sandboxes with another image never get the warning.
 
 ```sh
 $ fbk start
