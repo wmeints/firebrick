@@ -173,7 +173,12 @@ These checks enforce the rules above, so don't try to bypass them:
 
 - `mise install` provides the Rust toolchain, Node, pnpm, `buf`, `protoc`,
   `dprint`, `actionlint`, `shellcheck` (which actionlint runs on workflow
-  scripts), `lefthook`, the GitHub CLI (`gh`) and Claude Code.
+  scripts), `lefthook`, the GitHub CLI (`gh`) and Claude Code. `mise.lock`
+  records their checksums and CI installs with `--locked`, so run `mise lock`
+  after changing a version in `mise.toml`.
+- Workflows pin every action to a full commit SHA with the version in a comment
+  (`actions/checkout@<sha> # v7.0.1`), never a tag; Dependabot updates the pins
+  (ADR 0042).
 - `.cargo/config.toml` sets `MSB_HOME=/tmp/firebrick-msb` for every cargo
   command, so builds and the `vm-tests` use their own microsandbox runtime,
   database and images instead of `~/.microsandbox`. A `msb` that migrated the
@@ -189,30 +194,32 @@ These checks enforce the rules above, so don't try to bypass them:
   uncommitted changes, `.claude/hooks/stop-checks.sh` runs the checks for what
   changed: for Rust, proto or Cargo changes the format check, clippy and the
   unit tests, plus the `vm-tests` when the files from step 3 of the definition
-  of done changed; for changes in `website/` or `mise.toml` the website's
-  install, format check, lint, type check, unit tests, build and end-to-end
-  tests; `dprint check` for Markdown and `actionlint` for workflows. A failure
-  blocks the turn once; when it still fails on the retry, the hook reports it to
-  the user and lets the turn end instead of looping.
+  of done changed; for changes in `website/`, `mise.toml` or `mise.lock` the
+  website's install, format check, lint, type check, unit tests, build and
+  end-to-end tests; `dprint check` for Markdown and `actionlint` for workflows.
+  A failure blocks the turn once; when it still fails on the retry, the hook
+  reports it to the user and lets the turn end instead of looping.
 - Before each commit, Lefthook runs the checks for the staged files: the format
   checks for Rust and Markdown, `actionlint` for the GitHub workflows, clippy
   and the unit tests for the Rust inputs (`*.rs`, `*.proto`, `Cargo.toml`,
-  `Cargo.lock`, `.cargo/config.toml`, `clippy.toml`, `mise.toml`), and for
-  `website/` or `mise.toml` the website's install, format check, lint, type
-  check, unit tests and build.
+  `Cargo.lock`, `.cargo/config.toml`, `clippy.toml`, `mise.toml`, `mise.lock`),
+  and for `website/`, `mise.toml` or `mise.lock` the website's install, format
+  check, lint, type check, unit tests and build.
 - Each GitHub Actions workflow runs on pull requests and pushes to `main` only
   when the files it checks, or the workflow itself, changed (ADR 0036):
   `.github/workflows/ci.yaml` runs the Rust format check, clippy, the unit tests
   and the `vm-tests` integration tests for changes to `crates/`, the `Cargo`
-  files, `.cargo/`, `clippy.toml` or `mise.toml`; `markdown.yaml` runs `dprint
-  check` for Markdown, `dprint.json` or `mise.toml` changes; `actionlint.yaml`
-  runs `actionlint` for workflow or `mise.toml` changes. A website-only or
-  docs-only pull request runs no `CI` jobs.
+  files, `.cargo/`, `clippy.toml`, `mise.toml` or `mise.lock`; `markdown.yaml`
+  runs `dprint check` for Markdown, `dprint.json`, `mise.toml` or `mise.lock`
+  changes; `actionlint.yaml` runs `actionlint` for workflow, `mise.toml` or
+  `mise.lock` changes. A website-only or docs-only pull request runs no `CI`
+  jobs.
 - `.github/workflows/website.yaml` runs the website's install, format check,
   lint, type check, unit tests, build and end-to-end tests on pull requests and
-  pushes to `main` that change `website/`, `mise.toml` or the workflow. On
-  pushes to `main` and manual runs from `main` it also deploys the checked build
-  to GitHub Pages, so merging a website change publishes it (ADR 0032).
+  pushes to `main` that change `website/`, `mise.toml`, `mise.lock` or the
+  workflow. On pushes to `main` and manual runs from `main` it also deploys the
+  checked build to GitHub Pages, so merging a website change publishes it (ADR
+  0032).
 - `.github/workflows/image.yaml` builds the `firebrick-base` image for both
   platforms, without pushing it, on pull requests and pushes to `main` that
   change the `Dockerfile`.

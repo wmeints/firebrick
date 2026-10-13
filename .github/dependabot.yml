@@ -1,0 +1,16 @@
+# Keeps the commit SHAs the workflows pin their actions to up to date.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait a week before proposing a new release, so a compromised tag is
+    # likely caught and pulled before it reaches a pull request.
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: chore

@@ -5,10 +5,10 @@ name: Markdown
 on:
   push:
     branches: [main]
-    paths: ["**/*.md", dprint.json, mise.toml, .github/workflows/markdown.yaml]
+    paths: ["**/*.md", dprint.json, mise.toml, mise.lock, .github/workflows/markdown.yaml]
   pull_request:
     branches: [main]
-    paths: ["**/*.md", dprint.json, mise.toml, .github/workflows/markdown.yaml]
+    paths: ["**/*.md", dprint.json, mise.toml, mise.lock, .github/workflows/markdown.yaml]
   workflow_dispatch:
 
 concurrency:
@@ -23,10 +23,10 @@ jobs:
     name: Check Markdown formatting
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Installs only the dprint version pinned in mise.toml.
-      - uses: jdx/mise-action@v5
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
           install_args: dprint
 

@@ -13,6 +13,7 @@ on:
       - .cargo/**
       - clippy.toml
       - mise.toml
+      - mise.lock
       - .github/workflows/ci.yaml
   pull_request:
     branches: [main]
@@ -23,6 +24,7 @@ on:
       - .cargo/**
       - clippy.toml
       - mise.toml
+      - mise.lock
       - .github/workflows/ci.yaml
   workflow_dispatch:
 
@@ -42,14 +44,14 @@ jobs:
     name: Format, lint and unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Installs the Rust toolchain, protoc and the other tools pinned in mise.toml.
-      - uses: jdx/mise-action@v5
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
 
       # One cache for both jobs, so the integration tests reuse the
       # dependencies this job compiled.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: workspace
 
@@ -62,7 +64,7 @@ jobs:
       # build keeps the cached microsandbox fresh.
       - name: Restore the microsandbox runtime
         id: msb-runtime
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             /tmp/firebrick-msb/bin
@@ -89,7 +91,7 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # microsandbox boots VMs through KVM; give the runner user access to it.
       - name: Enable KVM
@@ -99,11 +101,11 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - uses: jdx/mise-action@v5
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
 
       # Restores the cache the check job saved; only firebrick-daemon compiles
       # again, for the vm-tests feature.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: workspace
           save-if: false
@@ -112,7 +114,7 @@ jobs:
       # recompile microsandbox.
       - name: Restore the microsandbox runtime
         id: msb-runtime
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             /tmp/firebrick-msb/bin
