@@ -22,8 +22,9 @@ The directory has to meet these constraints:
 - microsandbox refuses host paths that go through a symlink, and `/tmp` and
   `/var` are symlinks into `/private` on macOS, so the path must be canonical.
 - The socket path `<dir>/<sandbox>.sock` must fit in a macOS unix socket address
-  of 104 bytes, including its terminating zero. Sandbox names are DNS labels of
-  up to 63 characters.
+  of 104 bytes, including its terminating zero, for sandbox names of up to 63
+  characters, the longest DNS label. Longer names don't fit anywhere and keep
+  getting no route with a warning.
 
 The candidates were:
 
@@ -34,8 +35,8 @@ The candidates were:
 - A subdirectory of `~/Library/Caches`. It's private, but longer still, so
   sockets would need short names, such as a hash of the sandbox name, plus a map
   from the socket back to its sandbox that doesn't trust the guest.
-- `/private/tmp/fbk-<uid>`, checked before use. It's at most 27 bytes, so every
-  valid sandbox name fits, but it's in the shared `/tmp`.
+- `/private/tmp/fbk-<uid>`, checked before use. It's at most 27 bytes, so names
+  of up to 63 characters fit, but it's in the shared `/tmp`.
 
 ## Decision
 

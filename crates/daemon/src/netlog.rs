@@ -906,9 +906,14 @@ fn private_socket_dir(dir: Option<PathBuf>) -> Option<PathBuf> {
     };
 
     match firebrick_utils::create_private_dir(&dir) {
-        Ok(()) => Some(dir),
+        Ok(()) => {
+            tracing::info!("network log sockets are in {}", dir.display());
+            Some(dir)
+        }
         Err(err) => {
-            tracing::warn!("sandboxes get no network log: {err}");
+            tracing::warn!(
+                "sandboxes get no network log: {err}, or set XDG_RUNTIME_DIR to a private directory"
+            );
             None
         }
     }
@@ -1364,6 +1369,22 @@ mod tests {
         logs.listen("sb").await;
 
         assert!(!logs.socket_path("sb").unwrap().exists());
+        assert_eq!(logs.record("sb").await.unwrap(), Record::default());
+        let mode = std::fs::metadata(&socket_dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+    }
+
+    #[test]
+    fn private_socket_dir_keeps_only_a_private_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let private = dir.path().join("private");
+        let shared = dir.path().join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(private_socket_dir(Some(private.clone())), Some(private));
+        assert_eq!(private_socket_dir(Some(shared)), None);
+        assert_eq!(private_socket_dir(None), None);
     }
 
     #[tokio::test]

@@ -58,15 +58,18 @@ pub fn create_private_dir(dir: &Path) -> io::Result<()> {
 
 /// Creates the directory like [`create_private_dir`] and checks that it's private to `uid`.
 fn create_private_dir_for(dir: &Path, uid: u32) -> io::Result<()> {
-    fs::DirBuilder::new()
+    match fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)
-        .map_err(|err| {
-            io::Error::new(err.kind(), format!("can't create {}: {err}", dir.display()))
-        })?;
+    {
+        // Something else is in its place, which the check below refuses.
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(with_path(err, "can't create", dir)),
+        Ok(()) => {}
+    }
 
-    let metadata = fs::symlink_metadata(dir)?;
+    let metadata = fs::symlink_metadata(dir).map_err(|err| with_path(err, "can't inspect", dir))?;
     let problem = if !metadata.is_dir() {
         "isn't a directory"
     } else if metadata.uid() != uid {
@@ -79,8 +82,16 @@ fn create_private_dir_for(dir: &Path, uid: u32) -> io::Result<()> {
 
     Err(io::Error::new(
         io::ErrorKind::PermissionDenied,
-        format!("{} {problem}", dir.display()),
+        format!(
+            "{} {problem}; remove it or make it a directory only you can access",
+            dir.display()
+        ),
     ))
+}
+
+/// Returns the error with what failed for which path in front of its message.
+fn with_path(err: io::Error, action: &str, path: &Path) -> io::Error {
+    io::Error::new(err.kind(), format!("{action} {}: {err}", path.display()))
 }
 
 /// Returns `$XDG_RUNTIME_DIR`, falling back to the temp directory, for the environment that
@@ -427,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_netlog_socket_dir_fits_sockets_of_the_longest_sandbox_names() {
+    fn macos_netlog_socket_dir_fits_sockets_of_63_character_sandbox_names() {
         let dir = netlog_socket_dir_from(&env(&[]), true, u32::MAX).unwrap();
         let socket = dir.join(format!("{}.sock", "a".repeat(63)));
 
@@ -470,19 +481,33 @@ mod tests {
         assert!(err.to_string().contains(&temp.path().display().to_string()));
     }
 
+    /// Asserts that the path is refused as no directory.
+    fn assert_not_a_directory(path: &Path) {
+        let err = create_private_dir(path).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+        assert!(err.to_string().contains("isn't a directory"), "{err}");
+    }
+
     #[test]
-    fn create_private_dir_refuses_a_symlink_and_a_file() {
+    fn create_private_dir_refuses_a_symlink_to_a_private_directory() {
         let temp = tempfile::TempDir::new().unwrap();
         let target = temp.path().join("target");
-        fs::create_dir(&target).unwrap();
+        create_private_dir(&target).unwrap();
         let link = temp.path().join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert_not_a_directory(&link);
+    }
+
+    #[test]
+    fn create_private_dir_refuses_a_file() {
+        let temp = tempfile::TempDir::new().unwrap();
         let file = temp.path().join("file");
         fs::write(&file, "").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
 
-        for path in [link, file] {
-            assert!(create_private_dir(&path).is_err(), "{}", path.display());
-        }
+        assert_not_a_directory(&file);
     }
 
     #[test]
