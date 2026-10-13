@@ -72,7 +72,7 @@ check_rust() {
 }
 
 check_website() {
-  [ -z "$(changed_matching ' website/|mise\.toml$')" ] && return
+  [ -z "$(changed_matching ' website/|mise\.(toml|lock)$')" ] && return
   run_check website-install website install --frozen-lockfile
   run_check website-format website run format:check
   run_check website-lint website run lint

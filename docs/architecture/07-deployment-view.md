@@ -129,12 +129,12 @@ Open Graph and Twitter tags; the docs pages get theirs from Starlight, and the
 absolute image URL, so both build it from the `site` setting.
 
 `.github/workflows/website.yaml` publishes the site to GitHub Pages on pushes to
-`main` that change `website/`, `mise.toml` or the workflow, and on manual runs
-from `main`. Its `check` job uploads `website/dist` as a Pages artifact once the
-checks and end-to-end tests pass, and its `deploy` job deploys it with
-`actions/deploy-pages`. Pull requests only check the site. The repository's
-Pages source must be set to "GitHub Actions" and its custom domain to
-`firebrick-sandbox.dev` before the first deployment. See
+`main` that change `website/`, `mise.toml`, `mise.lock` or the workflow, and on
+manual runs from `main`. Its `check` job uploads `website/dist` as a Pages
+artifact once the checks and end-to-end tests pass, and its `deploy` job deploys
+it with `actions/deploy-pages`. Pull requests only check the site. The
+repository's Pages source must be set to "GitHub Actions" and its custom domain
+to `firebrick-sandbox.dev` before the first deployment. See
 [ADR 0032](decisions/0032-publish-the-website-on-github-pages.md).
 
 ## Continuous integration
@@ -144,18 +144,19 @@ checks, or the workflow file itself, changed. `workflow_dispatch` runs a
 workflow by hand. See
 [ADR 0036](decisions/0036-run-each-ci-workflow-only-for-the-changes-it-checks.md).
 
-| Change                                                                                      | Workflow          | Checks                                               |
-| ------------------------------------------------------------------------------------------- | ----------------- | ---------------------------------------------------- |
-| `crates/**`, `Cargo.toml`, `Cargo.lock`, `.cargo/**`, `clippy.toml`, `mise.toml`, `ci.yaml` | `ci.yaml`         | `cargo fmt`, clippy, unit tests, then the `vm-tests` |
-| `website/**`, `mise.toml`, `website.yaml`                                                   | `website.yaml`    | The website's checks, build and end-to-end tests     |
-| `**/*.md`, `dprint.json`, `mise.toml`, `markdown.yaml`                                      | `markdown.yaml`   | `dprint check`                                       |
-| `.github/workflows/**`, `mise.toml`                                                         | `actionlint.yaml` | `actionlint`, with `shellcheck` on the `run` steps   |
-| `Dockerfile`, `image.yaml`                                                                  | `image.yaml`      | Builds the `firebrick-base` image                    |
+| Change                                                                                   | Workflow          | Checks                                               |
+| ---------------------------------------------------------------------------------------- | ----------------- | ---------------------------------------------------- |
+| `crates/**`, `Cargo.toml`, `Cargo.lock`, `.cargo/**`, `clippy.toml`, `mise.*`, `ci.yaml` | `ci.yaml`         | `cargo fmt`, clippy, unit tests, then the `vm-tests` |
+| `website/**`, `mise.*`, `website.yaml`                                                   | `website.yaml`    | The website's checks, build and end-to-end tests     |
+| `**/*.md`, `dprint.json`, `mise.*`, `markdown.yaml`                                      | `markdown.yaml`   | `dprint check`                                       |
+| `.github/workflows/**`, `mise.*`                                                         | `actionlint.yaml` | `actionlint`, with `shellcheck` on the `run` steps   |
+| `Dockerfile`, `image.yaml`                                                               | `image.yaml`      | Builds the `firebrick-base` image                    |
 
 `mise.toml` pins the Rust toolchain, Node, pnpm, dprint, actionlint and
-shellcheck, so it runs every workflow except `image.yaml`. A pull request that
-changes only the website or the docs runs no `CI` jobs. `main` has no required
-status checks, so a workflow that its filter skipped doesn't block a merge.
+shellcheck, and `mise.lock` records their checksums, so `mise.*` stands for both
+files and runs every workflow except `image.yaml`. A pull request that changes
+only the website or the docs runs no `CI` jobs. `main` has no required status
+checks, so a workflow that its filter skipped doesn't block a merge.
 
 The `check` job of `ci.yaml` runs clippy and then the unit tests; there's no
 separate build step, because both compile every target. The `integration` job
@@ -171,3 +172,14 @@ change. Cargo dates a build script run to when the run started, so a runtime the
 script installed looks changed to the next cargo command, which recompiles
 `microsandbox` and every crate that depends on it. Without the cached runtime,
 every step of a job recompiled them.
+
+### Supply chain
+
+The workflows pin every action to a full commit SHA, with the matching release
+in a comment, so a moved or hijacked tag doesn't change what they run.
+Dependabot proposes new SHAs weekly, seven days after a release at the earliest.
+`jdx/mise-action` pins mise to the version that generated `mise.lock` and
+installs the tools with `--locked`, so each download must match the checksum in
+`mise.lock`; run `mise lock` after changing a version in `mise.toml`. The
+release jobs install only `rust` and `protoc`. See
+[ADR 0043](decisions/0043-pin-github-actions-and-ci-tools-to-checksums.md).
