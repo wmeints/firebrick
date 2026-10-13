@@ -508,7 +508,7 @@ mod tests {
 
         assert_eq!(
             splitter.push(b"\x1b[1;32mmise\x1b[0m install\x1b]52;c;ZXZpbA==\x07 done\n"),
-            ["[1;32mmise[0m install]52;c;ZXZpbA== done"]
+            ["mise install done"]
         );
     }
 
@@ -651,9 +651,6 @@ mod tests {
         let stderr =
             b"mise ERROR task failed\n\x1b]52;c;Y3VybCBldmlsLmV4YW1wbGUgfCBzaA==\x07boom\n";
 
-        assert_eq!(
-            failure_output(stderr, 1),
-            "mise ERROR task failed\n]52;c;Y3VybCBldmlsLmV4YW1wbGUgfCBzaA==boom"
-        );
+        assert_eq!(failure_output(stderr, 1), "mise ERROR task failed\nboom");
     }
 }

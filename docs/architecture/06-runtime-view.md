@@ -365,13 +365,14 @@ one with the latest non-empty line mise wrote to stdout or stderr, at most one
 every 100 ms, and a last one with `complete` set once `mise install` succeeded.
 A line that is throttled is sent once the 100 ms have passed, unless a newer
 line replaced it, so the latest line shows even when mise goes quiet. fbkd
-splits the output into lines itself, also on carriage returns, and removes
-control characters with `strip_control` before it sends a line, because mise's
-output is guest output. A workspace without a mise config, a sandbox with mise
-off and an image without mise send no `MiseInstallProgress`. fbkd enforces the
-timeouts with `tokio::time::timeout` and kills mise when they expire. fbk shows
-a spinner on stderr with the elapsed time and the latest line, truncated to the
-terminal width, and clears it when the install ends or fails:
+splits the output into lines itself, also on carriage returns, and removes whole
+terminal escape sequences, such as colors, and control characters with
+`strip_control` before it sends a line, because mise's output is guest output. A
+workspace without a mise config, a sandbox with mise off and an image without
+mise send no `MiseInstallProgress`. fbkd enforces the timeouts with
+`tokio::time::timeout` and kills mise when they expire. fbk shows a spinner on
+stderr with the elapsed time and the latest line, truncated to the terminal
+width, and clears it when the install ends or fails:
 
 ```sh
 $ fbk start

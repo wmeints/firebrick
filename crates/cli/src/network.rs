@@ -1123,7 +1123,7 @@ mod tests {
             !output.contains('\u{1b}') && !output.contains('\u{7}'),
             "{output:?}"
         );
-        assert!(output.contains("evil[2J.example.com"), "{output}");
+        assert!(output.contains("evil.example.com"), "{output}");
     }
 
     #[tokio::test]
