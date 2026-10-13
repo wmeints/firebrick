@@ -233,14 +233,66 @@ async fn a_copy_tool_that_leaves_a_child_serving_the_clipboard_returns_at_once()
 }
 
 #[tokio::test]
-async fn a_failing_copy_tool_is_reported_as_unavailable() {
-    let dir = stubs(&[("wl-copy", "cat > /dev/null; exit 1")]);
+async fn a_failing_copy_tool_is_reported_with_its_message() {
+    let wl_copy = "cat > /dev/null; echo 'Failed to connect to a Wayland server' >&2; exit 1";
+    let dir = stubs(&[("wl-copy", wl_copy)]);
 
     let written = tools(Desktop::Wayland, dir.path())
         .write(Kind::Text, b"hello".to_vec())
         .await;
 
-    assert_eq!(cause(written), Cause::Failed);
+    assert_eq!(
+        written,
+        Err(HostError::Unavailable(
+            Cause::Failed,
+            "wl-copy failed (exit status: 1): Failed to connect to a Wayland server".to_string()
+        ))
+    );
+}
+
+#[tokio::test]
+async fn a_copy_tool_that_fails_before_reading_its_input_is_reported_with_its_message() {
+    let dir = stubs(&[("xclip", "echo 'Error: no display' >&2; exit 1")]);
+
+    let written = tools(Desktop::X11, dir.path())
+        .write(Kind::Png, vec![0x89; 1024 * 1024])
+        .await;
+
+    assert_eq!(
+        written,
+        Err(HostError::Unavailable(
+            Cause::Failed,
+            "xclip failed (exit status: 1): Error: no display".to_string()
+        ))
+    );
+}
+
+#[tokio::test]
+async fn osascript_sets_the_clipboard_to_the_content_as_hex_data() {
+    let dir = stubs(&[("osascript", RECORD_COPY)]);
+    let tools = tools(Desktop::MacOs, dir.path());
+
+    tools.write(Kind::Png, b"\x89PN".to_vec()).await.unwrap();
+    let png = recorded(dir.path());
+    tools.write(Kind::Text, b"hi".to_vec()).await.unwrap();
+    let text = recorded(dir.path());
+
+    assert_eq!(
+        png,
+        (
+            "-".to_string(),
+            "set the clipboard to «data PNGf89504E»\n"
+                .as_bytes()
+                .to_vec()
+        )
+    );
+    assert_eq!(
+        text,
+        (
+            "-".to_string(),
+            "set the clipboard to «data utf86869»\n".as_bytes().to_vec()
+        )
+    );
 }
 
 #[tokio::test]

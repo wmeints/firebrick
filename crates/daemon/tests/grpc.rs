@@ -19,7 +19,7 @@ use firebrick_daemon::api::{
     StopSandboxRequest, UpdateNetworkRequest, UpgradeSandboxRequest, UpgradeSandboxResponse,
     attach_request, attach_response, start_sandbox_response, upgrade_sandbox_response,
 };
-use firebrick_daemon::clipboard::{self, Cause, HostClipboard, HostError, Kind};
+use firebrick_daemon::clipboard::{self, Cause, Clipboards, HostClipboard, HostError, Kind};
 use firebrick_daemon::open::{self, Opener};
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{mise, netlog, sandboxes, server};
@@ -4056,6 +4056,42 @@ async fn stand_ins_copy_to_the_host_clipboard_in_a_sandbox_with_the_setting() {
     assert_eq!(copied, expected);
     let message = "wl-copy: couldn't reach the host clipboard\n";
     assert_eq!(unreachable, (1, vec![], message.to_string()));
+}
+
+#[tokio::test]
+async fn sandbox_created_before_copying_can_paste_but_not_copy_after_fbkd_restarts() {
+    let name: &str = &sandbox_name("clipboard-paste-only");
+    remove_sandbox(name).await;
+    // Like a sandbox fbkd created with `clipboard: true` before copying existed: the clipboard
+    // label, route and marker, but no copy label.
+    let routes = Clipboards::from_env(Arc::new(FakeClipboard {
+        content: Mutex::new(FakeContent::Empty),
+        written: Mutex::new(Vec::new()),
+    }));
+    let builder = Sandbox::builder(name)
+        .image(PYTHON_IMAGE)
+        .label(clipboard::ENABLED_LABEL, "true");
+    let sb = routes
+        .add_route(builder, name)
+        .detached(true)
+        .create()
+        .await
+        .expect("failed to create a paste-only sandbox");
+    install_clipboard_stand_in(&sb).await;
+
+    let daemon = TestDaemon::start_restoring_listeners("clipboard-paste-only").await;
+    let copy_attempt = copy(&sb, "wl-copy", b"text").await;
+    let pasted_text = paste(&sb, "wl-paste --no-newline").await;
+    let copied = daemon.copied();
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    let message = "wl-copy: this sandbox was created before copying to the host clipboard was \
+                   supported; recreate the sandbox to copy\n";
+    assert_eq!(copy_attempt, (1, vec![], message.to_string()));
+    assert_eq!(pasted_text, pasted(CLIPBOARD_TEXT));
+    assert!(copied.is_empty(), "{copied:?}");
 }
 
 /// The stand-in commands that can't copy, their input, and what they exit with and print.

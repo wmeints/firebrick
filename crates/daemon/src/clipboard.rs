@@ -87,6 +87,9 @@ const WARNING_INTERVAL: Duration = Duration::from_secs(60);
 /// The most bytes of a host tool's stderr fbkd keeps to log.
 const MAX_STDERR: usize = 1024;
 
+/// How long fbkd reads the stderr of a copy tool that failed.
+const STDERR_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// The most bytes of the list of types fbkd reads.
 const MAX_TYPES: usize = 64 * 1024;
 
@@ -212,9 +215,9 @@ enum Request {
 fn parse_request(line: &[u8]) -> Option<Request> {
     match line {
         b"types" => Some(Request::Types),
-        b"text" => Some(Request::Read(Kind::Text)),
-        b"png" => Some(Request::Read(Kind::Png)),
-        _ => parse_copy(line),
+        _ => Kind::from_name(line)
+            .map(Request::Read)
+            .or_else(|| parse_copy(line)),
     }
 }
 
@@ -326,10 +329,12 @@ impl Channel {
             return Some(Reply::TooLarge);
         }
 
-        let content = tokio::time::timeout(REQUEST_TIMEOUT, read_content(content, length))
-            .await
-            .ok()?
-            .ok()?;
+        let content =
+            match tokio::time::timeout(REQUEST_TIMEOUT, read_content(content, length)).await {
+                Ok(Ok(content)) => content,
+                Ok(Err(err)) => return self.unfinished(kind, length, &err.to_string()),
+                Err(_) => return self.unfinished(kind, length, "it took too long"),
+            };
 
         if !kind.is_valid(&content) {
             return Some(Reply::BadContent);
@@ -338,6 +343,18 @@ impl Channel {
         let written = self.host.write(kind, content).await;
 
         Some(self.reply(written.map(|()| Vec::new())))
+    }
+
+    /// Logs a copy whose content didn't all arrive, and returns `None`: there's nobody to
+    /// answer.
+    fn unfinished(&self, kind: Kind, length: usize, reason: &str) -> Option<Reply> {
+        tracing::debug!(
+            "sandbox {} didn't send the {length} bytes of {} it copies: {reason}",
+            self.sandbox,
+            kind.name()
+        );
+
+        None
     }
 
     /// Records a copy now and returns whether the rate limit allows it.
@@ -738,9 +755,17 @@ fn input(desktop: Desktop, kind: Kind, content: Vec<u8>) -> Vec<u8> {
         Kind::Text => "utf8",
         Kind::Png => "PNGf",
     };
-    let hex: String = content.iter().map(|byte| format!("{byte:02X}")).collect();
+    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+    let mut script = format!("set the clipboard to «data {class}").into_bytes();
+    script.reserve(content.len() * 2 + 8);
 
-    format!("set the clipboard to «data {class}{hex}»\n").into_bytes()
+    for byte in content {
+        script.push(DIGITS[usize::from(byte >> 4)]);
+        script.push(DIGITS[usize::from(byte & 0x0f)]);
+    }
+
+    script.extend_from_slice("»\n".as_bytes());
+    script
 }
 
 /// Returns the most bytes of output to read for content of at most `limit` bytes. AppleScript
@@ -882,9 +907,9 @@ async fn run(
 
 /// Runs the program, looked up on `path` when it's given, with the input on its stdin, and
 /// waits for it to exit. Fails with [`HostError::Unavailable`] when it can't run, fails, or
-/// takes longer than [`HOST_TIMEOUT`], and kills it when it's given up on. Its stdout and
-/// stderr go nowhere: `wl-copy` and `xclip` leave a child behind that serves the clipboard, and
-/// that child would keep pipes open.
+/// takes longer than [`HOST_TIMEOUT`], and kills it when it's given up on. Its stdout goes
+/// nowhere, and its stderr is only read when it fails: `wl-copy` and `xclip` leave a child
+/// behind that serves the clipboard and keeps the pipes it inherited open.
 async fn run_with_input(
     program: &str,
     args: &[&str],
@@ -895,7 +920,7 @@ async fn run_with_input(
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
 
     let child = command.spawn().map_err(|err| spawn_error(program, &err))?;
 
@@ -926,7 +951,7 @@ fn timed_out(program: &str) -> HostError {
 }
 
 /// Writes the input to the stdin of the program's child, closes it and waits for the child to
-/// exit, failing when it doesn't exit successfully.
+/// exit, failing with what it printed on stderr when it doesn't exit successfully.
 async fn feed(
     program: &str,
     mut child: tokio::process::Child,
@@ -934,24 +959,36 @@ async fn feed(
 ) -> Result<(), HostError> {
     let failed =
         |reason: String| HostError::Unavailable(Cause::Failed, format!("{program} {reason}"));
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(&input)
-            .await
-            .map_err(|err| failed(format!("can't be written to: {err}")))?;
-    }
-
+    let written = match child.stdin.take() {
+        // Dropping stdin once the write is done closes it.
+        Some(mut stdin) => stdin.write_all(&input).await,
+        None => Ok(()),
+    };
     let status = child
         .wait()
         .await
         .map_err(|err| failed(format!("failed: {err}")))?;
 
     if !status.success() {
-        return Err(failed(format!("failed: {status}")));
+        let stderr = failure_stderr(child.stderr.take()).await;
+        return Err(failed(format!("failed ({status}): {stderr}")));
     }
 
-    Ok(())
+    written.map_err(|err| failed(format!("can't be written to: {err}")))
+}
+
+/// Returns at most [`MAX_STDERR`] bytes of what a program that failed printed on stderr,
+/// without control characters. Gives up after [`STDERR_TIMEOUT`], in case a child it left
+/// behind keeps the pipe open.
+async fn failure_stderr(stderr: Option<tokio::process::ChildStderr>) -> String {
+    let read = tokio::time::timeout(STDERR_TIMEOUT, read_at_most(stderr, MAX_STDERR)).await;
+    let stderr = match read {
+        Ok(Ok(stderr)) => String::from_utf8_lossy(&stderr).into_owned(),
+        Ok(Err(err)) => format!("(its stderr can't be read: {err})"),
+        Err(_) => "(its stderr didn't end)".to_string(),
+    };
+
+    firebrick_utils::strip_control(stderr.trim())
 }
 
 /// Returns the error for a program that couldn't be started: a missing tool, or a failure.
@@ -1414,19 +1451,6 @@ mod tests {
         let answer = ask(&clipboards, "sb", &copy_request("text", b"hi")).await;
 
         assert_eq!(answer, b"unavailable no-display\n");
-    }
-
-    #[test]
-    fn macos_gets_an_applescript_with_the_content_as_hex() {
-        assert_eq!(
-            input(Desktop::MacOs, Kind::Png, b"\x89PN".to_vec()),
-            "set the clipboard to «data PNGf89504E»\n".as_bytes()
-        );
-        assert_eq!(
-            input(Desktop::MacOs, Kind::Text, b"hi".to_vec()),
-            "set the clipboard to «data utf86869»\n".as_bytes()
-        );
-        assert_eq!(input(Desktop::Wayland, Kind::Text, b"hi".to_vec()), b"hi");
     }
 
     #[tokio::test]

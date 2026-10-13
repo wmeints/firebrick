@@ -577,19 +577,21 @@ C4Component
   `osascript` and `pbpaste` on macOS (`HostTools::from_env`). It writes it by
   feeding the content to `wl-copy --type <type>`, `xclip -selection clipboard -t
   <target> -i`, or on macOS an AppleScript with the content as hex data to
-  `osascript -`, with stdout and stderr going nowhere, because `wl-copy` and
-  `xclip` leave a child behind that serves the clipboard and would hold the
-  pipes open. It runs the tools with `tokio::process`, without a shell, stops
-  reading past the limit, and kills them after 4 seconds. A tool that reports an
-  empty clipboard means `empty`; no display, a missing tool and any other
-  failure mean `unavailable` with their cause, logged at `warn` with the reason,
-  at most once a minute per sandbox. `Clipboards::listen` fails when the sandbox
-  has no socket path or the socket can't be bound, and `sandboxes` then refuses
-  to create a sandbox with the setting. The unit tests pass a fake
-  `HostClipboard`; `tests/host_tools.rs` runs `HostTools::new` against stub
-  tools on a `PATH` of its own, in a test binary of its own, because a process
-  spawned in the unit tests can briefly hold the port of a listener that a
-  `forward` test just closed.
+  `osascript -`. Their stdout goes nowhere, and `fbkd` reads their stderr, for
+  at most 500 milliseconds, only when they fail, because `wl-copy` and `xclip`
+  leave a child behind that serves the clipboard and holds the pipes open; the
+  log line of a failed copy names the exit status and the tool's message. It
+  runs the tools with `tokio::process`, without a shell, stops reading past the
+  limit, and kills them after 4 seconds. A tool that reports an empty clipboard
+  means `empty`; no display, a missing tool and any other failure mean
+  `unavailable` with their cause, logged at `warn` with the reason, at most once
+  a minute per sandbox. `Clipboards::listen` fails when the sandbox has no
+  socket path or the socket can't be bound, and `sandboxes` then refuses to
+  create a sandbox with the setting. The unit tests pass a fake `HostClipboard`;
+  `tests/host_tools.rs` runs `HostTools::new` against stub tools on a `PATH` of
+  its own, in a test binary of its own, because a process spawned in the unit
+  tests can briefly hold the port of a listener that a `forward` test just
+  closed.
 - `vsock` - The listeners behind the vsock routes of `netlog` and `clipboard`.
   `Listeners<S>` keeps one listener per sandbox for a channel, with the state
   `S` it shares with the channel, such as the network record. It knows the

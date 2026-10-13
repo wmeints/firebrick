@@ -189,13 +189,15 @@ def read_header(sock, deadline):
 
 def ask(request, content=b""):
     """Sends the request and the content to fbkd and returns the status and the content, or for
-    a status other than `ok` the rest of its line, such as the cause of `unavailable`."""
-    deadline = time.monotonic() + TIMEOUT
+    a status other than `ok` the rest of its line, such as the cause of `unavailable`. fbkd
+    gets TIMEOUT to answer once it has the request and the content, which covers its 4 seconds
+    for the host tool."""
     try:
         with socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM) as sock:
             sock.settimeout(TIMEOUT)
             sock.connect((HOST_CID, PORT))
             sock.sendall(request.encode() + b"\n" + content)
+            deadline = time.monotonic() + TIMEOUT
             status, _, length = read_header(sock, deadline).partition(" ")
             if status != "ok":
                 return status, length.encode()

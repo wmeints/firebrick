@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use firebrick_spec::{MountSpec, NetworkRule, NetworkSpec};
+use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -75,7 +76,11 @@ fn clipboard_mode<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Clipboar
         Mode(Clipboard),
     }
 
-    Ok(match Stored::deserialize(deserializer)? {
+    let stored = Stored::deserialize(deserializer).map_err(|_| {
+        D::Error::custom("invalid clipboard mode; expected off, paste, both, true or false")
+    })?;
+
+    Ok(match stored {
         Stored::Shared(true) => Clipboard::Paste,
         Stored::Shared(false) => Clipboard::Off,
         Stored::Mode(mode) => mode,
@@ -791,16 +796,6 @@ mod tests {
     }
 
     #[test]
-    fn a_clipboard_approved_before_copying_existed_loads_as_paste_only() {
-        let fixture = Fixture::new();
-        write_entry(&fixture, "    clipboard: true\n");
-
-        let approved = fixture.approvals().approved().unwrap().unwrap();
-
-        assert_eq!(approved.clipboard, Clipboard::Paste);
-    }
-
-    #[test]
     fn a_clipboard_approved_before_copying_existed_is_asked_about_again() {
         let fixture = Fixture::new();
         write_entry(&fixture, "    clipboard: true\n");
@@ -830,7 +825,32 @@ mod tests {
         let fixture = Fixture::new();
         write_entry(&fixture, "    clipboard: always\n");
 
-        assert!(fixture.approvals().approved().is_err());
+        let error = fixture.approvals().approved().unwrap_err();
+
+        assert!(
+            format!("{error:#}")
+                .contains("invalid clipboard mode; expected off, paste, both, true or false"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn approvals_file_with_each_clipboard_mode_loads() {
+        let modes = [
+            ("off", Clipboard::Off),
+            ("false", Clipboard::Off),
+            ("paste", Clipboard::Paste),
+            ("both", Clipboard::Both),
+        ];
+
+        for (stored, mode) in modes {
+            let fixture = Fixture::new();
+            write_entry(&fixture, &format!("    clipboard: {stored}\n"));
+
+            let approved = fixture.approvals().approved().unwrap().unwrap();
+
+            assert_eq!(approved.clipboard, mode, "{stored}");
+        }
     }
 
     #[test]
