@@ -638,7 +638,8 @@ mod tests {
     #[test]
     fn strip_control_leaves_no_control_characters() {
         let parts = [
-            "a", "\x1b", "[", "]", "\x07", "\\", "1;", "\n", "\u{9b}", "\u{9c}", "\u{9d}",
+            "a", "\x1b", "[", "]", "\x07", "\\", "1;", "(", " ", "\n", "\t", "\r", "\x00", "\x7f",
+            "\u{85}", "\u{9b}", "\u{9c}", "\u{9d}",
         ];
         let mut texts = vec![String::new()];
         for _ in 0..3 {
@@ -650,7 +651,9 @@ mod tests {
         for text in texts {
             let stripped = strip_control(&text);
             assert!(
-                !stripped.chars().any(|c| c.is_control() && c != '\n'),
+                !stripped
+                    .chars()
+                    .any(|c| c.is_control() && !matches!(c, '\n' | '\t')),
                 "{text:?} -> {stripped:?}"
             );
         }
