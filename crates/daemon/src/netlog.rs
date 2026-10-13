@@ -8,9 +8,10 @@
 //! or send false events. It aggregates the valid events per destination into a record file in
 //! [`firebrick_utils::network_log_dir`]. The record is a diagnostic aid, not an audit trail.
 
+use crate::vsock;
 use chrono::{DateTime, Utc};
 use firebrick_utils::strip_control;
-use microsandbox::sandbox::{SandboxBuilder, SandboxSpec, VsockSocketType};
+use microsandbox::sandbox::{SandboxBuilder, SandboxSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -704,7 +705,7 @@ impl NetLogs {
     /// warning for each one the environment doesn't provide, and leaves out a socket directory
     /// that isn't private to the user.
     pub fn from_env() -> Self {
-        let socket_dir = private_socket_dir(firebrick_utils::netlog_socket_dir());
+        let socket_dir = vsock::private_dir(firebrick_utils::netlog_socket_dir(), "network log");
         let record_dir = firebrick_utils::network_log_dir();
 
         if record_dir.is_none() {
@@ -725,11 +726,7 @@ impl NetLogs {
     /// Returns the socket of the sandbox, or `None` when there's no socket directory or the
     /// path is too long for a unix socket.
     pub fn socket_path(&self, sandbox: &str) -> Option<PathBuf> {
-        let path = self.socket_dir.as_ref()?.join(format!("{sandbox}.sock"));
-
-        std::os::unix::net::SocketAddr::from_pathname(&path)
-            .is_ok()
-            .then_some(path)
+        vsock::socket_path(self.socket_dir.as_deref(), sandbox)
     }
 
     /// Returns the record file of the sandbox, if there's a record directory.
@@ -756,15 +753,8 @@ impl NetLogs {
 
     /// Whether the sandbox has a stream route from [`GUEST_PORT`] to its socket.
     pub fn has_route(&self, sandbox: &str, spec: &SandboxSpec) -> bool {
-        let Some(path) = self.socket_path(sandbox) else {
-            return false;
-        };
-
-        spec.vsock.routes.iter().any(|route| {
-            route.port == GUEST_PORT
-                && route.socket_type == VsockSocketType::Stream
-                && route.host_socket == path
-        })
+        self.socket_path(sandbox)
+            .is_some_and(|path| vsock::has_route(spec, GUEST_PORT, &path))
     }
 
     /// Listens on the sandbox's socket unless fbkd already does, loading its record. A listener
@@ -827,23 +817,7 @@ impl NetLogs {
             ));
         };
 
-        // The directory may have been removed since fbkd started, for example by the cleanup
-        // of `/tmp`, so it's checked again before every bind.
-        let dir = dir.clone();
-        tokio::task::spawn_blocking(move || firebrick_utils::create_private_dir(&dir))
-            .await
-            .map_err(io::Error::other)??;
-
-        if UnixStream::connect(&path).await.is_ok() {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                format!("another process listens on {}", path.display()),
-            ));
-        }
-
-        remove_if_exists(&path).await?;
-
-        UnixListener::bind(&path)
+        vsock::bind(dir, &path).await
     }
 
     /// Returns the network activity recorded for the sandbox: the live record while fbkd
@@ -873,7 +847,7 @@ impl NetLogs {
         }
 
         for path in [self.socket_path(sandbox), self.record_path(sandbox)] {
-            remove_logged(path).await;
+            vsock::remove_logged(path).await;
         }
     }
 
@@ -893,48 +867,6 @@ impl Drop for NetLogs {
         for listening in self.listening().values() {
             listening.task.abort();
         }
-    }
-}
-
-/// Returns the socket directory when it's private to the user, creating it when it's missing.
-/// Logs a warning when there's no directory or it isn't private, since sandboxes then get no
-/// network log.
-fn private_socket_dir(dir: Option<PathBuf>) -> Option<PathBuf> {
-    let Some(dir) = dir else {
-        tracing::warn!("XDG_RUNTIME_DIR isn't an absolute path, so sandboxes get no network log");
-        return None;
-    };
-
-    match firebrick_utils::create_private_dir(&dir) {
-        Ok(()) => {
-            tracing::info!("network log sockets are in {}", dir.display());
-            Some(dir)
-        }
-        Err(err) => {
-            tracing::warn!(
-                "sandboxes get no network log: {err}, or set XDG_RUNTIME_DIR to a private directory"
-            );
-            None
-        }
-    }
-}
-
-/// Removes the file, if there's one, logging a warning when that fails.
-async fn remove_logged(path: Option<PathBuf>) {
-    let Some(path) = path else {
-        return;
-    };
-
-    if let Err(err) = remove_if_exists(&path).await {
-        tracing::warn!("failed to remove {}: {err}", path.display());
-    }
-}
-
-/// Removes the file, succeeding when it doesn't exist.
-async fn remove_if_exists(path: &Path) -> io::Result<()> {
-    match tokio::fs::remove_file(path).await {
-        Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
-        _ => Ok(()),
     }
 }
 
@@ -1372,19 +1304,6 @@ mod tests {
         assert_eq!(logs.record("sb").await.unwrap(), Record::default());
         let mode = std::fs::metadata(&socket_dir).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755);
-    }
-
-    #[test]
-    fn private_socket_dir_keeps_only_a_private_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let private = dir.path().join("private");
-        let shared = dir.path().join("shared");
-        std::fs::create_dir(&shared).unwrap();
-        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        assert_eq!(private_socket_dir(Some(private.clone())), Some(private));
-        assert_eq!(private_socket_dir(Some(shared)), None);
-        assert_eq!(private_socket_dir(None), None);
     }
 
     #[tokio::test]

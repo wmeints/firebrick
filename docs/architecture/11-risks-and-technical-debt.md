@@ -87,18 +87,26 @@
   still opens, so the browser sends the OAuth callback, with its code, to
   whatever listens on the host's port
   ([ADR 0030](decisions/0030-forward-oauth-callback-ports-when-opening-a-url.md)).
-- **Only mounts and network changes need approval:** the agent can edit
-  `.firebrick.yml`, and `fbk` only asks before it applies changed `mounts` or
-  `network` settings. A changed `image`, `init`, `mise`, `resources`, `volumes`,
-  `ports` or `name` applies the next time the sandbox is created, or for `ports`
-  the next time it starts, without asking. `--yes` approves whatever the file
-  contains. A workspace from before approvals existed has no entry, and its
-  first sandbox creation with the default network section doesn't ask: when the
-  agent removes the `network` section and the user runs `fbk rm --force && fbk
-  start`, the new sandbox doesn't enforce the old rules. `fbk` can't compare
-  with the removed sandbox, and `GetSandbox` doesn't return a running sandbox's
-  policy
+- **Only mounts, network and clipboard changes need approval:** the agent can
+  edit `.firebrick.yml`, and `fbk` only asks before it applies changed `mounts`,
+  `network` or `clipboard` settings. A changed `image`, `init`, `mise`,
+  `resources`, `volumes`, `ports` or `name` applies the next time the sandbox is
+  created, or for `ports` the next time it starts, without asking. `--yes`
+  approves whatever the file contains. A workspace from before approvals existed
+  has no entry, and its first sandbox creation with the default network section
+  doesn't ask: when the agent removes the `network` section and the user runs
+  `fbk rm --force && fbk start`, the new sandbox doesn't enforce the old rules.
+  `fbk` can't compare with the removed sandbox, and `GetSandbox` doesn't return
+  a running sandbox's policy
   ([ADR 0037](decisions/0037-approve-mounts-and-network-changes-in-the-spec.md)).
+- **A shared clipboard crosses the sandbox boundary:** in a sandbox created with
+  `clipboard: true`, any process can read the host clipboard through `fbkd` at
+  any time, without the user noticing, including passwords and tokens the user
+  copied for something else. `fbkd` reads it only when asked and caps each
+  answer at 1 MiB of text or 10 MiB of PNG, but doesn't ask the user before each
+  paste. The setting is off by default and needs approval, and the route only
+  exists in sandboxes created with it
+  ([ADR 0047](decisions/0047-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)).
 - **Workspace files can run code on the host:** the workspace is mounted
   read/write, so the agent can plant files that run on the host when the user
   works on the project there, such as git hooks, `.git/config` settings like

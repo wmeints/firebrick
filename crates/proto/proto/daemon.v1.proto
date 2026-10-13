@@ -50,6 +50,9 @@ message StartSandboxRequest {
   // Extra host directories to bind mount, besides the workspace. Applied when the sandbox is
   // created.
   repeated Mount mounts = 10;
+  // Whether programs in the sandbox can read the host clipboard through fbkd. Applied when the
+  // sandbox is created. Unset means false.
+  optional bool clipboard = 11;
 }
 
 message PortForwards {

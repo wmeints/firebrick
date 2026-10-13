@@ -110,7 +110,7 @@ updated the network rules of my-project
   Answer `y` to apply them, or anything else to leave the sandbox alone; the
   change to `.firebrick.yml` stays. `--yes` approves them without asking. The
   change you asked for never needs approval. See
-  [Approving mounts and network changes](/docs/configuration/#approving-mounts-and-network-changes).
+  [Approving settings changes](/docs/configuration/#approving-settings-changes).
 
 ## Allowing coding agents and toolchains with presets
 

@@ -18,6 +18,7 @@ use crate::api::{
     UpgradeSandboxResponse, attach_request, ssh_tunnel_request, start_sandbox_response,
     upgrade_sandbox_response,
 };
+use crate::clipboard::{HostClipboard, HostTools};
 use crate::forward::{ForwardFailure, ForwardReport};
 use crate::mise::MiseUpdate;
 use crate::netlog::{ConnectionEntry, DnsEntry, Protocol, Record};
@@ -73,24 +74,29 @@ pub struct FirebrickServer {
 }
 
 impl FirebrickServer {
-    /// Creates a server that adds the secrets from `secrets` to sandboxes and opens the URLs
-    /// from sandboxes with `opener`.
-    pub fn new(secrets: SecretStore, opener: Arc<dyn Opener>) -> Self {
+    /// Creates a server that adds the secrets from `secrets` to sandboxes, opens the URLs from
+    /// sandboxes with `opener` and reads the host clipboard for them from `clipboard`.
+    pub fn new(
+        secrets: SecretStore,
+        opener: Arc<dyn Opener>,
+        clipboard: Arc<dyn HostClipboard>,
+    ) -> Self {
         Self {
-            sandboxes: Arc::new(SandboxManager::new(secrets, opener)),
+            sandboxes: Arc::new(SandboxManager::new(secrets, opener, clipboard)),
         }
     }
 
-    /// Listens for the network logs of the existing sandboxes that have the route. Run when the
-    /// daemon starts, so it records the sandboxes that kept running while it was down.
-    pub async fn restore_network_logs(&self) {
-        self.sandboxes.restore_network_logs().await;
+    /// Listens for the network logs and clipboards of the existing sandboxes that have their
+    /// routes. Run when the daemon starts, so it serves the sandboxes that kept running while
+    /// it was down.
+    pub async fn restore_listeners(&self) {
+        self.sandboxes.restore_listeners().await;
     }
 }
 
 /// Reads the sandbox to start from a request with its parsed egress rules and ports. A request
 /// without `init` runs the image's init, and one without `mise` installs the workspace's mise
-/// tools.
+/// tools. A request without `clipboard` doesn't share the host clipboard.
 fn start_sandbox_from<'a>(
     request: &'a StartSandboxRequest,
     network: &'a NetworkSpec,
@@ -106,6 +112,7 @@ fn start_sandbox_from<'a>(
         network,
         ports,
         mounts,
+        clipboard: request.clipboard.unwrap_or(false),
     }
 }
 
@@ -700,16 +707,16 @@ fn parse_size_mib(size: &str) -> Result<u32, SandboxError> {
 const RECREATION_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Reopens the port forwards of the sandboxes that are running, listens for the network logs
-/// of the sandboxes and removes the upgrade probes an earlier daemon left behind, then serves
+/// and clipboards of the sandboxes and removes the upgrade probes an earlier daemon left behind, then serves
 /// the gRPC API on the socket until SIGINT or SIGTERM is received, opening the URLs from
-/// sandboxes in the host's browser. Afterwards, waits up to [`RECREATION_TIMEOUT`] for the
+/// sandboxes in the host's browser and reading the host clipboard with its desktop's tools. Afterwards, waits up to [`RECREATION_TIMEOUT`] for the
 /// updates and upgrades that are still running and writes the network records a last time. The caller makes sure no other daemon serves on the socket, so
 /// it doesn't take that daemon's host ports.
 pub async fn run(socket_path: &Path, secrets: SecretStore) -> Result<(), ServerError> {
-    let service = FirebrickServer::new(secrets, Arc::new(HostOpener));
+    let service = FirebrickServer::new(secrets, Arc::new(HostOpener), Arc::new(HostTools));
     let sandboxes = Arc::clone(&service.sandboxes);
     sandboxes.restore_forwards().await;
-    sandboxes.restore_network_logs().await;
+    sandboxes.restore_listeners().await;
     sandboxes.remove_stale_probes().await;
 
     let served = serve(socket_path, service, shutdown_signal()).await;
@@ -718,7 +725,7 @@ pub async fn run(socket_path: &Path, secrets: SecretStore) -> Result<(), ServerE
         tracing::warn!("stopped while a sandbox was still being updated or upgraded");
     }
 
-    sandboxes.close_network_logs().await;
+    sandboxes.close_listeners().await;
 
     served
 }
@@ -848,7 +855,7 @@ mod tests {
     ) -> Result<(), ServerError> {
         serve(
             &path,
-            FirebrickServer::new(unused_store(), Arc::new(HostOpener)),
+            FirebrickServer::new(unused_store(), Arc::new(HostOpener), Arc::new(HostTools)),
             async {
                 let _ = stop.await;
             },
@@ -1360,7 +1367,11 @@ mod tests {
     async fn set_secret_rejects_invalid_secret_without_storing_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secrets.yml");
-        let server = FirebrickServer::new(SecretStore::new(&path), Arc::new(HostOpener));
+        let server = FirebrickServer::new(
+            SecretStore::new(&path),
+            Arc::new(HostOpener),
+            Arc::new(HostTools),
+        );
 
         let status = server
             .set_secret(Request::new(SetSecretRequest {
@@ -1380,7 +1391,7 @@ mod tests {
     async fn list_secrets_returns_names_and_hosts_sorted() {
         let dir = tempfile::tempdir().unwrap();
         let store = store_with_secrets(&dir.path().join("secrets.yml"), &["B_TOKEN", "A_TOKEN"]);
-        let server = FirebrickServer::new(store, Arc::new(HostOpener));
+        let server = FirebrickServer::new(store, Arc::new(HostOpener), Arc::new(HostTools));
 
         let secrets = server
             .list_secrets(Request::new(ListSecretsRequest {}))
@@ -1405,7 +1416,7 @@ mod tests {
         let store = store_with_secrets(&dir.path().join("secrets.yml"), &["A"]);
         let secret = Secret::new("A".into(), "value".into(), vec!["example.com".into()]).unwrap();
         store.set(secret.in_scope(Some("dev".into()))).unwrap();
-        let server = FirebrickServer::new(store, Arc::new(HostOpener));
+        let server = FirebrickServer::new(store, Arc::new(HostOpener), Arc::new(HostTools));
 
         let scopes: Vec<Option<String>> = server
             .list_secrets(Request::new(ListSecretsRequest {}))
@@ -1422,7 +1433,8 @@ mod tests {
 
     #[tokio::test]
     async fn remove_secret_rejects_invalid_name() {
-        let server = FirebrickServer::new(unused_store(), Arc::new(HostOpener));
+        let server =
+            FirebrickServer::new(unused_store(), Arc::new(HostOpener), Arc::new(HostTools));
 
         let status = server
             .remove_secret(Request::new(RemoveSecretRequest {
@@ -1442,7 +1454,7 @@ mod tests {
         let store = SecretStore::new(&path);
         let secret = Secret::new("A".into(), "value".into(), vec!["example.com".into()]).unwrap();
         store.set(secret).unwrap();
-        let server = FirebrickServer::new(store, Arc::new(HostOpener));
+        let server = FirebrickServer::new(store, Arc::new(HostOpener), Arc::new(HostTools));
 
         let status = server
             .remove_secret(Request::new(RemoveSecretRequest {
@@ -1617,7 +1629,8 @@ mod tests {
 
     #[tokio::test]
     async fn update_network_rejects_invalid_rule() {
-        let server = FirebrickServer::new(unused_store(), Arc::new(HostOpener));
+        let server =
+            FirebrickServer::new(unused_store(), Arc::new(HostOpener), Arc::new(HostTools));
 
         let status = server
             .update_network(Request::new(UpdateNetworkRequest {

@@ -1,4 +1,4 @@
-//! Approval of the `mounts` and `network` settings in `.firebrick.yml`. The spec file lives in
+//! Approval of the `mounts`, `network` and `clipboard` settings in `.firebrick.yml`. The spec file lives in
 //! the workspace, which the sandbox mounts read/write, so an agent can edit it. `fbk` records
 //! the settings the user approved per workspace outside every mounted directory, and asks before
 //! it applies other ones.
@@ -13,11 +13,11 @@ use std::path::{Path, PathBuf};
 
 /// Error for an answer other than yes.
 const ABORTED: &str =
-    "aborted: the changes to mounts and network in .firebrick.yml weren't approved";
+    "aborted: the changes to mounts, network and clipboard in .firebrick.yml weren't approved";
 
 /// Error when there is no terminal to ask on and `--yes` isn't passed.
-const NOT_INTERACTIVE: &str = ".firebrick.yml changes mounts or network since you last approved \
-                               them; run the command in a terminal to review the changes, or \
+const NOT_INTERACTIVE: &str = ".firebrick.yml changes mounts, network or clipboard since you last \
+                               approved them; run the command in a terminal to review the changes, or \
                                pass --yes";
 
 /// Header above the changes to approve.
@@ -25,8 +25,11 @@ const CHANGES_HEADER: &str =
     ".firebrick.yml changes settings you haven't approved for this workspace:";
 
 /// Header above the settings of a workspace without approved settings.
-const FIRST_HEADER: &str = ".firebrick.yml sets mounts or network settings you haven't approved \
-                            for this workspace yet:";
+const FIRST_HEADER: &str = ".firebrick.yml sets mounts, network or clipboard settings you haven't \
+                            approved for this workspace yet:";
+
+/// The line that describes the clipboard setting.
+const CLIPBOARD_LINE: &str = "clipboard: shared with the host";
 
 /// The settings of a workspace that need approval.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
@@ -38,6 +41,15 @@ pub struct Settings {
     /// The network section, or its default when the spec has none.
     #[serde(default)]
     pub network: NetworkSpec,
+    /// Whether the sandbox shares the host clipboard. Left out of the file when it's off, so
+    /// approvals files stay readable by `fbk` versions without the setting.
+    #[serde(default, skip_serializing_if = "is_off")]
+    pub clipboard: bool,
+}
+
+/// Whether a switch is off, so it can be left out of the approvals file.
+fn is_off(value: &bool) -> bool {
+    !value
 }
 
 /// Layout of the approvals file.
@@ -204,18 +216,31 @@ impl Approver {
             approve(&approvals, &mut Prompt::terminal(assume_yes))
         })
         .await
-        .context("failed to ask for approval of the mounts and network settings")?
+        .context("failed to ask for approval of the mounts, network and clipboard settings")?
     }
 }
 
-/// Returns a line per added or removed mount and per changed network field between the
-/// approved and requested settings. Mounts and rules are compared as sets, so their order
-/// doesn't count as a change.
+/// Returns a line per added or removed mount, per changed network field and for a changed
+/// clipboard setting between the approved and requested settings. Mounts and rules are compared
+/// as sets, so their order doesn't count as a change.
 pub fn difference(approved: &Settings, requested: &Settings) -> Vec<String> {
     let mut lines = list_difference(&approved.mounts, &requested.mounts, mount_line);
     lines.extend(network_difference(&approved.network, &requested.network));
+    lines.extend(clipboard_difference(approved, requested));
 
     lines
+}
+
+/// Returns a `+` line when the requested settings share the clipboard and the approved ones
+/// don't, and a `-` line the other way round.
+fn clipboard_difference(approved: &Settings, requested: &Settings) -> Option<String> {
+    let sign = match (approved.clipboard, requested.clipboard) {
+        (false, true) => '+',
+        (true, false) => '-',
+        _ => return None,
+    };
+
+    Some(format!("{sign} {CLIPBOARD_LINE}"))
 }
 
 /// Returns the lines for the network fields that differ.
@@ -267,7 +292,8 @@ fn mount_line(sign: char, mount: &MountSpec) -> String {
     format!("{sign} mount {} -> {} ({access})", mount.host, mount.guest)
 }
 
-/// Returns a line per mount and network field of settings that have nothing to compare with.
+/// Returns a line per mount and network field of settings that have nothing to compare with,
+/// and one for the clipboard when it's shared.
 fn listing(settings: &Settings) -> Vec<String> {
     let network = &settings.network;
     let mut lines = list_difference(&[], &settings.mounts, mount_line);
@@ -279,6 +305,7 @@ fn listing(settings: &Settings) -> Vec<String> {
     lines.extend(list_difference(&[], &network.deny, |sign, rule| {
         rule_line(sign, "deny", rule)
     }));
+    lines.extend(clipboard_difference(&Settings::default(), settings));
 
     lines
 }
@@ -628,6 +655,94 @@ mod tests {
         assert!(difference(&approved, &requested).is_empty());
     }
 
+    fn clipboard(on: bool) -> Settings {
+        Settings {
+            clipboard: on,
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn difference_lists_a_changed_clipboard() {
+        assert_eq!(
+            difference(&clipboard(false), &clipboard(true)),
+            ["+ clipboard: shared with the host"]
+        );
+        assert_eq!(
+            difference(&clipboard(true), &clipboard(false)),
+            ["- clipboard: shared with the host"]
+        );
+        assert!(difference(&clipboard(true), &clipboard(true)).is_empty());
+    }
+
+    #[test]
+    fn sharing_the_clipboard_is_asked_about_and_recorded() {
+        let fixture = Fixture::new();
+        let approvals = fixture.approvals_with_defaults();
+        let mut prompt = prompt("y\n");
+
+        approvals
+            .approve_sandbox(clipboard(true), &mut prompt)
+            .unwrap();
+
+        assert_eq!(
+            printed(&prompt),
+            ".firebrick.yml changes settings you haven't approved for this workspace:\n  \
+             + clipboard: shared with the host\nApply these changes? [y/N] "
+        );
+        assert_eq!(approvals.approved().unwrap(), Some(clipboard(true)));
+    }
+
+    #[test]
+    fn first_settings_list_a_shared_clipboard() {
+        let fixture = Fixture::new();
+        let mut prompt = prompt("n\n");
+
+        let error = fixture
+            .approvals()
+            .approve_sandbox(clipboard(true), &mut prompt)
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), ABORTED);
+        assert_eq!(
+            printed(&prompt),
+            ".firebrick.yml sets mounts, network or clipboard settings you haven't approved \
+             for this workspace yet:\n  network.enabled: true\n  network.enforce: false\n  \
+             + clipboard: shared with the host\nApply these changes? [y/N] "
+        );
+        assert_eq!(fixture.approvals().approved().unwrap(), None);
+    }
+
+    #[test]
+    fn approvals_file_without_the_clipboard_loads_with_it_off() {
+        let fixture = Fixture::new();
+        let workspace = fs::canonicalize(fixture.workspace.path()).unwrap();
+        fs::create_dir_all(fixture.path().parent().unwrap()).unwrap();
+        let content = format!(
+            "workspaces:\n  {}:\n    mounts: []\n    network:\n      enforce: true\n",
+            workspace.display()
+        );
+        fs::write(fixture.path(), content).unwrap();
+
+        let approved = fixture.approvals().approved().unwrap().unwrap();
+
+        assert!(!approved.clipboard);
+        assert!(approved.network.enforce);
+    }
+
+    #[test]
+    fn approvals_file_leaves_out_a_clipboard_that_is_off() {
+        let fixture = Fixture::new();
+
+        fixture.approvals().record(home_mount()).unwrap();
+        let without = fs::read_to_string(fixture.path()).unwrap();
+        fixture.approvals().record(clipboard(true)).unwrap();
+        let with = fs::read_to_string(fixture.path()).unwrap();
+
+        assert!(!without.contains("clipboard"), "{without}");
+        assert!(with.contains("clipboard: true"), "{with}");
+    }
+
     #[test]
     fn approved_settings_create_the_sandbox_without_asking() {
         let fixture = Fixture::new();
@@ -814,8 +929,8 @@ mod tests {
 
         assert_eq!(
             printed(&prompt),
-            ".firebrick.yml sets mounts or network settings you haven't approved for this \
-             workspace yet:\n  + mount /home/me -> /mnt/home (read/write)\n  \
+            ".firebrick.yml sets mounts, network or clipboard settings you haven't approved \
+             for this workspace yet:\n  + mount /home/me -> /mnt/home (read/write)\n  \
              network.enabled: true\n  network.enforce: false\nApply these changes? [y/N] "
         );
         assert_eq!(approvals.approved().unwrap(), Some(home_mount()));
@@ -840,8 +955,8 @@ mod tests {
         assert_eq!(error.to_string(), ABORTED);
         assert_eq!(
             printed(&prompt),
-            ".firebrick.yml sets mounts or network settings you haven't approved for this \
-             workspace yet:\n  network.enabled: true\n  network.enforce: false\n  \
+            ".firebrick.yml sets mounts, network or clipboard settings you haven't approved \
+             for this workspace yet:\n  network.enabled: true\n  network.enforce: false\n  \
              + network.allow: example.org\nApply these changes? [y/N] "
         );
         assert_eq!(approvals.approved().unwrap(), None);

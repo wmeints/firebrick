@@ -45,3 +45,4 @@
 - [ADR 0043 - Pin GitHub Actions and CI tools to checksums](decisions/0043-pin-github-actions-and-ci-tools-to-checksums.md)
 - [ADR 0044 - Strip escape sequences with console](decisions/0044-strip-escape-sequences-with-console.md)
 - [ADR 0045 - Approve publishing in a release environment](decisions/0045-approve-publishing-in-a-release-environment.md)
+- [ADR 0047 - Share the host clipboard over a vsock route with host tools](decisions/0047-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)

@@ -205,9 +205,9 @@ killing it after 30 seconds. When that stop fails, `fbkd` returns `INTERNAL` and
 leaves the sandbox in place. A stopped or crashed sandbox is removed with or
 without `--force`. `fbkd` closes the sandbox's port forwards once the sandbox
 isn't live anymore, before it removes it, so they also close when the removal
-fails. After a removal, `fbkd` stops listening for the sandbox's network log,
-deletes its socket and its record, and syncs the SSH config and the editors'
-Remote-SSH settings, so they drop the sandbox's host.
+fails. After a removal, `fbkd` stops listening for the sandbox's network log and
+clipboard, deletes their sockets and the network record, and syncs the SSH
+config and the editors' Remote-SSH settings, so they drop the sandbox's host.
 
 ```mermaid
 sequenceDiagram
@@ -243,7 +243,7 @@ sequenceDiagram
             CLI-->>Dev: Error: sandbox name is running. Stop it with fbk stop, or remove it with fbk rm --force.
         else Sandbox is stopped
             MS-->>D: Removed
-            D->>D: Delete the network log socket and record
+            D->>D: Delete the network log and clipboard sockets and the record
             D->>D: Sync SSH config and editor settings
             D-->>CLI: RemoveSandboxResponse
             CLI-->>Dev: Exit 0
@@ -1282,3 +1282,69 @@ sandbox, so it doesn't add the route. When the record file of a sandbox that
 returns `INTERNAL` instead of an empty record, so the user doesn't mistake it
 for a sandbox that contacted nothing. A sandbox that doesn't exist gets `sandbox
 <name> doesn't exist`.
+
+## Pasting from the host clipboard
+
+A sandbox created with `clipboard: true` in `.firebrick.yml` can read the host
+clipboard through `fbkd`, so tools that paste by running `wl-paste` or `xclip`,
+such as Claude Code's image paste, work in the guest
+([ADR 0047](decisions/0047-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)).
+The setting needs approval like `mounts`: `fbk start` lists `+ clipboard: shared
+with the host` before it creates the sandbox (see
+[Approving spec changes](08-crosscutting-concepts.md#approving-spec-changes)).
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant P as wl-paste (guest stand-in)
+    participant MS as microsandbox
+    participant D as fbkd
+    participant H as wl-paste / xclip / pbpaste (host)
+
+    D->>D: Bind clipboard/<sandbox>.sock
+    D->>MS: Create the sandbox with the firebrick.clipboard label,<br/>a vsock route from port 52001 to the socket<br/>and the firebrick-clipboard marker script
+    A->>P: wl-paste --type image/png
+    P->>P: Check /.msb/scripts/firebrick-clipboard exists
+    P->>MS: Connect to vsock CID 2, port 52001
+    MS->>D: Connect to clipboard/<sandbox>.sock
+    P->>D: png
+    D->>H: List the types on the clipboard
+    D->>H: Read image/png, at most 10 MiB
+    D-->>P: ok <length> and the PNG
+    P-->>A: The PNG on stdout
+```
+
+```text
+agent@sandbox:~$ wl-paste --list-types
+text/plain;charset=utf-8
+image/png
+agent@sandbox:~$ wl-paste --no-newline
+hello from the host
+agent@sandbox:~$ xclip -selection clipboard -t TARGETS -o
+TARGETS
+UTF8_STRING
+image/png
+```
+
+`fbkd` binds the socket before it creates or recreates a sandbox with the label,
+before it starts one with the route, and for every sandbox with the route when
+it starts. It reads the host clipboard only when a stand-in asks, with
+`wl-paste` when `WAYLAND_DISPLAY` is set, otherwise with `xclip` when `DISPLAY`
+is, and with `osascript` and `pbpaste` on macOS. It inherits the display from
+the `fbk` that started it. A sandbox without the label has no route and no
+marker, so nothing in its guest, not even root, reaches `fbkd`'s clipboard
+sockets. `fbk network` and `fbk upgrade` recreate the sandbox with its labels,
+so it keeps the setting.
+
+| Situation                                          | Exit status | Message on stderr                                                                                                     |
+| -------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------- |
+| The sandbox was created without `clipboard: true`  | 1           | `wl-paste: clipboard sharing is off for this sandbox; set clipboard: true in .firebrick.yml and recreate the sandbox` |
+| `fbkd` doesn't answer within 5 seconds             | 1           | `wl-paste: couldn't reach the host clipboard`                                                                         |
+| The host clipboard can't be read                   | 1           | `wl-paste: the host clipboard isn't available`; `fbkd` logs why at `warn`                                             |
+| The clipboard is empty or lacks the requested type | 1           | `wl-paste: the clipboard holds no <type>`                                                                             |
+| Text over 1 MiB or a PNG over 10 MiB               | 1           | `wl-paste: the clipboard content is larger than <limit>`                                                              |
+| Another type, `-selection primary` or `xclip -i`   | 2           | A usage line naming the supported forms                                                                               |
+
+`xclip` prints its messages with an `xclip:` prefix. `fbkd` closes the
+connections of a sandbox beyond 4 at a time, and never sends more than the
+limits.

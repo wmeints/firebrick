@@ -235,7 +235,7 @@ pub(crate) async fn ensure_running(
     Ok(started)
 }
 
-/// Makes sure the user approved the mounts and network settings of the new sandbox, asking on
+/// Makes sure the user approved the mounts, network and clipboard settings of the new sandbox, asking on
 /// the terminal when they changed. `network` is the spec's network section, or its default.
 async fn approve_new_sandbox(
     request: &StartSandboxRequest,
@@ -253,11 +253,13 @@ async fn approve_new_sandbox(
 }
 
 /// Returns the settings a new sandbox needs approval for: the request's mounts, whose host
-/// paths are canonical, so a symlink shows up as the directory it points to.
+/// paths are canonical, so a symlink shows up as the directory it points to, and its clipboard
+/// setting.
 fn new_sandbox_settings(request: &StartSandboxRequest, network: NetworkSpec) -> Settings {
     Settings {
         mounts: request.mounts.iter().map(MountSpec::from).collect(),
         network,
+        clipboard: request.clipboard.unwrap_or(false),
     }
 }
 
@@ -429,8 +431,8 @@ async fn start_existing_sandbox(
     }
 }
 
-/// Builds a start request from the spec, filling in the default image, resources, init, mise
-/// and volumes.
+/// Builds a start request from the spec, filling in the default image, resources, init, mise,
+/// volumes and clipboard.
 /// The workspace and the extra mounts are mounted into the sandbox when it's created. The
 /// workspace holds the spec file, so relative mount host paths resolve against it. Fails when a
 /// mount host path isn't an existing directory.
@@ -460,6 +462,7 @@ fn build_start_request(spec: SandboxSpec, workspace: &Path) -> Result<StartSandb
         network: spec.network.map(network_policy),
         ports: Some(port_forwards(&spec.ports)),
         mounts,
+        clipboard: Some(spec.clipboard.unwrap_or(false)),
     })
 }
 
@@ -1798,12 +1801,30 @@ mod tests {
         assert_eq!(request.network, None);
         assert!(request.mounts.is_empty());
         assert_eq!(request.ports, Some(PortForwards { ports: vec![] }));
+        assert_eq!(request.clipboard, Some(false));
         assert_eq!(resources.cpu, u32::from(defaults.cpu));
         assert_eq!(resources.memory, defaults.memory);
         assert_eq!(
             request.volumes.unwrap().docker,
             firebrick_spec::VolumesSpec::default().docker
         );
+    }
+
+    #[test]
+    fn clipboard_from_the_spec_is_sent_and_needs_approval() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join(SPEC_FILE_NAME),
+            "name: dev\nclipboard: true\n",
+        )
+        .unwrap();
+
+        let request =
+            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
+        let settings = new_sandbox_settings(&request, NetworkSpec::default());
+
+        assert_eq!(request.clipboard, Some(true));
+        assert!(settings.clipboard);
     }
 
     #[test]

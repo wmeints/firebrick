@@ -48,8 +48,34 @@ fn netlog_socket_dir_from(
         .or_else(|| macos.then(|| PathBuf::from(format!("/private/tmp/fbk-{uid}"))))
 }
 
+/// Returns the directory holding the unix sockets that sandboxes read the host clipboard
+/// through: `$XDG_RUNTIME_DIR/firebrick/clipboard`, falling back to `/private/tmp/fbkc-<uid>` on
+/// macOS, which has no `XDG_RUNTIME_DIR`.
+///
+/// Like [`netlog_socket_dir`], it never falls back to the temp directory and returns `None` on
+/// other platforms without an absolute `XDG_RUNTIME_DIR`. The macOS directory sits next to the
+/// network log's instead of inside it, so the sockets of 63-character sandbox names still fit in
+/// a unix socket address. Check it with [`create_private_dir`] before use.
+pub fn clipboard_socket_dir() -> Option<PathBuf> {
+    let uid = nix::unistd::geteuid().as_raw();
+    clipboard_socket_dir_from(&env_var, cfg!(target_os = "macos"), uid)
+}
+
+/// Returns the clipboard socket directory for the environment that `var` describes, on macOS
+/// when `macos` is set, for the user `uid`. The macOS directory is canonical, like the one of
+/// [`netlog_socket_dir_from`].
+fn clipboard_socket_dir_from(
+    var: &impl Fn(&str) -> Option<OsString>,
+    macos: bool,
+    uid: u32,
+) -> Option<PathBuf> {
+    absolute_var(var, "XDG_RUNTIME_DIR")
+        .map(|dir| dir.join("firebrick/clipboard"))
+        .or_else(|| macos.then(|| PathBuf::from(format!("/private/tmp/fbkc-{uid}"))))
+}
+
 /// Creates the directory with mode `0700` when it's missing, and checks that it's private to
-/// the effective user: a directory, not a symlink, owned by the user and without group or
+/// the effective user:a directory, not a symlink, owned by the user and without group or
 /// other access. Fails with [`io::ErrorKind::PermissionDenied`] when it isn't, so the caller
 /// never uses a directory that another user created first. Every error names the directory.
 pub fn create_private_dir(dir: &Path) -> io::Result<()> {
@@ -447,6 +473,38 @@ mod tests {
         let dir = netlog_socket_dir_from(&env(&[]), true, u32::MAX).unwrap();
         let socket = dir.join(format!("{}.sock", "a".repeat(63)));
 
+        assert!(socket.as_os_str().len() < 104, "{}", socket.display());
+    }
+
+    #[test]
+    fn clipboard_socket_dir_is_under_xdg_runtime_dir_on_every_platform() {
+        let var = env(&[("XDG_RUNTIME_DIR", "/run/user/1000")]);
+        for macos in [false, true] {
+            assert_eq!(
+                clipboard_socket_dir_from(&var, macos, 1000),
+                Some(PathBuf::from("/run/user/1000/firebrick/clipboard")),
+                "macos: {macos}"
+            );
+        }
+    }
+
+    #[test]
+    fn clipboard_socket_dir_is_none_on_linux_without_absolute_xdg_runtime_dir() {
+        for vars in NO_RUNTIME_DIR {
+            let dir = clipboard_socket_dir_from(&env(vars), false, 1000);
+            assert_eq!(dir, None, "{vars:?}");
+        }
+    }
+
+    #[test]
+    fn macos_clipboard_socket_dir_is_a_tmp_dir_per_user_that_fits_long_sandbox_names() {
+        let dir = clipboard_socket_dir_from(&env(&[]), true, u32::MAX).unwrap();
+        let socket = dir.join(format!("{}.sock", "a".repeat(63)));
+
+        assert_eq!(
+            clipboard_socket_dir_from(&env(&[]), true, 501),
+            Some(PathBuf::from("/private/tmp/fbkc-501"))
+        );
         assert!(socket.as_os_str().len() < 104, "{}", socket.display());
     }
 

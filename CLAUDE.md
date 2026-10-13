@@ -222,4 +222,4 @@ These checks enforce the rules above, so don't try to bypass them:
   0032).
 - `.github/workflows/image.yaml` builds the `firebrick-base` image for both
   platforms, without pushing it, on pull requests and pushes to `main` that
-  change the `Dockerfile`.
+  change the `Dockerfile` or the files it copies from `image/`.

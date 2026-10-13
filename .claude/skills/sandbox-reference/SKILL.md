@@ -139,6 +139,15 @@ build on it when `Cargo.lock` has a newer version.
   match an unrelated process in the new boot. An init that starts daemons must
   remove their runtime state first; `firebrick-base` removes `/run/docker.pid`,
   `/run/docker` and `/run/containerd` before it starts `dockerd` (ADR 0016).
+- `SandboxBuilder::script(name, content)` stores a script in the spec; the
+  runtime writes it to the sandbox's `runtime/scripts/` on the host at every
+  spawn and the guest sees it at `/.msb/scripts/<name>`. Exec sessions get
+  `/.msb/scripts` first on `PATH`, so a script shadows a guest program of the
+  same name. `fbkd` uses a `firebrick-clipboard` script as the marker of
+  sandboxes that share the host clipboard (ADR 0047).
+- A guest connection to vsock CID 2 fails both on a port without a route and on
+  a route whose host socket nobody listens on, so the guest can't tell the two
+  apart from the failure.
 
 **Changing existing sandboxes**
 

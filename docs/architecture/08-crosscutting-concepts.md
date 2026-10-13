@@ -82,32 +82,35 @@ same name. Like every secret change, these apply the next time a sandbox starts.
 ## Approving spec changes
 
 The agent can edit `.firebrick.yml`, because it lives in the workspace. So the
-CLI's `approval` module keeps the `mounts` and `network` settings the user
-approved per workspace in `approved.yml` in the firebrick config directory
-(`$XDG_CONFIG_HOME/firebrick`, falling back to `$HOME/.config/firebrick`), keyed
-by the canonical workspace path
+CLI's `approval` module keeps the `mounts`, `network` and `clipboard` settings
+the user approved per workspace in `approved.yml` in the firebrick config
+directory (`$XDG_CONFIG_HOME/firebrick`, falling back to
+`$HOME/.config/firebrick`), keyed by the canonical workspace path
 ([ADR 0037](decisions/0037-approve-mounts-and-network-changes-in-the-spec.md)).
-A workspace without an entry gets no mounts and the default network section
-without asking. Any other settings are asked about once, and listed in full
-instead of as a difference: a sandbox created before approvals existed may have
-enforced rules that the agent has since removed from the file, so `fbk` can't
-assume what was approved before.
+A workspace without an entry gets no mounts, the default network section and no
+shared clipboard without asking. Any other settings are asked about once, and
+listed in full instead of as a difference: a sandbox created before approvals
+existed may have enforced rules that the agent has since removed from the file,
+so `fbk` can't assume what was approved before.
 
-| Command                    | Compares                                                                                                  | Asks when                                                                                                 |
-| -------------------------- | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `fbk start`, `fbk run`     | The resolved mounts, with canonical host paths, and the network section of a sandbox it's about to create | They differ from the approved ones.                                                                       |
-| `fbk network <subcommand>` | The network section it's about to send to `fbkd`                                                          | It differs from the approved section with the subcommand's change applied, and from the approved section. |
+| Command                    | Compares                                                                                                                        | Asks when                                                                                                 |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `fbk start`, `fbk run`     | The resolved mounts, with canonical host paths, the network section and the clipboard setting of a sandbox it's about to create | They differ from the approved ones.                                                                       |
+| `fbk network <subcommand>` | The network section it's about to send to `fbkd`                                                                                | It differs from the approved section with the subcommand's change applied, and from the approved section. |
 
 Mounts and network rules are compared as sets, and a missing `enabled` equals
 `enabled: true`. When the settings differ, `fbk` prints each added (`+`) or
-removed (`-`) mount and rule and each changed (`~`) switch on stderr, then asks
-`Apply these changes? [y/N]`. Only `y` or `yes` approves; any other answer, or
-EOF, aborts before the sandbox is created or `UpdateNetwork` is sent, and `fbk
-network` keeps its edit to the file. Without a terminal on stdin the command
-fails unless `--yes` is passed, which approves without asking but still prints
-the difference. Approved settings are recorded, so the next command with the
-same settings doesn't ask. `fbk network` records the section it sends and keeps
-the approved mounts.
+removed (`-`) mount and rule, each changed (`~`) network switch and `+
+clipboard: shared with the host` or `- clipboard: shared with the host` on
+stderr, then asks `Apply these changes? [y/N]`. Only `y` or `yes` approves; any
+other answer, or EOF, aborts before the sandbox is created or `UpdateNetwork` is
+sent, and `fbk network` keeps its edit to the file. Without a terminal on stdin
+the command fails unless `--yes` is passed, which approves without asking but
+still prints the difference. Approved settings are recorded, so the next command
+with the same settings doesn't ask. `fbk network` records the section it sends
+and keeps the approved mounts and clipboard setting. `approved.yml` leaves out a
+`clipboard` that is off, and a file without the field loads with it off, so
+files of older versions keep working both ways.
 
 `approved.yml` is written with mode `0600` through a temp file and a rename,
 with `firebrick_utils::write_private`, which `secrets.yml` uses too. The CLI
@@ -116,7 +119,8 @@ conversion in `firebrick-proto` that the daemon uses to create them, so the
 approved mounts are the ones the daemon applies. A file that can't be read or
 isn't valid YAML fails the command, so a broken file never counts as approving
 nothing. Starting an existing sandbox doesn't check anything, because
-microsandbox only applies mounts when it creates a sandbox.
+microsandbox only applies mounts, and `fbkd` the clipboard setting, when it
+creates a sandbox.
 
 ## Outdated sandbox images
 
