@@ -1831,7 +1831,9 @@ async fn start_sandbox_streams_mise_progress_without_control_characters() {
 
     let daemon = TestDaemon::start("mise-progress").await;
     let mut client = daemon.client().await;
-    let install = r"printf 'mise \033[1;32minstalling\033[0m node\n'; printf 'mise done\n' >&2";
+    // Only the first line within a progress interval is reported right away, and a line still
+    // waiting when mise exits is dropped, so the escaped line is the fake mise's only output.
+    let install = r"printf 'mise \033[1;32minstalling\033[0m node\n'";
 
     let (messages, _) = restart_with_fake_mise(&mut client, name, install)
         .await
