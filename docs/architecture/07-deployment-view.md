@@ -167,12 +167,15 @@ workflow by hand. See
 | `**/*.md`, `dprint.json`, `mise.*`, `markdown.yaml`                                      | `markdown.yaml`   | `dprint check`                                       |
 | `.github/workflows/**`, `mise.*`                                                         | `actionlint.yaml` | `actionlint`, with `shellcheck` on the `run` steps   |
 | `Dockerfile`, `image.yaml`                                                               | `image.yaml`      | Builds the `firebrick-base` image                    |
+| `audit.yaml`, and daily                                                                  | `audit.yaml`      | `cargo audit` against `Cargo.lock`                   |
 
-`mise.toml` pins the Rust toolchain, Node, pnpm, dprint, actionlint and
-shellcheck, and `mise.lock` records their checksums, so `mise.*` stands for both
-files and runs every workflow except `image.yaml`. A pull request that changes
-only the website or the docs runs no `CI` jobs. `main` has no required status
-checks, so a workflow that its filter skipped doesn't block a merge.
+`mise.toml` pins the Rust toolchain, Node, pnpm, dprint, actionlint, shellcheck
+and cargo-audit, and `mise.lock` records their checksums, so `mise.*` stands for
+both files and runs every workflow except `image.yaml` and `audit.yaml`. The
+audit runs daily anyway, so a change to cargo-audit's pin surfaces the next day.
+A pull request that changes only the website or the docs runs no `CI` jobs.
+`main` has no required status checks, so a workflow that its filter skipped
+doesn't block a merge.
 
 The `check` job of `ci.yaml` runs clippy and then the unit tests; there's no
 separate build step, because both compile every target. The `integration` job
@@ -199,6 +202,16 @@ installs the tools with `--locked`, so each download must match the checksum in
 `mise.lock`; run `mise lock` after changing a version in `mise.toml`. The
 release jobs install only `rust` and `protoc`. See
 [ADR 0043](decisions/0043-pin-github-actions-and-ci-tools-to-checksums.md).
+
+`.github/workflows/audit.yaml` runs `cargo audit` against `Cargo.lock` with the
+latest RustSec advisory database every day, on manual runs, and on pull requests
+and pushes to `main` that change the workflow. A vulnerability advisory fails
+the job, and GitHub notifies about the failed scheduled run; unmaintained,
+unsound and yanked crates only print warnings. A database that can't be fetched
+also fails the job. When an advisory doesn't apply to firebrick and no upgrade
+fixes it, a maintainer adds its ID to `[advisories] ignore` in
+`.cargo/audit.toml`, with a comment that gives the reason. See
+[ADR 0046](decisions/0046-audit-dependencies-with-cargo-audit-daily.md).
 
 GitHub enforces the pins: the repository requires actions pinned to a full
 commit SHA, so a workflow that references an action by tag fails at startup. `gh
