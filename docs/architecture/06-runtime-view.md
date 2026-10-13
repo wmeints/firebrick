@@ -1288,7 +1288,7 @@ for a sandbox that contacted nothing. A sandbox that doesn't exist gets `sandbox
 A sandbox created with `clipboard: true` in `.firebrick.yml` can read the host
 clipboard through `fbkd`, so tools that paste by running `wl-paste` or `xclip`,
 such as Claude Code's image paste, work in the guest
-([ADR 0047](decisions/0047-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)).
+([ADR 0048](decisions/0048-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)).
 The setting needs approval like `mounts`: `fbk start` lists `+ clipboard: shared
 with the host` before it creates the sandbox (see
 [Approving spec changes](08-crosscutting-concepts.md#approving-spec-changes)).

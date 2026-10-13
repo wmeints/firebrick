@@ -106,7 +106,7 @@
   answer at 1 MiB of text or 10 MiB of PNG, but doesn't ask the user before each
   paste. The setting is off by default and needs approval, and the route only
   exists in sandboxes created with it
-  ([ADR 0047](decisions/0047-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)).
+  ([ADR 0048](decisions/0048-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)).
 - **Workspace files can run code on the host:** the workspace is mounted
   read/write, so the agent can plant files that run on the host when the user
   works on the project there, such as git hooks, `.git/config` settings like

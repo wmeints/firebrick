@@ -53,9 +53,12 @@ For the website, run these from the repository root:
   against the built site; run `build` first, and `pnpm --dir website exec
   playwright install chromium` once.
 
-`.cargo/config.toml` defines shortcuts for the Rust commands: `cargo lint`,
-`cargo unit-tests`, `cargo integration-tests`, and `cargo install-cli` / `cargo
-install-daemon` to install the binaries into `~/.cargo/bin`.
+`mise.toml` defines tasks for the common commands: `mise run lint`, `mise run
+unit-tests` and `mise run integration-tests`; `mise run registry` starts the
+local image registry on `127.0.0.1:5000`, and `mise run install-dev` installs
+`fbk` and `fbkd` into `~/.cargo/bin` and pushes the `firebrick-base` image to
+that registry as `localhost:5000/firebrick-base:dev`. Don't confuse
+`install-dev` with `mise install`, which installs the toolchain.
 
 ## Coding guidelines
 

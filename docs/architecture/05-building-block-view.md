@@ -545,7 +545,7 @@ C4Component
   removed sandbox's record can't come back.
 - `clipboard` - Answers the `wl-paste` and `xclip` stand-ins of a sandbox
   created with `clipboard: true` with the host clipboard (see
-  [ADR 0047](decisions/0047-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)
+  [ADR 0048](decisions/0048-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)
   and
   [Pasting from the host clipboard](06-runtime-view.md#pasting-from-the-host-clipboard)).
   `Clipboards::add_route` adds a stream route from guest vsock port `52001` to

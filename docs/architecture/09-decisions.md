@@ -46,4 +46,5 @@
 - [ADR 0044 - Strip escape sequences with console](decisions/0044-strip-escape-sequences-with-console.md)
 - [ADR 0045 - Approve publishing in a release environment](decisions/0045-approve-publishing-in-a-release-environment.md)
 - [ADR 0046 - Audit dependencies with cargo-audit daily](decisions/0046-audit-dependencies-with-cargo-audit-daily.md)
-- [ADR 0047 - Share the host clipboard over a vsock route with host tools](decisions/0047-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)
+- [ADR 0047 - Run development tasks with mise](decisions/0047-run-development-tasks-with-mise.md)
+- [ADR 0048 - Share the host clipboard over a vsock route with host tools](decisions/0048-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)

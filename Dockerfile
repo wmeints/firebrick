@@ -292,7 +292,7 @@ ENV BROWSER=/usr/local/bin/xdg-open
 
 # The guest has no display server either, so firebrick-paste stands in for wl-paste and xclip:
 # it reads the host clipboard's text and PNG content through fbkd on vsock port 52001, which
-# sandboxes created with `clipboard: true` in .firebrick.yml have a route to (ADR 0047). It
+# sandboxes created with `clipboard: true` in .firebrick.yml have a route to (ADR 0048). It
 # behaves like the tool it's called as and supports only pasting from the clipboard selection.
 COPY --chmod=755 image/firebrick-paste /usr/local/bin/firebrick-paste
 RUN ln -s /usr/local/bin/firebrick-paste /usr/local/bin/wl-paste \

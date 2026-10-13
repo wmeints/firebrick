@@ -144,7 +144,7 @@ build on it when `Cargo.lock` has a newer version.
   spawn and the guest sees it at `/.msb/scripts/<name>`. Exec sessions get
   `/.msb/scripts` first on `PATH`, so a script shadows a guest program of the
   same name. `fbkd` uses a `firebrick-clipboard` script as the marker of
-  sandboxes that share the host clipboard (ADR 0047).
+  sandboxes that share the host clipboard (ADR 0048).
 - A guest connection to vsock CID 2 fails both on a port without a route and on
   a route whose host socket nobody listens on, so the guest can't tell the two
   apart from the failure.

@@ -15,3 +15,42 @@ shellcheck = "0.11.0"
 [hooks]
 # Install the git hooks from lefthook.yml after `mise install`.
 postinstall = "lefthook install"
+
+# Development tasks. Run them with `mise run <task>`, list them with `mise tasks`.
+[tasks.lint]
+description = "Lint every crate, including the vm-tests integration tests"
+run = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+
+[tasks.unit-tests]
+description = "Run the unit tests"
+run = "cargo test --workspace"
+
+[tasks.integration-tests]
+description = "Run the integration tests that boot real microsandbox VMs"
+run = "cargo test -p firebrick-daemon --features vm-tests"
+
+[tasks.registry]
+description = "Make sure the local image registry serves on 127.0.0.1:5000"
+# mise renders the script as a Tera template, so it can't use docker's Go
+# template formats.
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -n "$(docker ps -q --filter name='^registry$')" ]; then
+  exit 0
+elif [ -n "$(docker ps -aq --filter name='^registry$')" ]; then
+  docker start registry >/dev/null
+else
+  docker run -d -p 127.0.0.1:5000:5000 --name registry registry:2 >/dev/null
+fi
+'''
+
+[tasks.install-dev]
+description = "Install fbk and fbkd, and push the firebrick-base image to the local registry"
+depends = ["registry"]
+run = [
+  "cargo install --locked --path crates/cli",
+  "cargo install --locked --path crates/daemon",
+  "docker build -t localhost:5000/firebrick-base:dev .",
+  "docker push localhost:5000/firebrick-base:dev",
+]
