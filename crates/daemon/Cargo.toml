@@ -26,6 +26,10 @@ required-features = ["vm-tests"]
 name = "msb_home"
 required-features = ["vm-tests"]
 
+# Reads the host clipboard with stub tools, in a process of its own; it boots no VMs.
+[[test]]
+name = "host_tools"
+
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }

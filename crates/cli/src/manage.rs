@@ -235,8 +235,9 @@ pub(crate) async fn ensure_running(
     Ok(started)
 }
 
-/// Makes sure the user approved the mounts, network and clipboard settings of the new sandbox, asking on
-/// the terminal when they changed. `network` is the spec's network section, or its default.
+/// Makes sure the user approved the mounts, network and clipboard settings of the new sandbox,
+/// asking on the terminal when they changed. `network` is the spec's network section, or its
+/// default.
 async fn approve_new_sandbox(
     request: &StartSandboxRequest,
     network: NetworkSpec,

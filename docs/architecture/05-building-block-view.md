@@ -397,16 +397,18 @@ C4Component
   `SshTunnel`) or recreates one, it makes `netlog` listen on the sandbox's
   socket; `fbkd` does the same for every sandbox with the route when it starts.
   `RemoveSandbox` deletes the socket and the record. A `StartSandbox` that
-  creates a sandbox with `clipboard` set gives it the `firebrick.clipboard=true`
-  label, and the shared builder chain adds the vsock route and marker of
-  `clipboard` to every sandbox with that label, so the setting survives
-  `UpdateNetwork` and `UpgradeSandbox`. A sandbox without the label gets
-  neither. `sandboxes` makes `clipboard` listen for such a sandbox the same way
-  as for its network log, and `RemoveSandbox` deletes its clipboard socket.
-  `SandboxManager::network_activity` returns a sandbox's record from `netlog`
-  with its rules from the `firebrick.network` label (`network::rules_of`),
-  `FAILED_PRECONDITION` when the sandbox has no network log route, or `INTERNAL`
-  when its record can't be read.
+  creates a sandbox with `clipboard` set listens for its clipboard first, and
+  fails with `FAILED_PRECONDITION` naming `XDG_RUNTIME_DIR` when it can't, so an
+  approved setting never silently does nothing. It gives the sandbox the
+  `firebrick.clipboard=true` label, and the shared builder chain adds the vsock
+  route and marker of `clipboard` to every sandbox with that label, so the
+  setting survives `UpdateNetwork` and `UpgradeSandbox`. A sandbox without the
+  label gets neither. `sandboxes` makes `clipboard` listen for such a sandbox
+  the same way as for its network log, and `RemoveSandbox` deletes its clipboard
+  socket. `SandboxManager::network_activity` returns a sandbox's record from
+  `netlog` with its rules from the `firebrick.network` label
+  (`network::rules_of`), `FAILED_PRECONDITION` when the sandbox has no network
+  log route, or `INTERNAL` when its record can't be read.
 - `pull` - Turns microsandbox's `PullProgress` events into pull updates: it adds
   up the downloaded bytes per layer, takes the total from the manifest, and
   reports at most one update every 100 ms, one for each layer that finishes and
@@ -555,23 +557,38 @@ C4Component
   gets the same checks as the network log's, through `vsock`. Each connection
   carries one request line, `types`, `text` or `png`, of at most 16 bytes, sent
   within 5 seconds, and gets `ok <length>` with the content, or `empty`,
-  `too-large`, `unavailable` or `invalid`. A sandbox gets at most 4 connections
-  at a time; further ones are closed. `fbkd` sends at most 1 MiB of text and 10
-  MiB of PNG, also when the `HostClipboard` returns more. `HostTools`, the
-  `HostClipboard` of `fbkd`, lists the clipboard's types and then reads the
-  requested one with `wl-paste` when `WAYLAND_DISPLAY` is set, otherwise with
-  `xclip` when `DISPLAY` is, and with `osascript` and `pbpaste` on macOS. It
-  runs them with `tokio::process`, without a shell, stops reading past the
-  limit, and kills them after 4 seconds. A tool that reports an empty clipboard
-  means `empty`; any other failure, or no display, means `unavailable`, logged
-  at `warn` with the reason, at most once a minute per sandbox. Tests pass a
-  fake `HostClipboard`.
-- `vsock` - The unix sockets behind the vsock routes of `netlog` and
-  `clipboard`: the socket path of a sandbox, which is `None` when it doesn't fit
-  in a unix socket address, whether a sandbox's spec has a route to it, the
-  check of the socket directory with `firebrick_utils::create_private_dir`, and
-  binding a socket after checking the directory again, leaving a socket that
-  another process answers on alone and removing a stale one.
+  `too-large`, `unavailable <cause>` or `invalid`. The cause is `no-display`,
+  `no-tool` or `failed`, so the stand-ins can give a hint; the reason itself
+  stays in `fbkd`'s log. A sandbox gets at most 4 connections at a time; further
+  ones are closed. `fbkd` sends at most 1 MiB of text and 10 MiB of PNG, also
+  when the `HostClipboard` returns more. `HostTools`, the `HostClipboard` of
+  `fbkd`, lists the clipboard's types and then reads the requested one with
+  `wl-paste` when `WAYLAND_DISPLAY` is set, otherwise with `xclip` when
+  `DISPLAY` is, and with `osascript` and `pbpaste` on macOS
+  (`HostTools::from_env`). It runs them with `tokio::process`, without a shell,
+  stops reading past the limit, and kills them after 4 seconds. A tool that
+  reports an empty clipboard means `empty`; no display, a missing tool and any
+  other failure mean `unavailable` with their cause, logged at `warn` with the
+  reason, at most once a minute per sandbox. `Clipboards::listen` fails when the
+  sandbox has no socket path or the socket can't be bound, and `sandboxes` then
+  refuses to create a sandbox with the setting. The unit tests pass a fake
+  `HostClipboard`; `tests/host_tools.rs` runs `HostTools::new` against stub
+  tools on a `PATH` of its own, in a test binary of its own, because a process
+  spawned in the unit tests can briefly hold the port of a listener that a
+  `forward` test just closed.
+- `vsock` - The listeners behind the vsock routes of `netlog` and `clipboard`.
+  `Listeners<S>` keeps one listener per sandbox for a channel, with the state
+  `S` it shares with the channel, such as the network record. It knows the
+  socket path of a sandbox, which is `None` when it doesn't fit in a unix socket
+  address, adds the route to a builder and checks whether a sandbox's spec has
+  it. `Listeners::private` checks the socket directory with
+  `firebrick_utils::create_private_dir`. `Listeners::listen` checks it again,
+  leaves a socket that another process answers on alone, removes a stale one,
+  binds it and runs the channel's listener, replacing one that stopped; it
+  returns the error when it can't. `remove` stops a sandbox's listener and
+  deletes its socket, `close` stops them all, and dropping the registry aborts
+  them. `Connections` runs a task per accepted connection and closes the ones
+  beyond 4 per sandbox.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `fbkd` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,

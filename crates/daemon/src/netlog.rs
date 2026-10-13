@@ -8,13 +8,13 @@
 //! or send false events. It aggregates the valid events per destination into a record file in
 //! [`firebrick_utils::network_log_dir`]. The record is a diagnostic aid, not an audit trail.
 
-use crate::vsock;
+use crate::vsock::{self, Connections, Listeners, Refused};
 use chrono::{DateTime, Utc};
 use firebrick_utils::strip_control;
 use microsandbox::sandbox::{SandboxBuilder, SandboxSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
@@ -23,10 +23,12 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
-use tokio::task::{JoinHandle, JoinSet};
 
 /// Guest vsock port the logger in the guest writes its events to, on host CID 2.
 pub const GUEST_PORT: u32 = 52000;
+
+/// The name of the channel in log lines.
+const CHANNEL: &str = "network log";
 
 /// The longest line fbkd reads from the logger, in bytes, without its newline.
 const MAX_LINE: usize = 4 * 1024;
@@ -39,9 +41,6 @@ const MAX_VALUES: usize = 64;
 
 /// How often fbkd logs a warning about invalid lines from one sandbox at most.
 const WARNING_INTERVAL: Duration = Duration::from_secs(60);
-
-/// The most connections fbkd accepts from one sandbox's logger at a time. The logger needs one.
-const MAX_CONNECTIONS: usize = 4;
 
 /// How often fbkd writes a changed record to its file.
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
@@ -584,54 +583,38 @@ async fn read_events(stream: UnixStream, recorder: Arc<Recorder>) {
     }
 }
 
-/// The connections of one sandbox's logger and the record they add to.
-struct Connections {
-    recorder: Arc<Recorder>,
-    tasks: JoinSet<()>,
-}
+/// Records the events of an accepted connection, or closes it with a warning when the sandbox
+/// already has [`vsock::MAX_CONNECTIONS`] connections.
+fn accept(
+    connections: &mut Connections,
+    accepted: io::Result<(UnixStream, tokio::net::unix::SocketAddr)>,
+    recorder: &Arc<Recorder>,
+) {
+    let read = |stream| read_events(stream, Arc::clone(recorder));
 
-impl Connections {
-    /// Records the events of an accepted connection, or closes it with a warning when the
-    /// sandbox already has [`MAX_CONNECTIONS`] connections.
-    fn accept(&mut self, accepted: io::Result<(UnixStream, tokio::net::unix::SocketAddr)>) {
-        match accepted {
-            Ok(_) if self.tasks.len() >= MAX_CONNECTIONS => self.recorder.warn(
-                Source::Guest,
-                &format!("closed a connection beyond the limit of {MAX_CONNECTIONS}"),
+    match connections.accept(accepted, read) {
+        Ok(()) => {}
+        Err(Refused::Full) => recorder.warn(
+            Source::Guest,
+            &format!(
+                "closed a connection beyond the limit of {}",
+                vsock::MAX_CONNECTIONS
             ),
-            Ok((stream, _)) => {
-                self.tasks
-                    .spawn(read_events(stream, Arc::clone(&self.recorder)));
-            }
-            Err(err) => self.recorder.warn(
-                Source::Host,
-                &format!("failed to accept a connection: {err}"),
-            ),
-        }
-    }
-
-    /// Logs a connection task that panicked.
-    fn finished(&self, result: Result<(), tokio::task::JoinError>) {
-        if let Err(err) = result.filter_panic() {
-            tracing::error!(
-                "a network log connection of sandbox {} failed: {err}",
-                self.recorder.sandbox
-            );
-        }
+        ),
+        Err(Refused::Failed(err)) => recorder.warn(
+            Source::Host,
+            &format!("failed to accept a connection: {err}"),
+        ),
     }
 }
 
-/// Keeps only the errors of tasks that panicked, not of cancelled ones.
-trait FilterPanic {
-    fn filter_panic(self) -> Result<(), tokio::task::JoinError>;
-}
-
-impl FilterPanic for Result<(), tokio::task::JoinError> {
-    fn filter_panic(self) -> Result<(), tokio::task::JoinError> {
-        match self {
-            Err(err) if err.is_panic() => Err(err),
-            _ => Ok(()),
-        }
+/// Logs a connection task that panicked.
+fn finished(recorder: &Recorder, result: Result<(), tokio::task::JoinError>) {
+    if let Some(err) = vsock::panicked(result) {
+        tracing::error!(
+            "a network log connection of sandbox {} failed: {err}",
+            recorder.sandbox
+        );
     }
 }
 
@@ -640,18 +623,15 @@ impl FilterPanic for Result<(), tokio::task::JoinError> {
 /// sender is dropped, it writes the record a last time, unless the sandbox was removed, and
 /// returns, which closes its connections.
 async fn serve(listener: UnixListener, recorder: Arc<Recorder>, shutdown: oneshot::Receiver<()>) {
-    let mut connections = Connections {
-        recorder: Arc::clone(&recorder),
-        tasks: JoinSet::new(),
-    };
+    let mut connections = Connections::default();
     let mut flush = tokio::time::interval(FLUSH_INTERVAL);
     tokio::pin!(shutdown);
 
     loop {
         tokio::select! {
-            accepted = listener.accept() => connections.accept(accepted),
+            accepted = listener.accept() => accept(&mut connections, accepted, &recorder),
             _ = flush.tick() => recorder.flush().await,
-            Some(result) = connections.tasks.join_next() => connections.finished(result),
+            Some(result) = connections.join_next() => finished(&recorder, result),
             _ = &mut shutdown => break,
         }
     }
@@ -659,33 +639,10 @@ async fn serve(listener: UnixListener, recorder: Arc<Recorder>, shutdown: onesho
     recorder.flush().await;
 }
 
-/// A sandbox fbkd listens for.
-struct Listening {
-    recorder: Arc<Recorder>,
-    shutdown: oneshot::Sender<()>,
-    task: JoinHandle<()>,
-}
-
-impl Listening {
-    /// Stops listening, after a last write of the record unless it was marked removed, and
-    /// waits until the listener has stopped. Logs a listener that panicked.
-    async fn stop(self) {
-        let _ = self.shutdown.send(());
-
-        if let Err(err) = self.task.await.filter_panic() {
-            tracing::error!(
-                "the network log listener of sandbox {} failed: {err}",
-                self.recorder.sandbox
-            );
-        }
-    }
-}
-
 /// Listens for the network events of sandboxes and keeps their records.
 pub struct NetLogs {
-    socket_dir: Option<PathBuf>,
+    listeners: Listeners<Recorder>,
     record_dir: Option<PathBuf>,
-    listening: Mutex<HashMap<String, Listening>>,
 }
 
 impl NetLogs {
@@ -694,9 +651,8 @@ impl NetLogs {
     /// records are kept in memory only.
     pub fn new(socket_dir: Option<PathBuf>, record_dir: Option<PathBuf>) -> Self {
         Self {
-            socket_dir,
+            listeners: Listeners::new(CHANNEL, GUEST_PORT, socket_dir),
             record_dir,
-            listening: Mutex::default(),
         }
     }
 
@@ -705,28 +661,23 @@ impl NetLogs {
     /// warning for each one the environment doesn't provide, and leaves out a socket directory
     /// that isn't private to the user.
     pub fn from_env() -> Self {
-        let socket_dir = vsock::private_dir(firebrick_utils::netlog_socket_dir(), "network log");
+        let socket_dir = firebrick_utils::netlog_socket_dir();
         let record_dir = firebrick_utils::network_log_dir();
 
         if record_dir.is_none() {
             tracing::warn!("there's no state directory, so network records aren't saved");
         }
 
-        Self::new(socket_dir, record_dir)
-    }
-
-    /// Locks the registry. It stays consistent when a thread panics while holding it, so a
-    /// poisoned lock is safe to use.
-    fn listening(&self) -> MutexGuard<'_, HashMap<String, Listening>> {
-        self.listening
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        Self {
+            listeners: Listeners::private(CHANNEL, GUEST_PORT, socket_dir),
+            record_dir,
+        }
     }
 
     /// Returns the socket of the sandbox, or `None` when there's no socket directory or the
     /// path is too long for a unix socket.
     pub fn socket_path(&self, sandbox: &str) -> Option<PathBuf> {
-        vsock::socket_path(self.socket_dir.as_deref(), sandbox)
+        self.listeners.socket_path(sandbox)
     }
 
     /// Returns the record file of the sandbox, if there's a record directory.
@@ -740,21 +691,12 @@ impl NetLogs {
     /// builder alone, with a warning, when the sandbox has no socket path, for example because
     /// it would be too long, since microsandbox would then refuse to boot the sandbox.
     pub fn add_route(&self, builder: SandboxBuilder, sandbox: &str) -> SandboxBuilder {
-        match self.socket_path(sandbox) {
-            Some(path) => builder.vsock(path, GUEST_PORT),
-            None => {
-                tracing::warn!(
-                    "sandbox {sandbox} has no network log socket path; it gets no route"
-                );
-                builder
-            }
-        }
+        self.listeners.add_route(builder, sandbox)
     }
 
     /// Whether the sandbox has a stream route from [`GUEST_PORT`] to its socket.
     pub fn has_route(&self, sandbox: &str, spec: &SandboxSpec) -> bool {
-        self.socket_path(sandbox)
-            .is_some_and(|path| vsock::has_route(spec, GUEST_PORT, &path))
+        self.listeners.has_route(sandbox, spec)
     }
 
     /// Listens on the sandbox's socket unless fbkd already does, loading its record. A listener
@@ -762,62 +704,12 @@ impl NetLogs {
     /// first, but leaves one alone that another process listens on. Logs an error when the
     /// socket can't be bound: network logging never stops a sandbox from starting.
     pub async fn listen(&self, sandbox: &str) {
-        if self.is_listening(sandbox) {
-            return;
+        let recorder = Recorder::load(sandbox, self.record_path(sandbox));
+        let listened = self.listeners.listen(sandbox, recorder, serve).await;
+
+        if let Err(err) = listened {
+            tracing::error!("failed to listen for the network log of sandbox {sandbox}: {err}");
         }
-
-        let listener = match self.bind(sandbox).await {
-            Ok(listener) => listener,
-            Err(err) => {
-                tracing::error!("failed to listen for the network log of sandbox {sandbox}: {err}");
-                return;
-            }
-        };
-        let recorder = Arc::new(Recorder::load(sandbox, self.record_path(sandbox)).await);
-        let (shutdown, stopped) = oneshot::channel();
-        let task = tokio::spawn(serve(listener, Arc::clone(&recorder), stopped));
-        let listening = Listening {
-            recorder,
-            shutdown,
-            task,
-        };
-
-        // Another task may have started listening while this one bound the socket. Its listener
-        // lost the path to this one, so this one takes its place.
-        let replaced = self.listening().insert(sandbox.to_string(), listening);
-
-        if let Some(replaced) = replaced {
-            replaced.task.abort();
-        }
-    }
-
-    /// Whether a listener of the sandbox runs. Logs and forgets one that stopped.
-    fn is_listening(&self, sandbox: &str) -> bool {
-        let mut listening = self.listening();
-        let Some(entry) = listening.get(sandbox) else {
-            return false;
-        };
-
-        if !entry.task.is_finished() {
-            return true;
-        }
-
-        tracing::warn!("the network log listener of sandbox {sandbox} stopped; listening again");
-        listening.remove(sandbox);
-
-        false
-    }
-
-    /// Binds the sandbox's socket, removing a stale socket file first.
-    async fn bind(&self, sandbox: &str) -> io::Result<UnixListener> {
-        let (Some(dir), Some(path)) = (&self.socket_dir, self.socket_path(sandbox)) else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "there's no socket directory or the socket path is too long",
-            ));
-        };
-
-        vsock::bind(dir, &path).await
     }
 
     /// Returns the network activity recorded for the sandbox: the live record while fbkd
@@ -825,9 +717,9 @@ impl NetLogs {
     /// the file can't be read or is corrupt.
     pub async fn record(&self, sandbox: &str) -> Result<Record, RecordError> {
         let live = self
-            .listening()
-            .get(sandbox)
-            .map(|listening| listening.recorder.record());
+            .listeners
+            .state(sandbox)
+            .map(|recorder| recorder.record());
 
         match (live, self.record_path(sandbox)) {
             (Some(record), _) => Ok(record),
@@ -839,34 +731,14 @@ impl NetLogs {
     /// Stops listening for the sandbox, waits until its listener has stopped writing, and
     /// deletes its socket and record. Logs a warning when a file can't be deleted.
     pub async fn remove(&self, sandbox: &str) {
-        let removed = self.listening().remove(sandbox);
-
-        if let Some(listening) = removed {
-            listening.recorder.mark_removed();
-            listening.stop().await;
-        }
-
-        for path in [self.socket_path(sandbox), self.record_path(sandbox)] {
-            vsock::remove_logged(path).await;
-        }
+        self.listeners.remove(sandbox, Recorder::mark_removed).await;
+        vsock::remove_logged(self.record_path(sandbox)).await;
     }
 
     /// Stops listening for every sandbox, writing their records a last time. Run when the
     /// daemon shuts down.
     pub async fn close(&self) {
-        let listening: Vec<Listening> = self.listening().drain().map(|(_, l)| l).collect();
-
-        for listening in listening {
-            listening.stop().await;
-        }
-    }
-}
-
-impl Drop for NetLogs {
-    fn drop(&mut self) {
-        for listening in self.listening().values() {
-            listening.task.abort();
-        }
+        self.listeners.close().await;
     }
 }
 
@@ -1209,7 +1081,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let logs = netlogs(dir.path());
         logs.listen("sb").await;
-        let mut kept = connect_many(&logs, MAX_CONNECTIONS).await;
+        let mut kept = connect_many(&logs, vsock::MAX_CONNECTIONS).await;
 
         let mut extra = connect_logger(&logs, "sb").await.unwrap();
         let mut byte = [0; 1];
@@ -1291,22 +1163,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn listen_refuses_a_socket_directory_with_group_or_other_access() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket_dir = dir.path().join("netlog");
-        std::fs::create_dir(&socket_dir).unwrap();
-        std::fs::set_permissions(&socket_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let logs = netlogs(dir.path());
-
-        logs.listen("sb").await;
-
-        assert!(!logs.socket_path("sb").unwrap().exists());
-        assert_eq!(logs.record("sb").await.unwrap(), Record::default());
-        let mode = std::fs::metadata(&socket_dir).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o755);
-    }
-
-    #[tokio::test]
     async fn remove_deletes_the_socket_and_the_record_for_good() {
         let dir = tempfile::tempdir().unwrap();
         let logs = netlogs(dir.path());
@@ -1321,27 +1177,5 @@ mod tests {
         assert!(!logs.socket_path("sb").unwrap().exists());
         assert!(!dir.path().join("network/sb.json").exists());
         assert_eq!(logs.record("sb").await.unwrap(), Record::default());
-    }
-
-    #[test]
-    fn socket_path_is_none_when_too_long_or_without_a_directory() {
-        let logs = NetLogs::new(Some(PathBuf::from("/run/user/1000/firebrick/netlog")), None);
-
-        assert!(logs.socket_path("short").is_some());
-        assert!(logs.socket_path(&"a".repeat(100)).is_none());
-        assert!(NetLogs::new(None, None).socket_path("short").is_none());
-    }
-
-    #[tokio::test]
-    async fn add_route_adds_a_stream_route_to_the_socket() {
-        let logs = NetLogs::new(Some(PathBuf::from("/run/firebrick/netlog")), None);
-        let builder = logs.add_route(
-            microsandbox::Sandbox::builder("sb").image("ubuntu:26.04"),
-            "sb",
-        );
-        let spec = builder.build().await.unwrap().spec;
-
-        assert!(logs.has_route("sb", &spec));
-        assert!(!logs.has_route("other", &spec));
     }
 }

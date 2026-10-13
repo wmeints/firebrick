@@ -1,7 +1,7 @@
-//! Approval of the `mounts`, `network` and `clipboard` settings in `.firebrick.yml`. The spec file lives in
-//! the workspace, which the sandbox mounts read/write, so an agent can edit it. `fbk` records
-//! the settings the user approved per workspace outside every mounted directory, and asks before
-//! it applies other ones.
+//! Approval of the `mounts`, `network` and `clipboard` settings in `.firebrick.yml`. The spec
+//! file lives in the workspace, which the sandbox mounts read/write, so an agent can edit it.
+//! `fbk` records the settings the user approved per workspace outside every mounted directory,
+//! and asks before it applies other ones.
 
 use anyhow::{Context, Result, anyhow, bail};
 use firebrick_spec::{MountSpec, NetworkRule, NetworkSpec};
@@ -16,9 +16,9 @@ const ABORTED: &str =
     "aborted: the changes to mounts, network and clipboard in .firebrick.yml weren't approved";
 
 /// Error when there is no terminal to ask on and `--yes` isn't passed.
-const NOT_INTERACTIVE: &str = ".firebrick.yml changes mounts, network or clipboard since you last \
-                               approved them; run the command in a terminal to review the changes, or \
-                               pass --yes";
+const NOT_INTERACTIVE: &str = ".firebrick.yml changes mounts, network or clipboard since you \
+                               last approved them; run the command in a terminal to review the \
+                               changes, or pass --yes";
 
 /// Header above the changes to approve.
 const CHANGES_HEADER: &str =
@@ -43,13 +43,8 @@ pub struct Settings {
     pub network: NetworkSpec,
     /// Whether the sandbox shares the host clipboard. Left out of the file when it's off, so
     /// approvals files stay readable by `fbk` versions without the setting.
-    #[serde(default, skip_serializing_if = "is_off")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub clipboard: bool,
-}
-
-/// Whether a switch is off, so it can be left out of the approvals file.
-fn is_off(value: &bool) -> bool {
-    !value
 }
 
 /// Layout of the approvals file.

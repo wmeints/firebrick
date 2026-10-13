@@ -1334,16 +1334,21 @@ is, and with `osascript` and `pbpaste` on macOS. It inherits the display from
 the `fbk` that started it. A sandbox without the label has no route and no
 marker, so nothing in its guest, not even root, reaches `fbkd`'s clipboard
 sockets. `fbk network` and `fbk upgrade` recreate the sandbox with its labels,
-so it keeps the setting.
+so it keeps the setting. When `fbkd` can't listen for a new sandbox's clipboard,
+for example because `XDG_RUNTIME_DIR` isn't set to a private directory, `fbk
+start` fails with `can't share the host clipboard with sandbox <name>: ...`
+before the sandbox is created. A sandbox with the label whose route doesn't
+match its socket anymore, because `XDG_RUNTIME_DIR` changed, is logged at `warn`
+when `fbkd` starts or starts the sandbox.
 
-| Situation                                          | Exit status | Message on stderr                                                                                                     |
-| -------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------- |
-| The sandbox was created without `clipboard: true`  | 1           | `wl-paste: clipboard sharing is off for this sandbox; set clipboard: true in .firebrick.yml and recreate the sandbox` |
-| `fbkd` doesn't answer within 5 seconds             | 1           | `wl-paste: couldn't reach the host clipboard`                                                                         |
-| The host clipboard can't be read                   | 1           | `wl-paste: the host clipboard isn't available`; `fbkd` logs why at `warn`                                             |
-| The clipboard is empty or lacks the requested type | 1           | `wl-paste: the clipboard holds no <type>`                                                                             |
-| Text over 1 MiB or a PNG over 10 MiB               | 1           | `wl-paste: the clipboard content is larger than <limit>`                                                              |
-| Another type, `-selection primary` or `xclip -i`   | 2           | A usage line naming the supported forms                                                                               |
+| Situation                                          | Exit status | Message on stderr                                                                                                            |
+| -------------------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| The sandbox was created without `clipboard: true`  | 1           | `wl-paste: clipboard sharing is off for this sandbox; set clipboard: true in .firebrick.yml and recreate the sandbox`        |
+| `fbkd` doesn't answer within 5 seconds             | 1           | `wl-paste: couldn't reach the host clipboard`                                                                                |
+| The host clipboard can't be read                   | 1           | `wl-paste: the host clipboard isn't available`, with a hint when `fbkd` has no display or no tool; `fbkd` logs why at `warn` |
+| The clipboard is empty or lacks the requested type | 1           | `wl-paste: the clipboard holds no <type>`                                                                                    |
+| Text over 1 MiB or a PNG over 10 MiB               | 1           | `wl-paste: the clipboard content is larger than <limit>`                                                                     |
+| Another type, `-selection primary` or `xclip -i`   | 2           | A usage line naming the supported forms                                                                                      |
 
 `xclip` prints its messages with an `xclip:` prefix. `fbkd` closes the
 connections of a sandbox beyond 4 at a time, and never sends more than the

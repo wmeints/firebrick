@@ -115,7 +115,10 @@ The website follows the same rules where they apply:
   bottom of the module and test its public interface.
 - Tests that boot real microsandbox VMs live in the crate's `tests/` directory
   and are registered in `Cargo.toml` as a `[[test]]` with `required-features =
-  ["vm-tests"]`, so `cargo test` skips them by default.
+  ["vm-tests"]`, so `cargo test` skips them by default. Tests that spawn host
+  processes go in a `tests/` binary of their own without that feature, such as
+  `crates/daemon/tests/host_tools.rs`: in the unit tests a forked child can
+  briefly hold a port that another test just freed.
 - Use `#[tokio::test]` for async tests, and give temporary files, sockets and
   sandboxes unique names (for example with `tempfile` or the process id) so
   tests can run in parallel.

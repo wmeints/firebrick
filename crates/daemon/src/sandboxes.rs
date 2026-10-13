@@ -1,7 +1,7 @@
 //! Sandbox management on top of microsandbox: the sandbox lifecycle, the workspace's mise
 //! tools, the secrets of sandboxes, their port forwards, their URL relays, their network logs,
-//! their clipboard channels, SSH host names, the generated SSH config, the editors' Remote-SSH settings and Zed's remote
-//! projects.
+//! their clipboard channels, SSH host names, the generated SSH config, the editors' Remote-SSH
+//! settings and Zed's remote projects.
 
 use crate::clipboard::{self, Clipboards, HostClipboard};
 use crate::forward::{self, ForwardReport, Forwards, SshConnector};
@@ -527,9 +527,8 @@ impl SandboxManager {
     /// Starts an existing sandbox or creates a new one when it doesn't exist, installs the
     /// workspace's mise tools when it started, then syncs the SSH config and the editor
     /// settings, also when starting failed. Listens for the sandbox's network log and clipboard
-    /// first. Once
-    /// the sandbox runs, stores the requested ports, opens its forwards and starts its URL
-    /// relay, also when it was already running.
+    /// first. Once the sandbox runs, stores the requested ports, opens its forwards and starts
+    /// its URL relay, also when it was already running.
     /// `resources` is only called when the sandbox is created. `on_progress` gets the progress
     /// of an image that is downloaded for a new sandbox, and of installing the mise tools.
     pub async fn start(
@@ -544,11 +543,13 @@ impl SandboxManager {
                 self.listen_if_routed(&existing_sb).await;
                 start_existing_sandbox(&existing_sb, request, mise_progress(&mut on_progress)).await
             }
-            Err(_) => {
-                self.listen_for_new(request).await;
-                self.create_and_install(request, resources, on_progress)
-                    .await
-            }
+            Err(_) => match self.listen_for_new(request).await {
+                Ok(()) => {
+                    self.create_and_install(request, resources, on_progress)
+                        .await
+                }
+                Err(err) => Err(err),
+            },
         };
 
         sync_ssh_config().await;
@@ -595,12 +596,28 @@ impl SandboxManager {
     }
 
     /// Listens for the network log of a sandbox that is about to be created, and for its
-    /// clipboard when it shares the host clipboard.
-    async fn listen_for_new(&self, request: StartSandbox<'_>) {
+    /// clipboard when it shares the host clipboard. Fails with `FailedPrecondition` when fbkd
+    /// can't listen for the clipboard, because the sandbox's stand-ins couldn't reach it.
+    async fn listen_for_new(&self, request: StartSandbox<'_>) -> Result<(), SandboxError> {
         self.netlogs.listen(request.name).await;
 
-        if request.clipboard {
-            self.clipboards.listen(request.name).await;
+        if !request.clipboard {
+            return Ok(());
+        }
+
+        self.clipboards.listen(request.name).await.map_err(|err| {
+            SandboxError::failed_precondition(format!(
+                "can't share the host clipboard with sandbox {}: {err}; set XDG_RUNTIME_DIR to \
+                 a private directory, or set clipboard: false in .firebrick.yml",
+                request.name
+            ))
+        })
+    }
+
+    /// Listens for the clipboard of an existing sandbox, logging an error when that fails.
+    async fn listen_for_clipboard(&self, name: &str) {
+        if let Err(err) = self.clipboards.listen(name).await {
+            tracing::error!("failed to listen for the clipboard of sandbox {name}: {err}");
         }
     }
 
@@ -623,8 +640,18 @@ impl SandboxManager {
             self.netlogs.listen(sb.name()).await;
         }
 
-        if self.clipboards.has_route(sb.name(), &config.spec) {
-            self.clipboards.listen(sb.name()).await;
+        match (
+            self.clipboards.has_route(sb.name(), &config.spec),
+            clipboard::is_enabled(&config.spec.labels),
+        ) {
+            (true, _) => self.listen_for_clipboard(sb.name()).await,
+            (false, true) => tracing::warn!(
+                "sandbox {} shares the host clipboard but has no route to {:?}, for example \
+                 because XDG_RUNTIME_DIR changed; recreate it to paste from the host again",
+                sb.name(),
+                self.clipboards.socket_path(sb.name())
+            ),
+            (false, false) => {}
         }
     }
 
@@ -778,9 +805,8 @@ impl SandboxManager {
     }
 
     /// Removes a sandbox, closes its forwards and deletes its network log and clipboard socket,
-    /// then syncs the SSH
-    /// config and the editor settings. A running sandbox is only removed with `force`, which
-    /// stops it first like [`SandboxManager::stop`].
+    /// then syncs the SSH config and the editor settings. A running sandbox is only removed with
+    /// `force`, which stops it first like [`SandboxManager::stop`].
     pub async fn remove(&self, name: &str, force: bool) -> Result<(), SandboxError> {
         let _guard = self.lock_sandbox(name).await;
         let sb = self.get_or_close_forwards(name).await?;
@@ -1013,9 +1039,9 @@ impl SandboxManager {
     }
 
     /// Listens for the sandbox's network log, and its clipboard when it shares the host
-    /// clipboard, replaces the sandbox as the recreation says,
-    /// then syncs the SSH config and the editor settings and reopens its forwards and URL relay
-    /// when it runs, also when replacing it failed.
+    /// clipboard, replaces the sandbox as the recreation says, then syncs the SSH config and the
+    /// editor settings and reopens its forwards and URL relay when it runs, also when replacing
+    /// it failed.
     async fn recreate_and_reopen(
         &self,
         sb: &SandboxHandle,
@@ -1025,7 +1051,7 @@ impl SandboxManager {
 
         self.netlogs.listen(name).await;
         if clipboard::is_enabled(&recreation.settings.labels) {
-            self.clipboards.listen(name).await;
+            self.listen_for_clipboard(name).await;
         }
         let result = self.replace(sb, recreation).await;
         sync_ssh_config().await;
@@ -2363,7 +2389,11 @@ mod tests {
             store.set(secret).unwrap();
         }
 
-        SandboxManager::new(store, Arc::new(HostOpener), Arc::new(HostTools))
+        SandboxManager::new(
+            store,
+            Arc::new(HostOpener),
+            Arc::new(HostTools::new(None, None)),
+        )
     }
 
     /// Returns a listing that fails with each error in turn, then succeeds, and counts its calls.
@@ -2583,7 +2613,10 @@ mod tests {
     /// Returns the spec microsandbox would create the sandbox with, with its sockets in `/run`.
     async fn built_spec(settings: &SandboxSettings) -> SandboxSpec {
         let netlogs = NetLogs::new(Some("/run/fbk/netlog".into()), None);
-        let clipboards = Clipboards::new(Some("/run/fbk/clipboard".into()), Arc::new(HostTools));
+        let clipboards = Clipboards::new(
+            Some("/run/fbk/clipboard".into()),
+            Arc::new(HostTools::new(None, None)),
+        );
 
         settings
             .builder(&netlogs, &clipboards)
@@ -2598,7 +2631,10 @@ mod tests {
     async fn new_sandbox_with_the_clipboard_gets_its_label_and_route() {
         let settings = new_settings("", true);
         let spec = built_spec(&settings).await;
-        let clipboards = Clipboards::new(Some("/run/fbk/clipboard".into()), Arc::new(HostTools));
+        let clipboards = Clipboards::new(
+            Some("/run/fbk/clipboard".into()),
+            Arc::new(HostTools::new(None, None)),
+        );
 
         assert_eq!(
             settings.labels.get(clipboard::ENABLED_LABEL),
@@ -2823,7 +2859,11 @@ mod tests {
         for (name, sandbox) in entries {
             store.set(scoped_secret(name, sandbox)).unwrap();
         }
-        let manager = SandboxManager::new(store, Arc::new(HostOpener), Arc::new(HostTools));
+        let manager = SandboxManager::new(
+            store,
+            Arc::new(HostOpener),
+            Arc::new(HostTools::new(None, None)),
+        );
 
         let listed = manager.list_secrets().unwrap();
 
@@ -2845,7 +2885,7 @@ mod tests {
         let manager = SandboxManager::new(
             SecretStore::new(&path),
             Arc::new(HostOpener),
-            Arc::new(HostTools),
+            Arc::new(HostTools::new(None, None)),
         );
         let sandbox = format!("fbk-unit-missing-{}", std::process::id());
 
@@ -2917,7 +2957,7 @@ mod tests {
         let manager = SandboxManager::new(
             SecretStore::new(&path),
             Arc::new(HostOpener),
-            Arc::new(HostTools),
+            Arc::new(HostTools::new(None, None)),
         );
 
         let result = manager

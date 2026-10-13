@@ -65,9 +65,11 @@ clipboard:
   marker.
 - **Protocol.** A stand-in sends one request line, `types`, `text` or `png`, and
   gets `ok <length>` and the content, or one of `empty`, `too-large`,
-  `unavailable` and `invalid`. `fbkd` reads at most 16 bytes of the request,
-  waits at most 5 seconds for it, accepts at most 4 connections per sandbox at a
-  time and sends at most 1 MiB of text or 10 MiB of PNG.
+  `unavailable <cause>` and `invalid`. The cause, `no-display`, `no-tool` or
+  `failed`, lets the stand-ins give a hint, without sending the guest the host
+  tools' messages. `fbkd` reads at most 16 bytes of the request, waits at most 5
+  seconds for it, accepts at most 4 connections per sandbox at a time and sends
+  at most 1 MiB of text or 10 MiB of PNG.
 - **Host tools.** `HostTools` reads the clipboard only when a stand-in asks: on
   macOS with `osascript -e 'clipboard info'`, `pbpaste` and `osascript` for
   `«class PNGf»`; on Linux with `wl-paste` when `WAYLAND_DISPLAY` is set and

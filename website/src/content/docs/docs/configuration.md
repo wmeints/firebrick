@@ -240,9 +240,11 @@ primary selection and other types don't. Text is limited to 1 MiB and images to
 `pbpaste` and `osascript` on macOS, so install `wl-clipboard` or `xclip` on
 Linux. It uses the display of the terminal where you first ran `fbk`. When `fbk`
 started it from an SSH session without a display, `wl-paste` in the sandbox
-prints `the host clipboard isn't available`; stop `fbkd` and run `fbk` from your
-desktop. In a sandbox without the setting, `wl-paste` prints `clipboard sharing
-is off for this sandbox`.
+prints `the host clipboard isn't available; fbkd has no display`; stop `fbkd`
+and run `fbk` from your desktop. On Linux, `fbkd` needs `XDG_RUNTIME_DIR` set to
+a private directory for the clipboard; without it, `fbk start` refuses to create
+a sandbox with `clipboard: true`. In a sandbox without the setting, `wl-paste`
+prints `clipboard sharing is off for this sandbox`.
 
 ## Docker data disk
 
