@@ -204,6 +204,8 @@ fn start_request(workspace: &Path) -> StartSandboxRequest {
 async fn start_and_check(root: PathBuf, mut client: SandboxManagementServiceClient<Channel>) {
     let workspace = root.join("ws");
     std::fs::create_dir_all(&workspace).unwrap();
+    // `/tmp` is a symlink on macOS, and microsandbox refuses to mount a path through one.
+    let workspace = std::fs::canonicalize(workspace).unwrap();
     start(&mut client, start_request(&workspace)).await;
     wait_until_running(&mut client).await;
 

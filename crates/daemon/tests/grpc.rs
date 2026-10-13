@@ -347,10 +347,17 @@ async fn wait_for_status(
     }
 }
 
+/// Returns the resolved temp directory for the host directories the tests mount. On macOS the
+/// temp directory goes through the `/var` symlink, and microsandbox refuses to bind mount a
+/// host path that goes through a symlink.
+fn test_temp_dir() -> PathBuf {
+    std::fs::canonicalize(std::env::temp_dir()).expect("failed to resolve the temp directory")
+}
+
 /// Returns the host directory used as the workspace of a test sandbox. It's named after the
 /// sandbox, so `remove_sandbox` and the sweep of stale sandboxes can find it again.
 fn workspace_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("{name}-ws"))
+    test_temp_dir().join(format!("{name}-ws"))
 }
 
 /// Creates an empty host directory to mount as the workspace of a test sandbox.
@@ -1409,7 +1416,7 @@ async fn workspace_is_owned_by_agent_user() {
 
 /// Creates an empty host directory to mount next to the workspace of a test sandbox.
 fn test_mount_dir(name: &str, suffix: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("{name}-{suffix}"));
+    let dir = test_temp_dir().join(format!("{name}-{suffix}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("failed to create test mount directory");
 
@@ -2404,6 +2411,25 @@ async fn update_network_returns_not_found_for_unknown_sandbox() {
     assert_eq!(status.message(), "couldn't find specified sandbox");
 }
 
+/// Returns the resolved paths of the snapshots that the network updates of the sandbox kept.
+async fn network_snapshot_paths(name: &str) -> Vec<PathBuf> {
+    network_snapshots(name)
+        .await
+        .iter()
+        .filter_map(|snapshot| snapshot.path().ok())
+        .filter_map(|path| std::fs::canonicalize(path).ok())
+        .collect()
+}
+
+/// Returns the resolved path of the snapshot that a failed update names in its message. The
+/// daemon names it under the unresolved `MSB_HOME`, which goes through the `/tmp` symlink on
+/// macOS, while `Snapshot::path` returns the resolved path.
+fn kept_snapshot(message: &str) -> Option<PathBuf> {
+    let (_, path) = message.split_once("; the sandbox was kept as snapshot ")?;
+
+    std::fs::canonicalize(path).ok()
+}
+
 #[tokio::test]
 async fn failed_recreate_keeps_the_snapshot_and_names_it() {
     let name: &str = &sandbox_name("update-failed");
@@ -2422,12 +2448,8 @@ async fn failed_recreate_keeps_the_snapshot_and_names_it() {
         .unwrap_err();
 
     let exists = Sandbox::get(name).await.is_ok();
-    let snapshots = network_snapshots(name).await;
-    let paths: Vec<String> = snapshots
-        .iter()
-        .filter_map(|snapshot| snapshot.path().ok())
-        .map(|path| path.to_string_lossy().into_owned())
-        .collect();
+    let paths = network_snapshot_paths(name).await;
+    let named = kept_snapshot(status.message());
 
     daemon.stop().await;
     remove_sandbox_and_snapshots(name).await;
@@ -2435,13 +2457,14 @@ async fn failed_recreate_keeps_the_snapshot_and_names_it() {
     assert_eq!(status.code(), Code::Internal);
     assert!(!exists, "the half-created sandbox should be removed");
     assert_eq!(paths.len(), 1, "{paths:?}");
-    assert_eq!(
-        status.message(),
-        format!(
-            "failed to update the network rules of {name}; the sandbox was kept as snapshot {}",
-            paths[0]
-        )
+    assert!(
+        status
+            .message()
+            .starts_with(&format!("failed to update the network rules of {name};")),
+        "{}",
+        status.message()
     );
+    assert_eq!(named.as_ref(), Some(&paths[0]), "{}", status.message());
 }
 
 #[tokio::test]
