@@ -44,3 +44,4 @@
 - [ADR 0042 - Put the network log sockets in a checked /tmp directory on macOS](decisions/0042-put-the-network-log-sockets-in-a-checked-tmp-directory-on-macos.md)
 - [ADR 0043 - Pin GitHub Actions and CI tools to checksums](decisions/0043-pin-github-actions-and-ci-tools-to-checksums.md)
 - [ADR 0044 - Strip escape sequences with console](decisions/0044-strip-escape-sequences-with-console.md)
+- [ADR 0045 - Approve publishing in a release environment](decisions/0045-approve-publishing-in-a-release-environment.md)

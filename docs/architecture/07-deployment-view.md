@@ -34,6 +34,19 @@ The jobs run in this order: `package` for each target, then `image`, then
 the jobs after it, so the GitHub release only appears once crates.io has the
 version.
 
+The `image` and `publish` jobs run in the `release` environment, which waits for
+a required reviewer to approve each deployment in the Actions UI, under "Review
+deployments" on the run. `publish` needs `image`, so a release takes two
+approvals: one for `image` once every `package` job succeeds, and one for
+`publish` once the image is pushed. A deployment nobody approves within 30 days
+fails the run. Re-run its failed jobs with "Re-run failed jobs" in the Actions
+UI or `gh run rerun <run-id> --failed`: a release from a version bump runs
+inside the `Tag release` run, and a new run of `tag-release.yaml` finds the tag
+and releases nothing. Only a tag pushed by hand has a `Release` run. The
+`package` and `release` jobs only build and create the GitHub release, so they
+run without approval. See
+[ADR 0045](decisions/0045-approve-publishing-in-a-release-environment.md).
+
 The `publish` job authenticates with crates.io
 [Trusted Publishing](https://crates.io/docs/trusted-publishing): it exchanges
 the workflow's OIDC token for a short-lived crates.io token, so the release
@@ -44,7 +57,10 @@ workflow file configured for each crate against the token's `workflow_ref`
 claim, which names the top-level workflow. A release from a merged version bump
 therefore authenticates as `tag-release.yaml`, and a tag pushed by hand as
 `release.yaml`. Each crate's Trusted Publishing configuration on crates.io must
-list a workflow for a release to publish through it.
+list a workflow for a release to publish through it. Both configurations require
+the `release` environment, so crates.io only accepts a token minted by a job in
+that environment, after a reviewer approved it. A token from any other job fails
+to authenticate and publishes nothing.
 
 Tags with a suffix, such as `v0.2.0-rc.1`, publish a pre-release, on GitHub and
 on crates.io. `cargo install` skips pre-releases unless asked for one with
@@ -183,3 +199,31 @@ installs the tools with `--locked`, so each download must match the checksum in
 `mise.lock`; run `mise lock` after changing a version in `mise.toml`. The
 release jobs install only `rust` and `protoc`. See
 [ADR 0043](decisions/0043-pin-github-actions-and-ci-tools-to-checksums.md).
+
+GitHub enforces the pins: the repository requires actions pinned to a full
+commit SHA, so a workflow that references an action by tag fails at startup. `gh
+api repos/wmeints/firebrick/actions/permissions --jq .sha_pinning_required`
+prints `true` when the setting is on.
+
+The release gate and the pinning are repository settings, outside the code. A
+maintainer with admin access applies them in this order:
+
+1. Repository → Settings → Environments: create `release` with `wmeints` as a
+   required reviewer, and limit deployment branches and tags to the `main`
+   branch and `v*.*.*` tags. This comes before the next release: a job that
+   names a missing environment creates it without reviewers and runs without
+   approval.
+2. crates.io: for each crate (`firebrick-spec`, `firebrick-utils`,
+   `firebrick-proto`, `firebrick-cli`, `firebrick-daemon`), set the environment
+   `release` on both Trusted Publishing configurations, `tag-release.yaml` and
+   `release.yaml`.
+3. Repository → Settings → Actions → General: enable "Require actions to be
+   pinned to a full-length commit SHA".
+4. Repository → Settings → Rules: set the "Protect main branch" ruleset, which
+   blocks deleting and force pushing the default branch, to Active.
+
+The environment allows `main` because a release from `tag-release.yaml` runs on
+`main`, and `v*.*.*` tags because a tag pushed by hand runs on the tag. It
+doesn't require protected tags: whoever can push a tag can merge to `main`, and
+each deployment still needs approval. See
+[ADR 0045](decisions/0045-approve-publishing-in-a-release-environment.md).
