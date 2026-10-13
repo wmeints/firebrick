@@ -25,14 +25,16 @@ such guest output ends up in a gRPC status message or a log line, such as the
 tail of mise's stderr in a failed `fbk start` or the URL relay's stderr when it
 exits, the daemon removes terminal escape sequences and every control character
 except newline and tab with `firebrick_utils::strip_control`. It removes whole
-CSI and OSC sequences, in their `ESC` and C1 forms, and other `ESC` sequences,
-such as `ESC c`, then the remaining C0 controls, DEL and C1 controls, so a
+CSI, OSC and other `ESC` sequences with `console::strip_ansi_codes`, after it
+rewrites the C1 forms of CSI and OSC to their `ESC` forms, then the remaining C0
+controls, DEL and C1 controls
+([ADR 0042](decisions/0042-strip-escape-sequences-with-console.md)). So a
 workspace can't make `fbk` write terminal escape sequences, such as OSC 52 to
-set the user's clipboard, and no remainders like `[1;32m` show. A sequence cut
-off by the end of the text or by an unexpected character only loses its
-introducer. The text around the removed sequences stays, so the message still
-shows what the guest printed. The output of `fbk run` is the exception: like
-`ssh`, the CLI passes it to the terminal unchanged, so TUIs keep working.
+set the user's clipboard, and no remainders like `[1;32m` show. An unterminated
+sequence is removed up to the end of the text. The text around the removed
+sequences stays, so the message still shows what the guest printed. The output
+of `fbk run` is the exception: like `ssh`, the CLI passes it to the terminal
+unchanged, so TUIs keep working.
 
 Listing sandboxes is the one call where a missing sandbox isn't an error of the
 request. microsandbox reloads each sandbox after it reads a page of them, so a

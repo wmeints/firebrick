@@ -10,5 +10,8 @@ description = "Shared file locations, naming rules and text helpers for the Fire
 [lints]
 workspace = true
 
+[dependencies]
+console = { version = "0.16.6", default-features = false, features = ["alloc", "ansi-parsing"] }
+
 [dev-dependencies]
 tempfile = "3.27.0"

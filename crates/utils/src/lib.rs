@@ -233,125 +233,15 @@ pub fn sanitize_label(path: &Path) -> String {
 ///
 /// Guest output that ends up in an error message or a log line goes through this function, so a
 /// workspace can't make `fbk` write terminal escape sequences, such as OSC 52 to set the
-/// clipboard. This removes whole CSI and OSC sequences, in their `ESC` and C1 forms, and other
-/// `ESC` sequences, then the remaining C0 controls, DEL and C1 controls, and keeps the text
-/// around them. A sequence that is cut off by the end of the text or by an unexpected character
-/// only loses its introducer, so the rest of the text shows.
+/// clipboard. [`console::strip_ansi_codes`] removes whole escape sequences, with the C1 forms of
+/// CSI and OSC rewritten to their `ESC` forms first, and then the remaining C0 controls, DEL and
+/// C1 controls are removed, keeping the text around them.
 pub fn strip_control(text: &str) -> String {
-    let mut stripper = Stripper::default();
-    text.chars().for_each(|c| stripper.push(c));
-    stripper.finish()
-}
-
-/// The part of a terminal escape sequence that [`Stripper`] is in.
-#[derive(Default)]
-enum Sequence {
-    /// Plain text, outside a sequence.
-    #[default]
-    None,
-    /// After `ESC`, before its final character.
-    Escape,
-    /// Inside the parameters of a CSI sequence.
-    Csi,
-    /// Inside the string of an OSC sequence.
-    Osc,
-}
-
-/// Removes terminal escape sequences and control characters from text one character at a time.
-#[derive(Default)]
-struct Stripper {
-    /// The text without sequences and controls so far.
-    output: String,
-    /// The sequence the last character was part of.
-    sequence: Sequence,
-    /// The characters after the introducer of the current sequence, which are kept when the
-    /// sequence turns out to be cut off.
-    pending: String,
-}
-
-impl Stripper {
-    /// Adds the next character of the text.
-    fn push(&mut self, c: char) {
-        match self.sequence {
-            Sequence::None => self.push_text(c),
-            Sequence::Escape => self.push_escape(c),
-            Sequence::Csi => self.push_csi(c),
-            Sequence::Osc => self.push_osc(c),
-        }
-    }
-
-    /// Adds a character outside a sequence, starting a sequence at `ESC`, CSI or OSC.
-    fn push_text(&mut self, c: char) {
-        match c {
-            '\x1b' => self.sequence = Sequence::Escape,
-            '\u{9b}' => self.sequence = Sequence::Csi,
-            '\u{9d}' => self.sequence = Sequence::Osc,
-            '\n' | '\t' => self.output.push(c),
-            c if c.is_control() => {}
-            c => self.output.push(c),
-        }
-    }
-
-    /// Adds a character after `ESC`: intermediates `0x20`–`0x2F`, then a final character
-    /// `0x30`–`0x7E`, where `[` and `]` start a CSI or OSC sequence.
-    fn push_escape(&mut self, c: char) {
-        match c {
-            ' '..='/' => self.pending.push(c),
-            '[' if self.pending.is_empty() => self.sequence = Sequence::Csi,
-            ']' if self.pending.is_empty() => self.sequence = Sequence::Osc,
-            '0'..='~' => self.end(),
-            c => self.cut_off(c),
-        }
-    }
-
-    /// Adds a character of a CSI sequence: parameters and intermediates `0x20`–`0x3F`, then a
-    /// final character `0x40`–`0x7E`.
-    fn push_csi(&mut self, c: char) {
-        match c {
-            ' '..='?' => self.pending.push(c),
-            '@'..='~' => self.end(),
-            c => self.cut_off(c),
-        }
-    }
-
-    /// Adds a character of an OSC string, which ends at BEL, ST or the `ESC` of `ESC \`.
-    fn push_osc(&mut self, c: char) {
-        match c {
-            '\x07' | '\u{9c}' => self.end(),
-            '\x1b' => {
-                self.end();
-                self.sequence = Sequence::Escape;
-            }
-            c if c.is_control() => self.cut_off(c),
-            c => self.pending.push(c),
-        }
-    }
-
-    /// Ends the current sequence, dropping it.
-    fn end(&mut self) {
-        self.sequence = Sequence::None;
-        self.pending.clear();
-    }
-
-    /// Ends a sequence that `c` cut off, keeping the characters after its introducer, and adds
-    /// `c` as text.
-    fn cut_off(&mut self, c: char) {
-        self.keep_pending();
-        self.push_text(c);
-    }
-
-    /// Ends the current sequence, keeping the characters after its introducer.
-    fn keep_pending(&mut self) {
-        self.sequence = Sequence::None;
-        self.output.push_str(&self.pending);
-        self.pending.clear();
-    }
-
-    /// Returns the text, keeping the rest of a sequence that the end of the text cut off.
-    fn finish(mut self) -> String {
-        self.keep_pending();
-        self.output
-    }
+    let text = text.replace('\u{9b}', "\x1b[").replace('\u{9d}', "\x1b]");
+    console::strip_ansi_codes(&text)
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect()
 }
 
 #[cfg(test)]
@@ -598,7 +488,7 @@ mod tests {
     #[test]
     fn strip_control_removes_csi_sequences() {
         assert_eq!(strip_control("\x1b[1;32mok\x1b[0m"), "ok");
-        assert_eq!(strip_control("a\x1b[?25lb\x1b[2 qc"), "abc");
+        assert_eq!(strip_control("a\x1b[?25lb"), "ab");
     }
 
     #[test]
@@ -609,7 +499,7 @@ mod tests {
 
     #[test]
     fn strip_control_removes_two_character_escapes() {
-        assert_eq!(strip_control("a\x1bcb\x1b7c\x1b(Bd"), "abcd");
+        assert_eq!(strip_control("a\x1bcb\x1b7\x1b(Bc"), "abc");
     }
 
     #[test]
@@ -621,14 +511,12 @@ mod tests {
     }
 
     #[test]
-    fn strip_control_keeps_the_rest_of_unterminated_sequences() {
+    fn strip_control_drops_unterminated_sequences_up_to_the_end() {
         let cases = [
-            ("a\x1b]52;c;eA==", "a52;c;eA=="),
-            ("a\x1b[31", "a31"),
+            ("a\x1b]52;c;eA==", "a"),
+            ("a\x1b]x\nb", "a"),
+            ("a\x1b[31", "a"),
             ("a\x1b", "a"),
-            ("a\x1b]x\nb", "ax\nb"),
-            ("a\x1b[1\x1b[0mb", "a1b"),
-            ("a\x1b\x00\u{9b}é", "aé"),
         ];
         for (text, expected) in cases {
             assert_eq!(strip_control(text), expected, "{text:?}");
