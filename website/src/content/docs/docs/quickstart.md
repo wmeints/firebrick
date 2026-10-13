@@ -60,7 +60,7 @@ Firebrick opens the page in the browser on your host and forwards the login's
 callback back into the sandbox. Log in there, and Claude Code is ready to go.
 
 The login stays on the sandbox's disk, so you don't log in again after `fbk
-stop` and `fbk start`, only after `fbk rm`.
+stop` and `fbk start`, only after `fbk rm` or `fbk upgrade`.
 
 The agent's token lives in the sandbox, where the agent and anything it runs can
 read it. To keep it out of the sandbox, store an API key as a Firebrick secret
