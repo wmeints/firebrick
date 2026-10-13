@@ -42,4 +42,5 @@
 - [ADR 0040 - Compile the network presets into fbk](decisions/0040-compile-the-network-presets-into-fbk.md)
 - [ADR 0041 - Upgrade sandboxes to a fresh root filesystem and Docker disk](decisions/0041-upgrade-sandboxes-to-a-fresh-root-filesystem-and-docker-disk.md)
 - [ADR 0042 - Put the network log sockets in a checked /tmp directory on macOS](decisions/0042-put-the-network-log-sockets-in-a-checked-tmp-directory-on-macos.md)
-- [ADR 0043 - Strip escape sequences with console](decisions/0043-strip-escape-sequences-with-console.md)
+- [ADR 0043 - Pin GitHub Actions and CI tools to checksums](decisions/0043-pin-github-actions-and-ci-tools-to-checksums.md)
+- [ADR 0044 - Strip escape sequences with console](decisions/0044-strip-escape-sequences-with-console.md)

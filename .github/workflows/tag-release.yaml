@@ -25,7 +25,7 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # A Cargo.toml change that keeps the version, such as a new dependency, has a tag already and releases nothing.
       - name: Create the tag

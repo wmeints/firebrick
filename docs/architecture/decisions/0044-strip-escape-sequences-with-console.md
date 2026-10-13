@@ -1,4 +1,4 @@
-# 43. Strip escape sequences with console
+# 44. Strip escape sequences with console
 
 ## Status
 

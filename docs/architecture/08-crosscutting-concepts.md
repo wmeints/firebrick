@@ -28,7 +28,7 @@ except newline and tab with `firebrick_utils::strip_control`. It removes whole
 CSI, OSC and other `ESC` sequences with `console::strip_ansi_codes`, after it
 rewrites the C1 forms of CSI and OSC to their `ESC` forms, then the remaining C0
 controls, DEL and C1 controls
-([ADR 0043](decisions/0043-strip-escape-sequences-with-console.md)). So a
+([ADR 0044](decisions/0044-strip-escape-sequences-with-console.md)). So a
 workspace can't make `fbk` write terminal escape sequences, such as OSC 52 to
 set the user's clipboard, and no remainders like `[1;32m` show. An unterminated
 sequence is removed up to the end of the text. The text around the removed
