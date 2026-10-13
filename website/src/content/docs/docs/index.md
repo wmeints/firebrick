@@ -59,9 +59,9 @@ remove them with `msb` if you no longer need them.
 ## What the agent can change
 
 The workspace is mounted read/write, so the agent can change any file in it,
-including `.firebrick.yml`. `fbk` asks before it applies changes to `mounts` or
-`network` that you haven't approved (see
-[Approving mounts and network changes](/docs/configuration/#approving-mounts-and-network-changes)).
+including `.firebrick.yml`. `fbk` asks before it applies changes to `mounts`,
+`network` or `clipboard` that you haven't approved (see
+[Approving settings changes](/docs/configuration/#approving-settings-changes)).
 Changes to the other settings, such as `image`, `init`, `mise`, `resources`,
 `volumes` and `ports`, apply without asking, so review them before you start or
 recreate the sandbox.

@@ -31,21 +31,60 @@ pub fn socket_path() -> PathBuf {
 /// for the sockets of long sandbox names. The macOS directory is in the shared `/tmp`, where
 /// another user could create it first, so check it with [`create_private_dir`] before use.
 pub fn netlog_socket_dir() -> Option<PathBuf> {
-    let uid = nix::unistd::geteuid().as_raw();
-    netlog_socket_dir_from(&env_var, cfg!(target_os = "macos"), uid)
+    socket_dir(NETLOG_SOCKETS)
 }
 
-/// Returns the network activity socket directory for the environment that `var` describes,
-/// on macOS when `macos` is set, for the user `uid`. The macOS directory is canonical, because
+/// Returns the directory holding the unix sockets that sandboxes read the host clipboard
+/// through: `$XDG_RUNTIME_DIR/firebrick/clipboard`, falling back to `/private/tmp/fbkc-<uid>` on
+/// macOS, which has no `XDG_RUNTIME_DIR`.
+///
+/// Like [`netlog_socket_dir`], it never falls back to the temp directory and returns `None` on
+/// other platforms without an absolute `XDG_RUNTIME_DIR`. The macOS directory sits next to the
+/// network log's instead of inside it, so the sockets of 63-character sandbox names still fit in
+/// a unix socket address. Check it with [`create_private_dir`] before use.
+pub fn clipboard_socket_dir() -> Option<PathBuf> {
+    socket_dir(CLIPBOARD_SOCKETS)
+}
+
+/// Where the sockets of one vsock channel live.
+#[derive(Debug, Clone, Copy)]
+struct SocketDir {
+    /// The directory under `$XDG_RUNTIME_DIR`.
+    runtime_subdir: &'static str,
+    /// The start of the directory in `/private/tmp` on macOS, followed by the user's UID.
+    macos_prefix: &'static str,
+}
+
+/// The sockets of the network log.
+const NETLOG_SOCKETS: SocketDir = SocketDir {
+    runtime_subdir: "firebrick/netlog",
+    macos_prefix: "fbk-",
+};
+
+/// The sockets of the clipboard.
+const CLIPBOARD_SOCKETS: SocketDir = SocketDir {
+    runtime_subdir: "firebrick/clipboard",
+    macos_prefix: "fbkc-",
+};
+
+/// Returns the socket directory of the channel in fbkd's environment.
+fn socket_dir(sockets: SocketDir) -> Option<PathBuf> {
+    let uid = nix::unistd::geteuid().as_raw();
+    socket_dir_from(&env_var, cfg!(target_os = "macos"), uid, sockets)
+}
+
+/// Returns the socket directory of the channel for the environment that `var` describes, on
+/// macOS when `macos` is set, for the user `uid`. The macOS directory is canonical, because
 /// microsandbox refuses host paths that go through a symlink, such as `/tmp`.
-fn netlog_socket_dir_from(
+fn socket_dir_from(
     var: &impl Fn(&str) -> Option<OsString>,
     macos: bool,
     uid: u32,
+    sockets: SocketDir,
 ) -> Option<PathBuf> {
     absolute_var(var, "XDG_RUNTIME_DIR")
-        .map(|dir| dir.join("firebrick/netlog"))
-        .or_else(|| macos.then(|| PathBuf::from(format!("/private/tmp/fbk-{uid}"))))
+        .map(|dir| dir.join(sockets.runtime_subdir))
+        .or_else(|| macos.then(|| format!("/private/tmp/{}{uid}", sockets.macos_prefix).into()))
 }
 
 /// Creates the directory with mode `0700` when it's missing, and checks that it's private to
@@ -409,7 +448,7 @@ mod tests {
         let var = env(&[("XDG_RUNTIME_DIR", "/run/user/1000")]);
         for macos in [false, true] {
             assert_eq!(
-                netlog_socket_dir_from(&var, macos, 1000),
+                socket_dir_from(&var, macos, 1000, NETLOG_SOCKETS),
                 Some(PathBuf::from("/run/user/1000/firebrick/netlog")),
                 "macos: {macos}"
             );
@@ -426,7 +465,7 @@ mod tests {
     #[test]
     fn netlog_socket_dir_is_none_on_linux_without_absolute_xdg_runtime_dir() {
         for vars in NO_RUNTIME_DIR {
-            let dir = netlog_socket_dir_from(&env(vars), false, 1000);
+            let dir = socket_dir_from(&env(vars), false, 1000, NETLOG_SOCKETS);
             assert_eq!(dir, None, "{vars:?}");
         }
     }
@@ -435,7 +474,7 @@ mod tests {
     fn netlog_socket_dir_falls_back_to_a_canonical_tmp_dir_per_user_on_macos() {
         for vars in NO_RUNTIME_DIR {
             assert_eq!(
-                netlog_socket_dir_from(&env(vars), true, 501),
+                socket_dir_from(&env(vars), true, 501, NETLOG_SOCKETS),
                 Some(PathBuf::from("/private/tmp/fbk-501")),
                 "{vars:?}"
             );
@@ -444,9 +483,26 @@ mod tests {
 
     #[test]
     fn macos_netlog_socket_dir_fits_sockets_of_63_character_sandbox_names() {
-        let dir = netlog_socket_dir_from(&env(&[]), true, u32::MAX).unwrap();
+        let dir = socket_dir_from(&env(&[]), true, u32::MAX, NETLOG_SOCKETS).unwrap();
         let socket = dir.join(format!("{}.sock", "a".repeat(63)));
 
+        assert!(socket.as_os_str().len() < 104, "{}", socket.display());
+    }
+
+    #[test]
+    fn clipboard_sockets_have_their_own_directory_that_fits_long_sandbox_names() {
+        let var = env(&[("XDG_RUNTIME_DIR", "/run/user/1000")]);
+        let macos = socket_dir_from(&env(&[]), true, u32::MAX, CLIPBOARD_SOCKETS).unwrap();
+        let socket = macos.join(format!("{}.sock", "a".repeat(63)));
+
+        assert_eq!(
+            socket_dir_from(&var, false, 1000, CLIPBOARD_SOCKETS),
+            Some(PathBuf::from("/run/user/1000/firebrick/clipboard"))
+        );
+        assert_eq!(
+            macos,
+            PathBuf::from(format!("/private/tmp/fbkc-{}", u32::MAX))
+        );
         assert!(socket.as_os_str().len() < 104, "{}", socket.display());
     }
 

@@ -109,11 +109,11 @@ C4Component
   the spec of the sandbox's workspace to `UpgradeSandbox`, or an empty image for
   the daemon's default, and shows the pull progress. Without `.firebrick.yml`,
   it names the sandbox after the full working directory path. Before it creates
-  a sandbox, it has `approval` check the resolved mounts and the network
-  section. `ls` prints the name, status and host name of each sandbox as a
-  table, or as a JSON array with `--format json`. `start`, `run`, the `network`
-  changes and the `port` commands print the outdated image warning from
-  `outdated_warning` (see
+  a sandbox, it has `approval` check the resolved mounts, the network section
+  and the clipboard setting. `ls` prints the name, status and host name of each
+  sandbox as a table, or as a JSON array with `--format json`. `start`, `run`,
+  the `network` changes and the `port` commands print the outdated image warning
+  from `outdated_warning` (see
   [Outdated sandbox images](08-crosscutting-concepts.md#outdated-sandbox-images)).
 - `session` - Runs a command in the sandbox through the `Attach` stream. It
   makes sure the sandbox runs first, puts the terminal in raw mode and forwards
@@ -165,10 +165,10 @@ C4Component
   or of every preset for `all`, each rule once and in the order of the presets,
   and `show` renders every preset and its rules as a table. A unit test parses
   every rule as a `NetworkRule`, so an invalid constant can't ship.
-- `approval` - Keeps the `mounts` and `network` settings the user approved per
-  workspace in `approved.yml` in the config directory, prints the difference
-  with the settings a command is about to apply and asks `Apply these changes?
-  [y/N]` (see
+- `approval` - Keeps the `mounts`, `network` and `clipboard` settings the user
+  approved per workspace in `approved.yml` in the config directory, prints the
+  difference with the settings a command is about to apply and asks `Apply these
+  changes? [y/N]` (see
   [Approving spec changes](08-crosscutting-concepts.md#approving-spec-changes)).
 - `port` - Forwards a host port to the working directory's sandbox with
   `ForwardPort`, or removes a forward with `RemovePort`, and records the change
@@ -220,6 +220,8 @@ C4Component
         Component(forward, "forward", "russh", "Port forwards")
         Component(open, "open", "Rust", "URL relays")
         Component(netlog, "netlog", "serde_json", "Network logs")
+        Component(clipboard, "clipboard", "Rust", "Host clipboard")
+        Component(vsock, "vsock", "Rust", "Sockets of vsock routes")
         Component(pull, "pull", "Rust", "Image pull progress")
     }
     Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names, text")
@@ -228,6 +230,7 @@ C4Component
     System_Ext(editors, "settings.json", "VS Code-family user settings")
     System_Ext(zedsettings, "zed/settings.json", "Zed user settings")
     System_Ext(browser, "xdg-open / open", "Host browser")
+    System_Ext(hostclip, "wl-paste / xclip / pbpaste", "Host clipboard")
 
     Rel(main, runtime, "Ensures runtime")
     Rel(main, ssh, "Ensures keys")
@@ -248,6 +251,11 @@ C4Component
     Rel(open, browser, "Opens URLs")
     Rel(sandboxes, netlog, "Adds vsock routes, listens for network logs")
     Rel(netlog, utils, "Finds socket and record directories")
+    Rel(netlog, vsock, "Binds and removes sockets")
+    Rel(sandboxes, clipboard, "Adds vsock routes, listens for clipboard requests")
+    Rel(clipboard, vsock, "Binds and removes sockets")
+    Rel(clipboard, utils, "Finds socket directory")
+    Rel(clipboard, hostclip, "Reads the clipboard")
     Rel(sandboxes, ssh, "Host names, SSH config")
     Rel(sandboxes, vscode, "Syncs Remote-SSH platforms")
     Rel(sandboxes, zed, "Syncs remote projects")
@@ -388,11 +396,19 @@ C4Component
   Before it creates a sandbox, starts one that has the route (also through
   `SshTunnel`) or recreates one, it makes `netlog` listen on the sandbox's
   socket; `fbkd` does the same for every sandbox with the route when it starts.
-  `RemoveSandbox` deletes the socket and the record.
-  `SandboxManager::network_activity` returns a sandbox's record from `netlog`
-  with its rules from the `firebrick.network` label (`network::rules_of`),
-  `FAILED_PRECONDITION` when the sandbox has no network log route, or `INTERNAL`
-  when its record can't be read.
+  `RemoveSandbox` deletes the socket and the record. A `StartSandbox` that
+  creates a sandbox with `clipboard` set listens for its clipboard first, and
+  fails with `FAILED_PRECONDITION` naming `XDG_RUNTIME_DIR` when it can't, so an
+  approved setting never silently does nothing. It gives the sandbox the
+  `firebrick.clipboard=true` label, and the shared builder chain adds the vsock
+  route and marker of `clipboard` to every sandbox with that label, so the
+  setting survives `UpdateNetwork` and `UpgradeSandbox`. A sandbox without the
+  label gets neither. `sandboxes` makes `clipboard` listen for such a sandbox
+  the same way as for its network log, and `RemoveSandbox` deletes its clipboard
+  socket. `SandboxManager::network_activity` returns a sandbox's record from
+  `netlog` with its rules from the `firebrick.network` label
+  (`network::rules_of`), `FAILED_PRECONDITION` when the sandbox has no network
+  log route, or `INTERNAL` when its record can't be read.
 - `pull` - Turns microsandbox's `PullProgress` events into pull updates: it adds
   up the downloaded bytes per layer, takes the total from the manifest, and
   reports at most one update every 100 ms, one for each layer that finishes and
@@ -527,6 +543,52 @@ C4Component
   for can't be read or is corrupt. `NetLogs::remove` stops the listener, waits
   until it can't write anymore, and then deletes the socket and the record, so a
   removed sandbox's record can't come back.
+- `clipboard` - Answers the `wl-paste` and `xclip` stand-ins of a sandbox
+  created with `clipboard: true` with the host clipboard (see
+  [ADR 0048](decisions/0048-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)
+  and
+  [Pasting from the host clipboard](06-runtime-view.md#pasting-from-the-host-clipboard)).
+  `Clipboards::add_route` adds a stream route from guest vsock port `52001` to
+  `$XDG_RUNTIME_DIR/firebrick/clipboard/<sandbox>.sock`, or on macOS without
+  `XDG_RUNTIME_DIR` to `/private/tmp/fbkc-<uid>/<sandbox>.sock`, and the
+  `firebrick-clipboard` script, which microsandbox mounts at
+  `/.msb/scripts/firebrick-clipboard`, so the stand-ins can tell a sandbox
+  without the setting from an `fbkd` that doesn't answer. The socket directory
+  gets the same checks as the network log's, through `vsock`. Each connection
+  carries one request line, `types`, `text` or `png`, of at most 16 bytes, sent
+  within 5 seconds, and gets `ok <length>` with the content, or `empty`,
+  `too-large`, `unavailable <cause>` or `invalid`. The cause is `no-display`,
+  `no-tool` or `failed`, so the stand-ins can give a hint; the reason itself
+  stays in `fbkd`'s log. A sandbox gets at most 4 connections at a time; further
+  ones are closed. `fbkd` sends at most 1 MiB of text and 10 MiB of PNG, also
+  when the `HostClipboard` returns more. `HostTools`, the `HostClipboard` of
+  `fbkd`, lists the clipboard's types and then reads the requested one with
+  `wl-paste` when `WAYLAND_DISPLAY` is set, otherwise with `xclip` when
+  `DISPLAY` is, and with `osascript` and `pbpaste` on macOS
+  (`HostTools::from_env`). It runs them with `tokio::process`, without a shell,
+  stops reading past the limit, and kills them after 4 seconds. A tool that
+  reports an empty clipboard means `empty`; no display, a missing tool and any
+  other failure mean `unavailable` with their cause, logged at `warn` with the
+  reason, at most once a minute per sandbox. `Clipboards::listen` fails when the
+  sandbox has no socket path or the socket can't be bound, and `sandboxes` then
+  refuses to create a sandbox with the setting. The unit tests pass a fake
+  `HostClipboard`; `tests/host_tools.rs` runs `HostTools::new` against stub
+  tools on a `PATH` of its own, in a test binary of its own, because a process
+  spawned in the unit tests can briefly hold the port of a listener that a
+  `forward` test just closed.
+- `vsock` - The listeners behind the vsock routes of `netlog` and `clipboard`.
+  `Listeners<S>` keeps one listener per sandbox for a channel, with the state
+  `S` it shares with the channel, such as the network record. It knows the
+  socket path of a sandbox, which is `None` when it doesn't fit in a unix socket
+  address, adds the route to a builder and checks whether a sandbox's spec has
+  it. `Listeners::private` checks the socket directory with
+  `firebrick_utils::create_private_dir`. `Listeners::listen` checks it again,
+  leaves a socket that another process answers on alone, removes a stale one,
+  binds it and runs the channel's listener, replacing one that stopped; it
+  returns the error when it can't. `remove` stops a sandbox's listener and
+  deletes its socket, `close` stops them all, and dropping the registry aborts
+  them. `Connections` runs a task per accepted connection and closes the ones
+  beyond 4 per sandbox.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `fbkd` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,
@@ -603,28 +665,28 @@ C4Component
   into a `firebrick_spec::MountSpec`, so the CLI approves the mounts the way the
   daemon creates them.
 - `firebrick-spec` (`crates/spec`) - Parses `.firebrick.yml` into a
-  `SandboxSpec` with a `name`, an optional `image`, optional `init` and `mise`
-  flags, optional `resources` (`cpu`, `memory`), `volumes` (`docker`, the size
-  of the Docker data disk), an optional `network` section (`enabled`, default
-  `true`, `enforce`, default `false`, and the `allow` and `deny` rules), an
-  optional `ports` list and optional `mounts` (`host`, `guest` and `readonly`,
-  default `false`), rejects unknown fields and reports the line and column of a
-  problem. A `PortMapping` in `ports` is written like Docker Compose: `3000`
-  forwards host port 3000 to guest port 3000, and `"8080:5173"` host port 8080
-  to guest port 5173. Ports outside 1 to 65535, other forms and a host port that
-  appears twice are reported at the entry. `add_port` and `remove_port` add,
-  replace or remove one entry in the text of a spec file: they edit only the
-  lines of the top-level `ports` block, so comments and formatting elsewhere
-  stay, append a `ports` key when there is none, write `ports: []` when the last
-  entry goes, and rewrite a flow list such as `[3000]` as a block list. They
-  parse the result before returning it. `with_port` replaces or adds a mapping
-  by host port; the daemon uses it for the stored ports too. `guest_mount_path`
-  checks a mount's `guest` the way microsandbox does: an absolute path other
-  than `/`, without `..`, `:`, `;` or `,`. It normalizes the path (no `.` parts
-  or trailing slash), and each normalized path may appear only once. The daemon
-  uses the same check. The CLI resolves each mount's `host` against the spec
-  file's directory, expanding `~` to `$HOME` and `~user` to that user's home
-  directory
+  `SandboxSpec` with a `name`, an optional `image`, optional `init`, `mise` and
+  `clipboard` flags, optional `resources` (`cpu`, `memory`), `volumes`
+  (`docker`, the size of the Docker data disk), an optional `network` section
+  (`enabled`, default `true`, `enforce`, default `false`, and the `allow` and
+  `deny` rules), an optional `ports` list and optional `mounts` (`host`, `guest`
+  and `readonly`, default `false`), rejects unknown fields and reports the line
+  and column of a problem. A `PortMapping` in `ports` is written like Docker
+  Compose: `3000` forwards host port 3000 to guest port 3000, and `"8080:5173"`
+  host port 8080 to guest port 5173. Ports outside 1 to 65535, other forms and a
+  host port that appears twice are reported at the entry. `add_port` and
+  `remove_port` add, replace or remove one entry in the text of a spec file:
+  they edit only the lines of the top-level `ports` block, so comments and
+  formatting elsewhere stay, append a `ports` key when there is none, write
+  `ports: []` when the last entry goes, and rewrite a flow list such as `[3000]`
+  as a block list. They parse the result before returning it. `with_port`
+  replaces or adds a mapping by host port; the daemon uses it for the stored
+  ports too. `guest_mount_path` checks a mount's `guest` the way microsandbox
+  does: an absolute path other than `/`, without `..`, `:`, `;` or `,`. It
+  normalizes the path (no `.` parts or trailing slash), and each normalized path
+  may appear only once. The daemon uses the same check. The CLI resolves each
+  mount's `host` against the spec file's directory, expanding `~` to `$HOME` and
+  `~user` to that user's home directory
   ([ADR 0020](decisions/0020-look-up-user-home-directories-with-nix.md)), to the
   canonical path of an existing directory before it sends `StartSandbox`.
   `NetworkRule` parses a rule: a host name, `*.` plus a domain of at least two
@@ -632,18 +694,20 @@ C4Component
   URLs, ports and paths are invalid. It owns the defaults
   (`ghcr.io/wmeints/firebrick-base:v<version>` as `DEFAULT_IMAGE`, which
   `default_spec` leaves out of the spec so it follows the release, `init: true`,
-  `mise: true`, 2 vCPUs, `4 GiB` of memory, a `20 GiB` Docker volume in
-  `VolumesSpec::default()`) and `parse_size_mib`, which reads memory and volume
-  sizes in `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon both use them.
-  `NetworkSpec::allow` and `NetworkSpec::deny` move rules between the lists,
-  `NetworkSpec::is_enabled` reads `enabled` with its default, and `to_file`
-  writes a spec back as YAML, leaving out unset fields.
+  `mise: true`, no shared clipboard, 2 vCPUs, `4 GiB` of memory, a `20 GiB`
+  Docker volume in `VolumesSpec::default()`) and `parse_size_mib`, which reads
+  memory and volume sizes in `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon both
+  use them. `NetworkSpec::allow` and `NetworkSpec::deny` move rules between the
+  lists, `NetworkSpec::is_enabled` reads `enabled` with its default, and
+  `to_file` writes a spec back as YAML, leaving out unset fields.
 - `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket
   (`$XDG_RUNTIME_DIR/fbkd.sock`), the log directory
   (`$XDG_STATE_HOME/firebrick`), the SSH directory
   (`$XDG_DATA_HOME/firebrick/ssh`) and the secrets file
-  (`$XDG_DATA_HOME/firebrick/secrets.yml`), each falling back to `HOME`. The
-  log, SSH and secrets paths are `None` when neither variable is an absolute
+  (`$XDG_DATA_HOME/firebrick/secrets.yml`), each falling back to `HOME`.
+  `netlog_socket_dir` and `clipboard_socket_dir` return the directories of the
+  sockets behind the vsock routes, which never fall back to the temp directory.
+  The log, SSH and secrets paths are `None` when neither variable is an absolute
   path, never the temp dir, and `missing_dir` returns the error the daemon would
   exit with. It also holds `is_trusted_peer`, the rule that only the same user
   and root may be on the other end of the daemon socket, and `sanitize_label`,
@@ -652,15 +716,15 @@ C4Component
   and `strip_control`, which removes terminal control characters from guest
   output before the daemon puts it in an error message or a log line.
 
-The image, init, mise setting, resources, network rules and mounts apply when a
-sandbox is created. Changing them in `.firebrick.yml` doesn't change an existing
-sandbox; remove it with `fbk rm` and start it again. There are three exceptions:
-`fbk start` and `fbk run` send `ports` to existing and running sandboxes too, so
-a changed list applies without a restart, `fbk network` changes the network
-switch or rules in `.firebrick.yml` and has `fbkd` recreate the sandbox from a
-disk snapshot, which keeps its disks, and `fbk upgrade` recreates the sandbox
-from the latest version of the spec's image, with a fresh root filesystem and
-Docker disk.
+The image, init, mise setting, resources, network rules, mounts and clipboard
+setting apply when a sandbox is created. Changing them in `.firebrick.yml`
+doesn't change an existing sandbox; remove it with `fbk rm` and start it again.
+There are three exceptions: `fbk start` and `fbk run` send `ports` to existing
+and running sandboxes too, so a changed list applies without a restart, `fbk
+network` changes the network switch or rules in `.firebrick.yml` and has `fbkd`
+recreate the sandbox from a disk snapshot, which keeps its disks, and `fbk
+upgrade` recreates the sandbox from the latest version of the spec's image, with
+a fresh root filesystem and Docker disk.
 
 ## Base image
 
@@ -710,6 +774,18 @@ images. It builds on `ubuntu:26.04` and adds:
   FIFO is missing or no relay reads it within 5 seconds, it exits 1 and prints
   `firebrick-open: couldn't reach the host; open this URL yourself: <url>`. See
   [Opening a URL on the host](06-runtime-view.md#opening-a-url-on-the-host).
+- `/usr/local/bin/firebrick-paste` - a stand-in for `wl-paste` and `xclip`,
+  symlinked under both names, from `image/firebrick-paste`. It's a Python script
+  that reads the host clipboard's text and PNG content from `fbkd` over vsock
+  port `52001` in sandboxes created with `clipboard: true`, and behaves like the
+  tool it's called as: `wl-paste [--no-newline|-n] [--type|-t <type>]`,
+  `wl-paste --list-types|-l` and `xclip -selection clipboard|c -o [-t
+  <target>]`, for `text/plain`, `UTF8_STRING`, `STRING`, `image/png` and
+  `TARGETS`. Other forms exit 2 with a usage line. Without the
+  `/.msb/scripts/firebrick-clipboard` marker it exits 1 and says that sharing is
+  off; when `fbkd` doesn't answer within 5 seconds, it exits 1 with `couldn't
+  reach the host clipboard`. See
+  [Pasting from the host clipboard](06-runtime-view.md#pasting-from-the-host-clipboard).
 - `/usr/local/sbin/firebrick-netlog` - the network logger, a Python script that
   runs as root. It runs two `tcpdump`s on the interface of the default route:
   one for outgoing UDP datagrams and TCP SYNs, and one for the answers of DNS

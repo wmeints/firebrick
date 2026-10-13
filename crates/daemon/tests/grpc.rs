@@ -19,6 +19,7 @@ use firebrick_daemon::api::{
     StopSandboxRequest, UpdateNetworkRequest, UpgradeSandboxRequest, UpgradeSandboxResponse,
     attach_request, attach_response, start_sandbox_response, upgrade_sandbox_response,
 };
+use firebrick_daemon::clipboard::{self, Cause, HostClipboard, HostError, Kind};
 use firebrick_daemon::open::{self, Opener};
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{mise, netlog, sandboxes, server};
@@ -65,9 +66,67 @@ impl RecordingOpener {
     }
 }
 
+/// Text on the fake host clipboard of the test daemons.
+const CLIPBOARD_TEXT: &[u8] = b"hello from the host";
+
+/// PNG on the fake host clipboard of the test daemons: the PNG signature and a few bytes that
+/// aren't valid UTF-8, so a stand-in that mangles binary output fails the test.
+const CLIPBOARD_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\xff\xfe";
+
+/// What the fake host clipboard of a test daemon holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FakeContent {
+    /// [`CLIPBOARD_TEXT`] and [`CLIPBOARD_PNG`].
+    Full,
+    /// Nothing.
+    Empty,
+    /// Text and a PNG one byte over their limits, which the host clipboard hands over anyway.
+    Large,
+    /// It can't be read, for the cause.
+    Unavailable(Cause),
+}
+
+/// A host clipboard whose content the test sets, so the tests don't need a display. It starts
+/// [`FakeContent::Full`].
+struct FakeClipboard {
+    content: Mutex<FakeContent>,
+}
+
+impl FakeClipboard {
+    fn content(&self) -> FakeContent {
+        *self.content.lock().unwrap()
+    }
+}
+
+#[async_trait::async_trait]
+impl HostClipboard for FakeClipboard {
+    async fn kinds(&self) -> Result<Vec<Kind>, HostError> {
+        match self.content() {
+            FakeContent::Full | FakeContent::Large => Ok(vec![Kind::Text, Kind::Png]),
+            FakeContent::Empty => Ok(vec![]),
+            FakeContent::Unavailable(cause) => {
+                Err(HostError::Unavailable(cause, "fake".to_string()))
+            }
+        }
+    }
+
+    async fn read(&self, kind: Kind, _limit: usize) -> Result<Vec<u8>, HostError> {
+        match (self.content(), kind) {
+            (FakeContent::Full, Kind::Text) => Ok(CLIPBOARD_TEXT.to_vec()),
+            (FakeContent::Full, Kind::Png) => Ok(CLIPBOARD_PNG.to_vec()),
+            (FakeContent::Large, kind) => Ok(vec![b'a'; kind.limit() + 1]),
+            (FakeContent::Empty, _) => Err(HostError::Empty),
+            (FakeContent::Unavailable(cause), _) => {
+                Err(HostError::Unavailable(cause, "fake".to_string()))
+            }
+        }
+    }
+}
+
 struct TestDaemon {
     socket_path: PathBuf,
     opener: Arc<RecordingOpener>,
+    clipboard: Arc<FakeClipboard>,
     shutdown: Option<oneshot::Sender<()>>,
     handle: JoinHandle<Result<(), server::ServerError>>,
 }
@@ -88,9 +147,9 @@ impl TestDaemon {
         Self::start_with(name, secrets, false).await
     }
 
-    /// Starts a daemon that listens for the network logs of the existing sandboxes first, like
-    /// `fbkd` does when it starts.
-    async fn start_restoring_network_logs(name: &str) -> Self {
+    /// Starts a daemon that listens for the network logs and clipboards of the existing
+    /// sandboxes first, like `fbkd` does when it starts.
+    async fn start_restoring_listeners(name: &str) -> Self {
         let secrets_path = std::env::temp_dir().join(format!(
             "fbk-it-{}-{}-secrets.yml",
             std::process::id(),
@@ -100,7 +159,7 @@ impl TestDaemon {
         Self::start_with(name, SecretStore::new(secrets_path), true).await
     }
 
-    async fn start_with(name: &str, secrets: SecretStore, restore_network_logs: bool) -> Self {
+    async fn start_with(name: &str, secrets: SecretStore, restore_listeners: bool) -> Self {
         init_logging();
         STALE_SWEEP.get_or_init(sweep_stale_sandboxes).await;
 
@@ -110,10 +169,13 @@ impl TestDaemon {
 
         let (tx, rx) = oneshot::channel();
         let opener = Arc::new(RecordingOpener::default());
-        let service = server::FirebrickServer::new(secrets, opener.clone());
+        let clipboard = Arc::new(FakeClipboard {
+            content: Mutex::new(FakeContent::Full),
+        });
+        let service = server::FirebrickServer::new(secrets, opener.clone(), clipboard.clone());
 
-        if restore_network_logs {
-            service.restore_network_logs().await;
+        if restore_listeners {
+            service.restore_listeners().await;
         }
 
         let handle = tokio::spawn(serve_until(socket_path.clone(), service, rx));
@@ -123,9 +185,15 @@ impl TestDaemon {
         Self {
             socket_path,
             opener,
+            clipboard,
             shutdown: Some(tx),
             handle,
         }
+    }
+
+    /// Sets what the daemon's fake host clipboard holds.
+    fn set_clipboard(&self, content: FakeContent) {
+        *self.clipboard.content.lock().unwrap() = content;
     }
 
     async fn client(&self) -> SandboxManagementServiceClient<Channel> {
@@ -267,14 +335,15 @@ async fn remove_stale_sandbox(sb: &SandboxHandle) {
 }
 
 /// Removes the workspaces, mount directories, sockets and secrets files that dead test
-/// processes left in the temp directory, and the network log sockets and records of their
-/// sandboxes. They're all named `fbk-it-<pid>-...`, also when the process was killed before it
-/// created the sandbox.
+/// processes left in the temp directory, and the network log sockets and records and the
+/// clipboard sockets of their sandboxes. They're all named `fbk-it-<pid>-...`, also when the
+/// process was killed before it created the sandbox.
 fn remove_stale_host_files() {
     let dirs = [
         Some(std::env::temp_dir()),
         firebrick_utils::netlog_socket_dir(),
         firebrick_utils::network_log_dir(),
+        firebrick_utils::clipboard_socket_dir(),
     ];
 
     for dir in dirs.iter().flatten() {
@@ -296,8 +365,8 @@ fn remove_stale_files_in(dir: &Path) {
     }
 }
 
-/// Stops and removes a sandbox, its workspace and its network log, including ones left over
-/// from an earlier (failed) run.
+/// Stops and removes a sandbox, its workspace, its network log and its clipboard socket,
+/// including ones left over from an earlier (failed) run.
 async fn remove_sandbox(name: &str) {
     if let Ok(sb) = Sandbox::get(name).await {
         let _ = sb.stop().await;
@@ -307,6 +376,7 @@ async fn remove_sandbox(name: &str) {
     let _ = std::fs::remove_dir_all(workspace_path(name));
     let _ = std::fs::remove_file(netlog_socket(name));
     let _ = std::fs::remove_file(netlog_record(name));
+    let _ = std::fs::remove_file(clipboard_socket(name));
 }
 
 async fn sandbox_status(
@@ -2163,6 +2233,7 @@ struct KeptSettings {
     memory_mib: u32,
     init: bool,
     docker_disk_mib: Option<u32>,
+    clipboard_route: bool,
 }
 
 async fn kept_settings(
@@ -2180,7 +2251,14 @@ async fn kept_settings(
         memory_mib: spec.resources.memory_mib,
         init: spec.init.is_some(),
         docker_disk_mib: docker_disk_mib(&spec),
+        clipboard_route: has_clipboard_route(name, &spec),
     }
+}
+
+/// Asserts that a recreated sandbox kept its settings, including its clipboard route.
+fn assert_kept_with_clipboard(after: &KeptSettings, before: &KeptSettings) {
+    assert!(before.clipboard_route, "the sandbox had no clipboard route");
+    assert_eq!(after, before);
 }
 
 /// What a sandbox looks like right after its network rules were updated.
@@ -2254,6 +2332,17 @@ async fn start_existing(client: &mut SandboxManagementServiceClient<Channel>, na
     start_and_wait(client, request).await;
 }
 
+/// Returns the request of a sandbox with curl that allows `example.com` and shares the host
+/// clipboard.
+fn clipboard_curl_request(name: &str) -> StartSandboxRequest {
+    StartSandboxRequest {
+        image: CURL_IMAGE.to_string(),
+        network: Some(allow_policy(true, &["example.com"])),
+        clipboard: Some(true),
+        ..start_request(name)
+    }
+}
+
 #[tokio::test]
 async fn update_network_of_running_sandbox_keeps_its_disk_and_settings() {
     let name: &str = &sandbox_name("update-running");
@@ -2263,7 +2352,7 @@ async fn update_network_of_running_sandbox_keeps_its_disk_and_settings() {
     let store = store_with_test_secret(dir.path());
     let daemon = TestDaemon::start_with_secrets("update-running", store).await;
     let mut client = daemon.client().await;
-    start_enforced_sandbox(&mut client, name, &["example.com"], &[]).await;
+    start_and_wait(&mut client, clipboard_curl_request(name)).await;
     write_markers(&mut client, name).await;
     let before = kept_settings(&mut client, name).await;
     let denied = fetch(&mut client, name, "https://example.org").await;
@@ -2281,7 +2370,7 @@ async fn update_network_of_running_sandbox_keeps_its_disk_and_settings() {
 
     assert!(denied.trim_end().ends_with("403"), "{denied:?}");
     assert_eq!(after.status, Some(SandboxStatus::Running));
-    assert_eq!(after.settings, before);
+    assert_kept_with_clipboard(&after.settings, &before);
     assert!(
         after.stored_network.contains("example.org"),
         "{}",
@@ -2767,8 +2856,8 @@ async fn after_upgrade(
     }
 }
 
-/// Starts a sandbox from [`OLD_IMAGE`] that allows `example.com`, forwards the host port and
-/// has marker files on its root and Docker disks.
+/// Starts a sandbox from [`OLD_IMAGE`] that allows `example.com`, forwards the host port,
+/// shares the host clipboard and has marker files on its root and Docker disks.
 async fn start_old_sandbox(
     client: &mut SandboxManagementServiceClient<Channel>,
     name: &str,
@@ -2777,6 +2866,7 @@ async fn start_old_sandbox(
     let request = StartSandboxRequest {
         network: Some(allow_policy(true, &["example.com"])),
         ports: Some(forward_ports(host, GUEST_PORT)),
+        clipboard: Some(true),
         ..old_image_request(name)
     };
 
@@ -2825,9 +2915,11 @@ fn assert_upgraded_and_kept(
     labels: &[(String, String)],
 ) {
     assert_eq!(after.update.status, Some(SandboxStatus::Running));
-    assert_eq!(&after.update.settings, before);
+    assert_kept_with_clipboard(&after.update.settings, before);
     let image_label = |image: &str| (sandboxes::IMAGE_LABEL.to_string(), image.to_string());
     assert!(labels.contains(&image_label(OLD_IMAGE)), "{labels:?}");
+    let clipboard_label = (clipboard::ENABLED_LABEL.to_string(), "true".to_string());
+    assert!(labels.contains(&clipboard_label), "{labels:?}");
     assert!(
         after.labels.contains(&image_label(UPGRADE_IMAGE)),
         "{:?}",
@@ -3584,7 +3676,7 @@ async fn network_log_records_lines_across_restarts_until_the_sandbox_is_removed(
     let before = wait_for_record(name, 1, 1).await;
     daemon.stop().await;
 
-    let daemon = TestDaemon::start_restoring_network_logs("netlog-restarted").await;
+    let daemon = TestDaemon::start_restoring_listeners("netlog-restarted").await;
     let mut client = daemon.client().await;
     write_netlog_lines(name, &[DNS_LINE]).await;
     let after = wait_for_record_count(name, 2).await;
@@ -3746,4 +3838,240 @@ async fn list_network_activity_returns_the_recorded_events_with_the_policy() {
     assert_eq!(tcp.destination, "93.184.215.14");
     assert_eq!(tcp.ports, [443]);
     assert!(!tcp.allowed, "no IP rule allows 93.184.215.14");
+}
+
+/// Returns the host socket fbkd listens on for the sandbox's clipboard.
+fn clipboard_socket(name: &str) -> PathBuf {
+    firebrick_utils::clipboard_socket_dir()
+        .expect("set XDG_RUNTIME_DIR to an absolute path for the clipboard tests on Linux")
+        .join(format!("{name}.sock"))
+}
+
+/// Whether the sandbox has a stream route from the clipboard port to its socket.
+fn has_clipboard_route(name: &str, spec: &SandboxSpec) -> bool {
+    spec.vsock.routes.iter().any(|route| {
+        route.port == clipboard::GUEST_PORT
+            && route.socket_type == VsockSocketType::Stream
+            && route.host_socket == clipboard_socket(name)
+    })
+}
+
+/// An image with `python3`, which the `wl-paste` and `xclip` stand-ins run on.
+const PYTHON_IMAGE: &str = "python:3.13-slim-trixie";
+
+/// The stand-in of the `firebrick-base` image.
+const PASTE_STAND_IN: &[u8] = include_bytes!("../../../image/firebrick-paste");
+
+/// Installs the stand-in as `wl-paste` and `xclip`, like the `firebrick-base` image does.
+async fn install_paste_stand_in(sb: &Sandbox) {
+    let script = "cat > /usr/local/bin/firebrick-paste \
+        && chmod 755 /usr/local/bin/firebrick-paste \
+        && ln -sf firebrick-paste /usr/local/bin/wl-paste \
+        && ln -sf firebrick-paste /usr/local/bin/xclip";
+    let output = sb
+        .exec_with("sh", |exec| {
+            exec.args(["-c", script]).stdin_bytes(PASTE_STAND_IN)
+        })
+        .await
+        .expect("failed to install the stand-in");
+
+    assert!(output.status().success, "{:?}", output.stderr());
+}
+
+/// The exit code, stdout and stderr of a command.
+type Pasted = (i32, Vec<u8>, String);
+
+/// Runs the shell command in the sandbox without a terminal, so binary output stays intact.
+async fn paste(sb: &Sandbox, command: &str) -> Pasted {
+    let output = sb
+        .exec("sh", ["-c", command])
+        .await
+        .expect("failed to run the stand-in");
+
+    (
+        output.status().code,
+        output.stdout_bytes().to_vec(),
+        String::from_utf8_lossy(output.stderr_bytes()).into_owned(),
+    )
+}
+
+/// Returns a successful paste of the output.
+fn pasted(stdout: &[u8]) -> Pasted {
+    (0, stdout.to_vec(), String::new())
+}
+
+/// Creates a sandbox from [`PYTHON_IMAGE`] with the clipboard setting and the stand-in.
+async fn start_paste_sandbox(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    clipboard: bool,
+) -> Sandbox {
+    let request = StartSandboxRequest {
+        image: PYTHON_IMAGE.to_string(),
+        clipboard: Some(clipboard),
+        ..start_request(name)
+    };
+    start_and_wait(client, request).await;
+    let sb = Sandbox::get(name)
+        .await
+        .expect("failed to get the sandbox")
+        .connect()
+        .await
+        .expect("failed to connect to the sandbox");
+    install_paste_stand_in(&sb).await;
+
+    sb
+}
+
+#[tokio::test]
+async fn stand_ins_paste_the_host_clipboard_in_a_sandbox_with_the_setting() {
+    let name: &str = &sandbox_name("clipboard");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("clipboard").await;
+    let mut client = daemon.client().await;
+    let sb = start_paste_sandbox(&mut client, name, true).await;
+    let (spec, label) = (sandbox_spec(name).await, firebrick_labels(name).await);
+
+    let mut pastes = Vec::new();
+    for (command, _) in PASTES {
+        pastes.push(paste(&sb, command).await);
+    }
+    let primary = paste(&sb, "xclip -selection primary -o").await;
+    daemon.stop().await;
+    // The route stays, but nothing listens on it anymore.
+    let unreachable = paste(&sb, "wl-paste").await;
+    remove_sandbox(name).await;
+
+    let enabled = (clipboard::ENABLED_LABEL.to_string(), "true".to_string());
+    assert!(label.contains(&enabled), "{label:?}");
+    assert!(has_clipboard_route(name, &spec));
+    let expected: Vec<Pasted> = PASTES.iter().map(|(_, out)| pasted(out)).collect();
+    assert_eq!(pastes, expected);
+    let usage = "xclip: only these forms are supported: xclip -selection clipboard|c -o \
+                 [-t UTF8_STRING|STRING|text/plain|image/png|TARGETS]\n";
+    assert_eq!(primary, (2, vec![], usage.to_string()));
+    let message = "wl-paste: couldn't reach the host clipboard\n";
+    assert_eq!(unreachable, (1, vec![], message.to_string()));
+}
+
+/// The stand-in commands that paste the [`FakeClipboard`], and what they print.
+const PASTES: [(&str, &[u8]); 7] = [
+    ("wl-paste", b"hello from the host\n"),
+    ("wl-paste --no-newline", CLIPBOARD_TEXT),
+    (
+        "wl-paste --list-types",
+        b"text/plain;charset=utf-8\nimage/png\n",
+    ),
+    ("wl-paste --type image/png", CLIPBOARD_PNG),
+    (
+        "xclip -selection clipboard -t TARGETS -o",
+        b"TARGETS\nUTF8_STRING\nimage/png\n",
+    ),
+    ("xclip -selection c -o", CLIPBOARD_TEXT),
+    ("xclip -selection clipboard -t image/png -o", CLIPBOARD_PNG),
+];
+
+/// What `wl-paste` prints in a sandbox without the clipboard setting.
+const OFF_MESSAGE: &str = "wl-paste: clipboard sharing is off for this sandbox; set clipboard: \
+                           true in .firebrick.yml and recreate the sandbox\n";
+
+#[tokio::test]
+async fn sandbox_without_the_setting_has_no_clipboard_route() {
+    let name: &str = &sandbox_name("clipboard-off");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("clipboard-off").await;
+    let mut client = daemon.client().await;
+    let sb = start_paste_sandbox(&mut client, name, false).await;
+    let (spec, labels) = (sandbox_spec(name).await, firebrick_labels(name).await);
+
+    let off = paste(&sb, "wl-paste").await;
+    // Root in the guest can't ask fbkd either: the sandbox has no route to it.
+    let direct = paste(&sb, ASK_FBKD_DIRECTLY).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    let labeled = labels
+        .iter()
+        .any(|(key, _)| key == clipboard::ENABLED_LABEL);
+    assert!(!labeled, "{labels:?}");
+    assert!(!has_clipboard_route(name, &spec));
+    assert_eq!(off, (1, vec![], OFF_MESSAGE.to_string()));
+    assert_eq!(
+        (direct.0, direct.1.as_slice()),
+        (1, &b"connection failed"[..]),
+        "{direct:?}"
+    );
+}
+
+/// Asks for the clipboard text on the clipboard port without the stand-in. Prints the answer,
+/// or `connection failed` and exits 1 when the connection fails or closes without one.
+const ASK_FBKD_DIRECTLY: &str = "python3 -c '
+import socket, sys
+try:
+    s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+    s.settimeout(5)
+    s.connect((2, 52001))
+    s.sendall(b\"text\\n\")
+    answer = s.recv(100)
+except OSError:
+    answer = b\"\"
+sys.stdout.buffer.write(answer or b\"connection failed\")
+sys.exit(0 if answer else 1)
+'";
+
+/// What the stand-in prints for each content of the fake clipboard that it can't paste.
+const PASTE_ERRORS: [(FakeContent, &str, &str); 5] = [
+    (
+        FakeContent::Empty,
+        "wl-paste",
+        "wl-paste: the clipboard holds no text\n",
+    ),
+    (
+        FakeContent::Empty,
+        "wl-paste --list-types",
+        "wl-paste: the clipboard is empty\n",
+    ),
+    (
+        FakeContent::Large,
+        "wl-paste --type image/png",
+        "wl-paste: the clipboard content is larger than 10 MiB\n",
+    ),
+    (
+        FakeContent::Unavailable(Cause::NoDisplay),
+        "xclip -selection clipboard -o",
+        "xclip: the host clipboard isn't available; fbkd has no display, so stop it and run \
+         fbk from your desktop session\n",
+    ),
+    (
+        FakeContent::Unavailable(Cause::Failed),
+        "wl-paste",
+        "wl-paste: the host clipboard isn't available\n",
+    ),
+];
+
+#[tokio::test]
+async fn stand_ins_report_what_keeps_them_from_pasting() {
+    let name: &str = &sandbox_name("clipboard-errors");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("clipboard-errors").await;
+    let mut client = daemon.client().await;
+    let sb = start_paste_sandbox(&mut client, name, true).await;
+    let mut errors = Vec::new();
+    for (content, command, _) in PASTE_ERRORS {
+        daemon.set_clipboard(content);
+        errors.push(paste(&sb, command).await);
+    }
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    let expected: Vec<Pasted> = PASTE_ERRORS
+        .iter()
+        .map(|(_, _, message)| (1, vec![], message.to_string()))
+        .collect();
+    assert_eq!(errors, expected);
 }

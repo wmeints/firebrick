@@ -115,6 +115,9 @@ pub struct SandboxSpec {
         skip_serializing_if = "Option::is_none"
     )]
     pub mounts: Option<Vec<MountSpec>>,
+    /// Whether programs in the sandbox can read the host clipboard. Defaults to `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clipboard: Option<bool>,
 }
 
 /// A host directory mounted into the sandbox when it's created.
@@ -894,6 +897,7 @@ pub fn default_spec(name: String) -> SandboxSpec {
         network: None,
         mounts: None,
         ports: vec![],
+        clipboard: None,
     }
 }
 
@@ -1140,6 +1144,7 @@ pub mod tests {
         assert!(spec.network.is_none());
         assert!(spec.mounts.is_none());
         assert!(spec.ports.is_empty());
+        assert_eq!(spec.clipboard, None);
     }
 
     #[test]
@@ -1201,6 +1206,38 @@ pub mod tests {
         assert_eq!((diagnostic.line, diagnostic.column), (2, 7));
         assert!(
             diagnostic.message.contains("mise"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn clipboard_is_optional() {
+        let file = write_spec("name: dev\n");
+
+        let spec = from_file(file.path()).unwrap();
+
+        assert!(spec.clipboard.is_none());
+    }
+
+    #[test]
+    fn parses_clipboard() {
+        let file = write_spec("name: dev\nclipboard: true\n");
+
+        let spec = from_file(file.path()).unwrap();
+
+        assert_eq!(spec.clipboard, Some(true));
+    }
+
+    #[test]
+    fn invalid_clipboard_returns_diagnostic() {
+        let file = write_spec("name: dev\nclipboard: always\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (2, 12));
+        assert!(
+            diagnostic.message.contains("clipboard"),
             "{}",
             diagnostic.message
         );

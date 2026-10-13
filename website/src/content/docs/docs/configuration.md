@@ -44,10 +44,12 @@ refuses to replace an existing file; `fbk init --force` overwrites it.
 | `mounts[].host`     | Host directory: absolute, `~/...`, `~user/...` or relative to the spec. | Required per mount                          |
 | `mounts[].guest`    | Absolute guest path to mount it at. Each path may appear only once.     | Required per mount                          |
 | `mounts[].readonly` | Mount the directory read-only.                                          | `false`                                     |
+| `clipboard`         | Let programs in the sandbox read the host clipboard.                    | `false`                                     |
 
 When you set `resources`, set both `cpu` and `memory`. The `network` and `ports`
 fields are described in [Networking](/docs/networking/), and `image` and `init`
-in [Custom images](/docs/custom-images/).
+in [Custom images](/docs/custom-images/), and `clipboard` in
+[Pasting from the host clipboard](#pasting-from-the-host-clipboard).
 
 Firebrick rejects fields it doesn't know, so a typo such as `memroy` is an error
 rather than a setting that's silently ignored. Check the file with `fbk
@@ -92,9 +94,9 @@ sandbox you name and aren't checked.
 
 ## Applying changes
 
-The image, init, mise setting, resources, volumes, network rules and mounts
-apply when the sandbox is created. To change them for an existing sandbox,
-remove it and start it again:
+The image, init, mise setting, resources, volumes, network rules, mounts and
+clipboard setting apply when the sandbox is created. To change them for an
+existing sandbox, remove it and start it again:
 
 ```sh
 fbk rm --force
@@ -111,12 +113,12 @@ The agent can edit `.firebrick.yml` like any other file in the workspace, so
 review changes you didn't make before you apply them. See
 [What the agent can change](/docs/#what-the-agent-can-change).
 
-### Approving mounts and network changes
+### Approving settings changes
 
 The agent in the sandbox can edit `.firebrick.yml`, because it's part of the
-project. To keep it from giving itself more access, `fbk` remembers the `mounts`
-and `network` settings you approved for each project, and asks before it creates
-a sandbox with other ones:
+project. To keep it from giving itself more access, `fbk` remembers the
+`mounts`, `network` and `clipboard` settings you approved for each project, and
+asks before it creates a sandbox with other ones:
 
 ```console
 $ fbk start
@@ -124,26 +126,28 @@ $ fbk start
   + mount /home/me -> /mnt/home (read/write)
   ~ network.enforce: true -> false
   + network.allow: *.attacker.example
+  + clipboard: shared with the host
 Apply these changes? [y/N] n
-Error: aborted: the changes to mounts and network in .firebrick.yml weren't approved
+Error: aborted: the changes to mounts, network and clipboard in .firebrick.yml weren't approved
 ```
 
 Each line shows an added (`+`) or removed (`-`) mount, with the real directory a
-symlink points to, or rule, or a changed (`~`) network switch. Answer `y` to
-create the sandbox and remember the settings, so the next `fbk start` with the
-same settings doesn't ask. Any other answer creates nothing. The first time a
-project has mounts or a `network` section, `fbk` lists all of them under
-`.firebrick.yml sets mounts or network settings you haven't approved for this
-workspace yet:` and asks once, also for a project you used before this version
-of Firebrick. Check that `network.enforce` is `true` there when you expect your
-rules to be enforced.
+symlink points to, or rule, a changed (`~`) network switch, or the clipboard
+being shared (`+`) or no longer shared (`-`). Answer `y` to create the sandbox
+and remember the settings, so the next `fbk start` with the same settings
+doesn't ask. Any other answer creates nothing. The first time a project has
+mounts, a `network` section or `clipboard: true`, `fbk` lists all of them under
+`.firebrick.yml sets mounts, network or clipboard settings you haven't approved
+for this workspace yet:` and asks once, also for a project you used before this
+version of Firebrick. Check that `network.enforce` is `true` there when you
+expect your rules to be enforced.
 
 Review the changes before you approve them: when you didn't make them, the agent
 did. Pass `--yes` to `fbk start` or `fbk run` to approve them without asking,
 for example in a script; `fbk` still prints them. Without a terminal and without
 `--yes`, the command fails. Starting an existing sandbox never asks, because it
-doesn't apply `mounts` or `network`. The other settings, such as `image` and
-`resources`, apply without asking.
+doesn't apply `mounts`, `network` or `clipboard`. The other settings, such as
+`image` and `resources`, apply without asking.
 
 ## Extra mounts
 
@@ -170,8 +174,7 @@ user owns the mounted files, like the workspace.
 
 Before they create a sandbox with new or changed mounts, `fbk start` and `fbk
 run` show them with the directories they resolve to and ask you to approve them.
-See
-[Approving mounts and network changes](#approving-mounts-and-network-changes).
+See [Approving settings changes](#approving-settings-changes).
 
 ## mise tools
 
@@ -194,6 +197,54 @@ terminal, for example in CI, `fbk start` prints `Installing mise tools...` and
 `Installed mise tools` instead. When `mise install` fails, `fbk start` prints
 mise's error and the sandbox keeps running, so you can connect and fix the
 config. Images without mise skip this step. Set `mise: false` to turn it off.
+
+## Pasting from the host clipboard
+
+The sandbox has no display, so programs that read the clipboard themselves, such
+as Claude Code when you paste an image, can't reach it. Pasting text into the
+terminal works without this setting. To share the host clipboard with the
+sandbox, set `clipboard`:
+
+```yaml
+name: my-project
+clipboard: true
+```
+
+**Any process in the sandbox can read your clipboard.** While `clipboard` is on,
+the agent and every program it runs can read your host clipboard at any time,
+without asking, including passwords and tokens you copied for something else.
+Only turn it on for projects whose agent you'd trust with what you copy.
+
+`fbk start` asks you to approve the setting before it creates the sandbox, like
+mounts (see [Approving settings changes](#approving-settings-changes)). It
+applies when the sandbox is created, so recreate an existing one with `fbk rm
+--force && fbk start`. In the `firebrick-base` image, `wl-paste` and `xclip`
+then read the host clipboard's text and PNG images:
+
+```console
+agent@sandbox:~$ wl-paste --list-types
+text/plain;charset=utf-8
+image/png
+agent@sandbox:~$ wl-paste --no-newline
+hello from the host
+agent@sandbox:~$ xclip -selection clipboard -t image/png -o > shot.png
+```
+
+They support `wl-paste [--no-newline|-n] [--type|-t <type>]`, `wl-paste
+--list-types|-l` and `xclip -selection clipboard|c -o [-t <target>]`, for text
+and `image/png`. Only pasting from the clipboard works: copying into it, the
+primary selection and other types don't. Text is limited to 1 MiB and images to
+10 MiB.
+
+`fbkd` reads the clipboard with `wl-paste` on Wayland, `xclip` on X11, and
+`pbpaste` and `osascript` on macOS, so install `wl-clipboard` or `xclip` on
+Linux. It uses the display of the terminal where you first ran `fbk`. When `fbk`
+started it from an SSH session without a display, `wl-paste` in the sandbox
+prints `the host clipboard isn't available; fbkd has no display`; stop `fbkd`
+and run `fbk` from your desktop. On Linux, `fbkd` needs `XDG_RUNTIME_DIR` set to
+a private directory for the clipboard; without it, `fbk start` refuses to create
+a sandbox with `clipboard: true`. In a sandbox without the setting, `wl-paste`
+prints `clipboard sharing is off for this sandbox`.
 
 ## Docker data disk
 
@@ -218,7 +269,7 @@ it uses the default under your home directory:
 | `$XDG_RUNTIME_DIR/firebrick/netlog/<sandbox>.sock`                             | The sockets sandboxes report their network activity to. On macOS without `XDG_RUNTIME_DIR`, they're in `/private/tmp/fbk-<uid>`, which must be yours with mode `0700`. On Linux without it, sandboxes get no network record. |
 | `$XDG_DATA_HOME/firebrick/ssh` (`~/.local/share/firebrick/ssh`)                | The SSH keys, `known_hosts` and the generated SSH config. See [Editor support](/docs/editor-support/).                                                                                                                       |
 | `~/.local/share/firebrick/secrets.yml`                                         | The secrets. See [Secrets](/docs/secrets/).                                                                                                                                                                                  |
-| `$XDG_CONFIG_HOME/firebrick/approved.yml` (`~/.config/firebrick/approved.yml`) | The mounts and network settings you approved per project. See [Approving mounts and network changes](#approving-mounts-and-network-changes).                                                                                 |
+| `$XDG_CONFIG_HOME/firebrick/approved.yml` (`~/.config/firebrick/approved.yml`) | The mounts, network and clipboard settings you approved per project. See [Approving settings changes](#approving-settings-changes).                                                                                          |
 
 `fbkd` never falls back to the temp directory for its data, logs and
 microsandbox home: it refuses to start when neither `HOME` nor the matching

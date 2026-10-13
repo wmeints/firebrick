@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""Stands in for wl-paste and xclip in Firebrick sandboxes, which have no display server.
+
+It reads the host clipboard through fbkd: it connects to vsock port 52001 on the host (CID 2),
+sends one request line, `types`, `text` or `png`, and reads the answer, `ok <length>` followed
+by the content, or `empty`, `too-large`, `unavailable <cause>` or `invalid`. Only sandboxes
+created with `clipboard: true` in .firebrick.yml have the route, and they have the marker
+script that microsandbox mounts at /.msb/scripts/firebrick-clipboard. Installed as
+/usr/local/bin/wl-paste and /usr/local/bin/xclip, it behaves like the tool it's called as.
+"""
+
+import os
+import socket
+import sys
+import time
+
+HOST_CID = 2
+PORT = 52001
+TIMEOUT = 5.0
+MARKER = "/.msb/scripts/firebrick-clipboard"
+MAX_HEADER = 64
+
+TEXT_LIMIT = "1 MiB"
+PNG_LIMIT = "10 MiB"
+
+WL_TEXT_TYPES = ("text/plain", "text/plain;charset=utf-8")
+XCLIP_TEXT_TYPES = ("UTF8_STRING", "STRING", "text/plain")
+
+# Hints for the causes fbkd gives when it can't read the host clipboard.
+UNAVAILABLE_HINTS = {
+    "no-display": "; fbkd has no display, so stop it and run fbk from your desktop session",
+    "no-tool": "; install wl-clipboard or xclip on the host",
+}
+
+USAGE = {
+    "wl-paste": "wl-paste [--no-newline|-n] [--type|-t text/plain|text/plain;charset=utf-8|"
+    "image/png], or wl-paste --list-types|-l",
+    "xclip": "xclip -selection clipboard|c -o [-t UTF8_STRING|STRING|text/plain|image/png|"
+    "TARGETS]",
+}
+
+
+class Failure(Exception):
+    """Ends the program with a message and an exit status."""
+
+    def __init__(self, message, status=1):
+        super().__init__(message)
+        self.status = status
+
+
+def usage(tool):
+    return Failure(f"only these forms are supported: {USAGE[tool]}", 2)
+
+
+class Paste:
+    """What to ask fbkd for and how to print the answer."""
+
+    def __init__(self, request, type_name, newline=False, list_format=None):
+        self.request = request
+        self.type_name = type_name
+        self.newline = newline
+        self.list_format = list_format
+
+
+def wl_paste(args):
+    newline = True
+    type_name = None
+    list_types = False
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg in ("--no-newline", "-n"):
+            newline = False
+        elif arg in ("--list-types", "-l"):
+            list_types = True
+        elif arg in ("--type", "-t") and rest:
+            type_name = rest.pop(0)
+        elif arg.startswith("--type="):
+            type_name = arg[len("--type="):]
+        else:
+            raise usage("wl-paste")
+    if list_types:
+        if type_name is not None:
+            raise usage("wl-paste")
+        return Paste("types", "types", list_format="wl-paste")
+    if type_name is None or type_name in WL_TEXT_TYPES:
+        return Paste("text", type_name or "text", newline=newline)
+    if type_name == "image/png":
+        return Paste("png", type_name)
+    raise usage("wl-paste")
+
+
+def xclip(args):
+    selection = "primary"
+    output = False
+    target = "UTF8_STRING"
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg in ("-selection", "-sel", "-se") and rest:
+            selection = rest.pop(0)
+        elif arg in ("-o", "-out"):
+            output = True
+        elif arg in ("-t", "-target") and rest:
+            target = rest.pop(0)
+        else:
+            raise usage("xclip")
+    if not output or selection not in ("clipboard", "c"):
+        raise usage("xclip")
+    if target == "TARGETS":
+        return Paste("types", target, list_format="xclip")
+    if target in XCLIP_TEXT_TYPES:
+        return Paste("text", target)
+    if target == "image/png":
+        return Paste("png", target)
+    raise usage("xclip")
+
+
+def read_exactly(sock, length, deadline):
+    data = bytearray()
+    while len(data) < length:
+        sock.settimeout(max(deadline - time.monotonic(), 0.001))
+        chunk = sock.recv(min(length - len(data), 1 << 16))
+        if not chunk:
+            raise OSError("the connection closed early")
+        data += chunk
+    return bytes(data)
+
+
+def read_header(sock, deadline):
+    header = bytearray()
+    while not header.endswith(b"\n"):
+        if len(header) > MAX_HEADER:
+            raise OSError("the answer is malformed")
+        header += read_exactly(sock, 1, deadline)
+    return header[:-1].decode("ascii", "replace")
+
+
+def ask(request):
+    """Sends the request to fbkd and returns the status and the content, or for a status other
+    than `ok` the rest of its line, such as the cause of `unavailable`."""
+    deadline = time.monotonic() + TIMEOUT
+    try:
+        with socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM) as sock:
+            sock.settimeout(TIMEOUT)
+            sock.connect((HOST_CID, PORT))
+            sock.sendall(request.encode() + b"\n")
+            status, _, length = read_header(sock, deadline).partition(" ")
+            if status != "ok":
+                return status, length.encode()
+            if not length.isdigit():
+                raise OSError("the answer is malformed")
+            return status, read_exactly(sock, int(length), deadline)
+    except (OSError, ValueError) as err:
+        raise Failure("couldn't reach the host clipboard") from err
+
+
+def listing(names, list_format):
+    if list_format == "xclip":
+        types = ["TARGETS"]
+        types += ["UTF8_STRING"] if "text" in names else []
+        types += ["image/png"] if "png" in names else []
+    else:
+        types = ["text/plain;charset=utf-8"] if "text" in names else []
+        types += ["image/png"] if "png" in names else []
+    return "".join(f"{name}\n" for name in types).encode()
+
+
+def content(paste, status, data):
+    if status == "ok" and paste.request == "types":
+        names = data.decode("ascii", "replace").split()
+        if not names:
+            raise Failure("the clipboard is empty")
+        return listing(names, paste.list_format)
+    if status == "ok":
+        return data + b"\n" if paste.newline else data
+    if status == "empty":
+        raise Failure(f"the clipboard holds no {paste.type_name}")
+    if status == "too-large":
+        limit = PNG_LIMIT if paste.request == "png" else TEXT_LIMIT
+        raise Failure(f"the clipboard content is larger than {limit}")
+    if status == "unavailable":
+        hint = UNAVAILABLE_HINTS.get(data.decode("ascii", "replace"), "")
+        raise Failure(f"the host clipboard isn't available{hint}")
+    raise Failure("couldn't reach the host clipboard")
+
+
+def main():
+    tool = os.path.basename(sys.argv[0])
+    if tool not in USAGE:
+        tool = "wl-paste"
+    try:
+        paste = xclip(sys.argv[1:]) if tool == "xclip" else wl_paste(sys.argv[1:])
+        if not os.path.exists(MARKER):
+            raise Failure(
+                "clipboard sharing is off for this sandbox; set clipboard: true in "
+                ".firebrick.yml and recreate the sandbox"
+            )
+        output = content(paste, *ask(paste.request))
+    except Failure as failure:
+        print(f"{tool}: {failure}", file=sys.stderr)
+        return failure.status
+    sys.stdout.buffer.write(output)
+    sys.stdout.buffer.flush()
+    return 0
+
+
+sys.exit(main())

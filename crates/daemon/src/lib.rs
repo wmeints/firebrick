@@ -1,6 +1,7 @@
 /// Generated gRPC types for the firebrick API.
 pub use firebrick_proto as api;
 
+pub mod clipboard;
 pub mod forward;
 pub mod mise;
 pub mod netlog;
@@ -16,4 +17,5 @@ mod settings_file;
 pub mod ssh;
 mod tunnel;
 pub mod vscode;
+mod vsock;
 pub mod zed;

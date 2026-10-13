@@ -22,9 +22,9 @@ fbk start [--yes] [NAME]
 
 Starts the sandbox for the working directory, and creates it first when it
 doesn't exist. Prints how to connect to it with SSH, VS Code and Zed, and the
-ports it forwards. Before it creates a sandbox whose mounts or network settings
-you haven't approved, it shows them and asks
-([Approving mounts and network changes](/docs/configuration/#approving-mounts-and-network-changes)).
+ports it forwards. Before it creates a sandbox whose mounts, network or
+clipboard settings you haven't approved, it shows them and asks
+([Approving settings changes](/docs/configuration/#approving-settings-changes)).
 
 | Argument      | Description                                                                        | Default                                |
 | ------------- | ---------------------------------------------------------------------------------- | -------------------------------------- |
