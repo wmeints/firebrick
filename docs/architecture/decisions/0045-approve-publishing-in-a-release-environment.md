@@ -37,12 +37,11 @@ builds from.
 
 ## Consequences
 
-- Every release waits for two approvals in the Actions UI: one for `image` and,
-  once the image is pushed, one for `publish`. `publish` depends on `image`, so
-  its deployment only starts waiting after `image` succeeds. The `package` jobs
-  build while the first approval waits.
-- A run nobody approves within 30 days fails; rerun the `Release` workflow from
-  the Actions UI.
+- Every release waits for two approvals in the Actions UI: one for `image` once
+  every `package` job succeeds, and one for `publish` once the image is pushed.
+  A job's review only appears when the jobs it needs have finished.
+- A run nobody approves within 30 days fails; re-run its failed jobs, because a
+  new run of `tag-release.yaml` finds the tag and releases nothing.
 - The settings live outside the repository. A maintainer applies them in the
   order the deployment view lists: the environment before the next release,
   because a job that names a missing environment creates it without reviewers,

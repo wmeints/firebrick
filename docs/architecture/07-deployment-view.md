@@ -37,11 +37,14 @@ version.
 The `image` and `publish` jobs run in the `release` environment, which waits for
 a required reviewer to approve each deployment in the Actions UI, under "Review
 deployments" on the run. `publish` needs `image`, so a release takes two
-approvals: one for `image` while or after the `package` jobs build, and one for
+approvals: one for `image` once every `package` job succeeds, and one for
 `publish` once the image is pushed. A deployment nobody approves within 30 days
-fails the run; rerun the `Release` workflow from the Actions UI. The `package`
-and `release` jobs only build and create the GitHub release, so they run without
-approval. See
+fails the run. Re-run its failed jobs with "Re-run failed jobs" in the Actions
+UI or `gh run rerun <run-id> --failed`: a release from a version bump runs
+inside the `Tag release` run, and a new run of `tag-release.yaml` finds the tag
+and releases nothing. Only a tag pushed by hand has a `Release` run. The
+`package` and `release` jobs only build and create the GitHub release, so they
+run without approval. See
 [ADR 0045](decisions/0045-approve-publishing-in-a-release-environment.md).
 
 The `publish` job authenticates with crates.io
