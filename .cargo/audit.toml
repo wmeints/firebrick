@@ -1,0 +1,11 @@
+# cargo-audit configuration, read by `cargo audit` and the audit workflow
+# (ADR 0046). Each ignored advisory gives the reason it doesn't apply.
+[advisories]
+ignore = [
+  # Marvin Attack: timing side channel in RSA decryption and signing in the
+  # `rsa` crate, with no fixed version. russh enables its `rsa` feature by
+  # default and microsandbox depends on russh with the default features, so
+  # the crate can't be removed. Firebrick and microsandbox only create and use
+  # Ed25519 keys, so no RSA private-key operation runs.
+  "RUSTSEC-2023-0071",
+]

@@ -1,0 +1,46 @@
+name: Audit
+
+# Check the crates in Cargo.lock for RustSec advisories every day, so a new
+# advisory against a dependency that didn't change still surfaces (ADR 0046).
+# Pull requests and pushes run it only when this workflow changes (ADR 0036).
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit.yaml]
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/audit.yaml]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: Audit dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Installs only the Rust toolchain and the cargo-audit version pinned in
+      # mise.toml.
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          # Pin mise itself; it verifies the checksums in mise.lock.
+          version: 2026.9.10
+          install_args: rust aqua:rustsec/rustsec/cargo-audit
+
+      # Fetches the latest advisory database and fails on vulnerabilities only;
+      # unmaintained, unsound and yanked crates are printed as warnings.
+      # .cargo/audit.toml lists the advisories that don't apply.
+      - name: Audit Cargo.lock
+        run: cargo audit

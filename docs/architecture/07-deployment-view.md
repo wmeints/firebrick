@@ -200,6 +200,16 @@ installs the tools with `--locked`, so each download must match the checksum in
 release jobs install only `rust` and `protoc`. See
 [ADR 0043](decisions/0043-pin-github-actions-and-ci-tools-to-checksums.md).
 
+`.github/workflows/audit.yaml` runs `cargo audit` against `Cargo.lock` with the
+latest RustSec advisory database every day, on manual runs, and on pull requests
+and pushes to `main` that change the workflow. A vulnerability advisory fails
+the job, and GitHub notifies about the failed scheduled run; unmaintained,
+unsound and yanked crates only print warnings. A database that can't be fetched
+also fails the job. When an advisory doesn't apply to firebrick and no upgrade
+fixes it, a maintainer adds its ID to `[advisories] ignore` in
+`.cargo/audit.toml`, with a comment that gives the reason. See
+[ADR 0046](decisions/0046-audit-dependencies-with-cargo-audit-daily.md).
+
 GitHub enforces the pins: the repository requires actions pinned to a full
 commit SHA, so a workflow that references an action by tag fails at startup. `gh
 api repos/wmeints/firebrick/actions/permissions --jq .sha_pinning_required`

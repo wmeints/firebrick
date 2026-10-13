@@ -223,3 +223,8 @@ These checks enforce the rules above, so don't try to bypass them:
 - `.github/workflows/image.yaml` builds the `firebrick-base` image for both
   platforms, without pushing it, on pull requests and pushes to `main` that
   change the `Dockerfile`.
+- `.github/workflows/audit.yaml` runs `cargo audit` against `Cargo.lock` daily,
+  on manual runs, and on pull requests and pushes to `main` that change the
+  workflow. A RustSec vulnerability fails it; unmaintained, unsound and yanked
+  warnings don't. Ignore an advisory that doesn't apply in `.cargo/audit.toml`
+  with a comment giving the reason (ADR 0046).
