@@ -35,6 +35,12 @@ checked against known checksums either.
   `mise.toml` for `linux-x64`, `linux-arm64` and `macos-arm64`.
   `jdx/mise-action` installs with `--locked` when the lockfile exists, so CI
   fails on a checksum mismatch or a tool the lockfile doesn't cover.
+- Every `jdx/mise-action` step pins mise itself with `version: 2026.9.10`, the
+  release that generated `mise.lock`. Without it, each run downloads the newest
+  mise, and that binary is what verifies the checksums.
+- The `package` and `publish` jobs of the release workflow install only `rust`
+  and `protoc` (`install_args`), so no other tool from `mise.toml` runs in a job
+  that can mint the crates.io token or build the release binaries.
 - The release workflow drops `arduino/setup-protoc`. `jdx/mise-action` already
   installs the `protoc` pinned in `mise.toml`.
 
@@ -49,6 +55,10 @@ checked against known checksums either.
   `mise.lock`; otherwise CI fails. `mise install` updates an existing lockfile
   on its own. `mise.lock` is a Rust, website and workflow input, so its changes
   run the same checks as `mise.toml`.
+- Dependabot doesn't update the mise version in the workflows; raise it by hand
+  together with `mise lock`. The mise download isn't checked against a checksum,
+  because `jdx/mise-action` takes one `sha256` per step and the release matrix
+  spans three platforms.
 - `core:rust` lock entries record only the version; rustup verifies the
   toolchain itself.
 - Repository settings that also block this, such as requiring SHA-pinned actions

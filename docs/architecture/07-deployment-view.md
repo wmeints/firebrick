@@ -178,7 +178,8 @@ every step of a job recompiled them.
 The workflows pin every action to a full commit SHA, with the matching release
 in a comment, so a moved or hijacked tag doesn't change what they run.
 Dependabot proposes new SHAs weekly, seven days after a release at the earliest.
-`jdx/mise-action` installs the tools with `--locked`, so each download must
-match the checksum in `mise.lock`; run `mise lock` after changing a version in
-`mise.toml`. See
+`jdx/mise-action` pins mise to the version that generated `mise.lock` and
+installs the tools with `--locked`, so each download must match the checksum in
+`mise.lock`; run `mise lock` after changing a version in `mise.toml`. The
+release jobs install only `rust` and `protoc`. See
 [ADR 0042](decisions/0042-pin-github-actions-and-ci-tools-to-checksums.md).

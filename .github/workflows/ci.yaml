@@ -48,6 +48,9 @@ jobs:
 
       # Installs the Rust toolchain, protoc and the other tools pinned in mise.toml.
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          # Pin mise itself; it verifies the checksums in mise.lock.
+          version: 2026.9.10
 
       # One cache for both jobs, so the integration tests reuse the
       # dependencies this job compiled.
@@ -102,6 +105,9 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          # Pin mise itself; it verifies the checksums in mise.lock.
+          version: 2026.9.10
 
       # Restores the cache the check job saved; only firebrick-daemon compiles
       # again, for the vm-tests feature.

@@ -44,6 +44,11 @@ jobs:
       # Installs the Rust toolchain and protoc pinned in mise.toml. Ubuntu 22.04's apt protoc (3.12)
       # rejects proto3 optional fields.
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          # Only what the build needs, so no other tool runs in this privileged job.
+          install_args: rust protoc
+          # Pin mise itself; it verifies the checksums in mise.lock.
+          version: 2026.9.10
 
       # The binaries default to the firebrick-base image tagged with their version, so the tag must match it.
       - name: Check tag matches version
@@ -130,6 +135,11 @@ jobs:
 
       # Installs the Rust toolchain and the protoc that firebrick-proto's build script needs to verify the crate.
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          # Only what the build needs, so no other tool runs in this privileged job.
+          install_args: rust protoc
+          # Pin mise itself; it verifies the checksums in mise.lock.
+          version: 2026.9.10
 
       - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
         id: auth

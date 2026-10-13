@@ -32,6 +32,8 @@ jobs:
       # Installs only the Node and pnpm versions pinned in mise.toml.
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
+          # Pin mise itself; it verifies the checksums in mise.lock.
+          version: 2026.9.10
           install_args: node pnpm
 
       # Fails when a dependency wants to run an install script that
