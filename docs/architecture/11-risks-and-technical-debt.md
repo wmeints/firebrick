@@ -1,5 +1,8 @@
 # Risks and technical debt
 
+The [threat model](concepts/threat-model.md) describes the assets, adversaries
+and trust boundaries these risks belong to.
+
 - **No native Windows support:** the constraints require the application to work
   on Windows, but the CLI and daemon talk over a unix socket and rely on unix
   signals, so they don't compile for Windows and no Windows release exists
