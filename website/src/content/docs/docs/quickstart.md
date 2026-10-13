@@ -29,27 +29,7 @@ The project directory is mounted in the sandbox at `/workspaces/my-project`.
 Without a `.firebrick.yml`, the sandbox uses the defaults; see
 [Configuration](/docs/configuration/) to change them.
 
-## 2. Give the agent its API key
-
-Store the key as a secret, reading it from stdin so it stays out of your shell
-history:
-
-```sh
-fbk secret set ANTHROPIC_API_KEY --from-stdin < ~/anthropic-key.txt
-```
-
-The sandbox never sees the real key: its `ANTHROPIC_API_KEY` holds a
-placeholder, which the host replaces with the key only in requests to
-`api.anthropic.com`. A running sandbox gets a new secret after a restart:
-
-```sh
-fbk stop
-fbk start
-```
-
-See [Secrets](/docs/secrets/) for other tokens and hosts.
-
-## 3. Run the agent
+## 2. Run the agent
 
 Open a shell in the sandbox:
 
@@ -71,6 +51,21 @@ is enforced.
 
 The agent works on the files in `/workspaces/my-project`, which are your project
 files on the host. The sandbox keeps running after you exit the shell.
+
+## 3. Log in
+
+The first time you start Claude Code, it asks you to log in. Pick your account
+type and Claude Code opens the login page. The sandbox has no browser, so
+Firebrick opens the page in the browser on your host and forwards the login's
+callback back into the sandbox. Log in there, and Claude Code is ready to go.
+
+The login stays on the sandbox's disk, so you don't log in again after `fbk
+stop` and `fbk start`, only after `fbk rm`.
+
+The agent's token lives in the sandbox, where the agent and anything it runs can
+read it. To keep it out of the sandbox, store an API key as a Firebrick secret
+instead: the sandbox then gets a placeholder that the host replaces with the key
+only in requests to the API. See [Secrets](/docs/secrets/).
 
 ## 4. Connect over SSH
 
