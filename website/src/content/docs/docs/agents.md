@@ -84,10 +84,23 @@ The sandbox keeps running, so you can connect and fix the config. Correct the
 tool name in `mise.toml` and run `fbk start` again, or set `mise: false` in
 `.firebrick.yml` to skip the install.
 
-## Giving the agent its API key
+## Logging in
 
-Store the agent's API key as a Firebrick secret, so the sandbox never sees the
-real key. See [Secrets](/docs/secrets/).
+The quickest way to sign the agent in is its own login flow: start the agent in
+the sandbox and log in when it asks. The sandbox has no browser, so Firebrick
+opens the login page in the browser on your host and forwards the login's
+callback to the sandbox (see
+[Browser logins](/docs/networking/#browser-logins)). With the network policy
+enforced, Firebrick only opens a login page whose host the rules allow. It
+refuses the others and notes that only in the `fbkd` log, not in `fbk network
+log`, so allow the agent's hosts before you log in, for example with `fbk
+network presets apply claude` (see
+[Presets](/docs/networking/#allowing-coding-agents-and-toolchains-with-presets)).
+
+The login is stored on the sandbox's disk, where the agent can read it, until
+`fbk rm` or `fbk upgrade` removes it. To keep the credential out of the sandbox,
+store the agent's API key as a Firebrick secret instead, so the sandbox only
+sees a placeholder. See [Secrets](/docs/secrets/).
 
 ## Installing with the network policy enforced
 
