@@ -39,7 +39,7 @@ the distribution. See
 details.
 
 Install the toolchain (Rust, Node, pnpm, `buf`, `protoc`, `dprint`,
-`actionlint`, `lefthook`, the GitHub CLI and Claude Code) with
+`actionlint`, `cargo-audit`, `lefthook`, the GitHub CLI and Claude Code) with
 [mise](https://mise.jdx.dev). This also installs the git hooks:
 
 ```sh

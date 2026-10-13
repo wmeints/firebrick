@@ -173,9 +173,9 @@ These checks enforce the rules above, so don't try to bypass them:
 
 - `mise install` provides the Rust toolchain, Node, pnpm, `buf`, `protoc`,
   `dprint`, `actionlint`, `shellcheck` (which actionlint runs on workflow
-  scripts), `lefthook`, the GitHub CLI (`gh`) and Claude Code. `mise.lock`
-  records their checksums and CI installs with `--locked`, so run `mise lock`
-  after changing a version in `mise.toml`.
+  scripts), `cargo-audit`, `lefthook`, the GitHub CLI (`gh`) and Claude Code.
+  `mise.lock` records their checksums and CI installs with `--locked`, so run
+  `mise lock` after changing a version in `mise.toml`.
 - Workflows pin every action to a full commit SHA with the version in a comment
   (`actions/checkout@<sha> # v7.0.1`), never a tag; Dependabot updates the pins
   (ADR 0043).
@@ -223,3 +223,8 @@ These checks enforce the rules above, so don't try to bypass them:
 - `.github/workflows/image.yaml` builds the `firebrick-base` image for both
   platforms, without pushing it, on pull requests and pushes to `main` that
   change the `Dockerfile`.
+- `.github/workflows/audit.yaml` runs `cargo audit` against `Cargo.lock` daily,
+  on manual runs, and on pull requests and pushes to `main` that change the
+  workflow. A RustSec vulnerability fails it; unmaintained, unsound and yanked
+  warnings don't. Ignore an advisory that doesn't apply in `.cargo/audit.toml`
+  with a comment giving the reason (ADR 0046).
