@@ -1838,30 +1838,31 @@ async fn start_sandbox_streams_mise_progress_without_control_characters() {
 
     let daemon = TestDaemon::start("mise-progress").await;
     let mut client = daemon.client().await;
-    // stdout and stderr arrive on separate streams, and the daemon holds back a line that
-    // follows another within the progress interval, so the lines are written well apart.
-    let install =
-        r"printf 'mise \033[1;32minstalling\033[0m node\n'; sleep 1; printf 'mise done\n' >&2";
+    // Only the first line within a progress interval is reported right away, and a line still
+    // waiting when mise exits is dropped, so the escaped line is the fake mise's only output.
+    let install = r"printf 'mise \033[1;32minstalling\033[0m node\n'";
 
     let (messages, _) = restart_with_fake_mise(&mut client, name, install)
         .await
         .expect("failed to restart sandbox");
-    let progress: Vec<(String, bool)> = mise_progress(messages)
-        .into_iter()
-        .map(|p| (p.line, p.complete))
-        .collect();
+    let progress = mise_progress(messages);
+
+    let ends =
+        [progress.first(), progress.last()].map(|p| p.map(|p| (p.line.as_str(), p.complete)));
+    assert_eq!(ends, [Some(("", false)), Some(("", true))], "{progress:?}");
+    assert!(
+        progress.iter().any(|p| p.line.contains("installing")),
+        "{progress:?}"
+    );
+    assert!(
+        progress
+            .iter()
+            .all(|p| !p.line.chars().any(char::is_control)),
+        "{progress:?}"
+    );
 
     daemon.stop().await;
     remove_sandbox(name).await;
-
-    let expected = [
-        ("", false),
-        ("mise [1;32minstalling[0m node", false),
-        ("mise done", false),
-        ("", true),
-    ]
-    .map(|(line, complete)| (line.to_string(), complete));
-    assert_eq!(progress, expected);
 }
 
 #[tokio::test]

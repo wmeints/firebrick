@@ -581,6 +581,34 @@ mod tests {
     }
 
     #[test]
+    fn output_reports_the_first_stream_and_drops_a_line_pending_at_exit() {
+        let (mut reporter, updates) = recording();
+        let mut output = Output::default();
+        let start = Instant::now();
+
+        let events = [
+            ExecEvent::Started { pid: 7 },
+            ExecEvent::Stderr("mise done\n".into()),
+            ExecEvent::Stdout("mise installing node\n".into()),
+            ExecEvent::Exited { code: 0 },
+        ];
+        let flows: Vec<_> = events
+            .into_iter()
+            .map(|event| output.handle(Some(event), &mut reporter, start))
+            .collect();
+        reporter.complete();
+
+        assert!(matches!(
+            flows.last(),
+            Some(ControlFlow::Break(Exit::Code(0)))
+        ));
+        assert_eq!(
+            *updates.borrow(),
+            vec![started(), line("mise done"), completed()]
+        );
+    }
+
+    #[test]
     fn output_breaks_with_how_the_command_ended() {
         let (mut reporter, _) = recording();
         let mut output = Output::default();
