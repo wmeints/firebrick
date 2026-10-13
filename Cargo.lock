@@ -2062,6 +2062,7 @@ dependencies = [
 name = "firebrick-utils"
 version = "0.7.0"
 dependencies = [
+ "nix 0.31.3",
  "tempfile",
 ]
 
