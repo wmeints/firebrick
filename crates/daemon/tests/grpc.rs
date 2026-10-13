@@ -2421,13 +2421,19 @@ async fn network_snapshot_paths(name: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Returns the resolved path of the snapshot that a failed update names in its message. The
-/// daemon names it under the unresolved `MSB_HOME`, which goes through the `/tmp` symlink on
-/// macOS, while `Snapshot::path` returns the resolved path.
-fn kept_snapshot(message: &str) -> Option<PathBuf> {
-    let (_, path) = message.split_once("; the sandbox was kept as snapshot ")?;
+/// Returns the message of a failed update with the snapshot it names resolved. The daemon names
+/// it under the unresolved `MSB_HOME`, which goes through the `/tmp` symlink on macOS, while
+/// `Snapshot::path` returns the resolved path.
+fn resolve_kept_snapshot(message: &str) -> String {
+    const KEPT: &str = "; the sandbox was kept as snapshot ";
 
-    std::fs::canonicalize(path).ok()
+    match message.split_once(KEPT) {
+        Some((head, path)) => match std::fs::canonicalize(path) {
+            Ok(path) => format!("{head}{KEPT}{}", path.display()),
+            Err(_) => message.to_string(),
+        },
+        None => message.to_string(),
+    }
 }
 
 #[tokio::test]
@@ -2449,7 +2455,7 @@ async fn failed_recreate_keeps_the_snapshot_and_names_it() {
 
     let exists = Sandbox::get(name).await.is_ok();
     let paths = network_snapshot_paths(name).await;
-    let named = kept_snapshot(status.message());
+    let message = resolve_kept_snapshot(status.message());
 
     daemon.stop().await;
     remove_sandbox_and_snapshots(name).await;
@@ -2457,14 +2463,13 @@ async fn failed_recreate_keeps_the_snapshot_and_names_it() {
     assert_eq!(status.code(), Code::Internal);
     assert!(!exists, "the half-created sandbox should be removed");
     assert_eq!(paths.len(), 1, "{paths:?}");
-    assert!(
-        status
-            .message()
-            .starts_with(&format!("failed to update the network rules of {name};")),
-        "{}",
-        status.message()
+    assert_eq!(
+        message,
+        format!(
+            "failed to update the network rules of {name}; the sandbox was kept as snapshot {}",
+            paths[0].display()
+        )
     );
-    assert_eq!(named.as_ref(), Some(&paths[0]), "{}", status.message());
 }
 
 #[tokio::test]
