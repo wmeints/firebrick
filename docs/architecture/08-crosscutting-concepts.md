@@ -23,13 +23,18 @@ the error, not the serde_yaml error itself.
 Text that a sandbox printed is untrusted: a workspace file controls it. Before
 such guest output ends up in a gRPC status message or a log line, such as the
 tail of mise's stderr in a failed `fbk start` or the URL relay's stderr when it
-exits, the daemon removes every control character except newline and tab with
-`firebrick_utils::strip_control`. That covers C0 controls, DEL and C1 controls,
-so a workspace can't make `fbk` write terminal escape sequences, such as OSC 52
-to set the user's clipboard. The text around the removed characters stays, so
-the message still shows what the guest printed. The output of `fbk run` is the
-exception: like `ssh`, the CLI passes it to the terminal unchanged, so TUIs keep
-working.
+exits, the daemon removes terminal escape sequences and every control character
+except newline and tab with `firebrick_utils::strip_control`. It removes whole
+CSI, OSC and other `ESC` sequences with `console::strip_ansi_codes`, after it
+rewrites the C1 forms of CSI and OSC to their `ESC` forms, then the remaining C0
+controls, DEL and C1 controls
+([ADR 0044](decisions/0044-strip-escape-sequences-with-console.md)). So a
+workspace can't make `fbk` write terminal escape sequences, such as OSC 52 to
+set the user's clipboard, and no remainders like `[1;32m` show. An unterminated
+sequence is removed up to the end of the text. The text around the removed
+sequences stays, so the message still shows what the guest printed. The output
+of `fbk run` is the exception: like `ssh`, the CLI passes it to the terminal
+unchanged, so TUIs keep working.
 
 Listing sandboxes is the one call where a missing sandbox isn't an error of the
 request. microsandbox reloads each sandbox after it reads a page of them, so a

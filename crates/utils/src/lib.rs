@@ -285,13 +285,18 @@ pub fn sanitize_label(path: &Path) -> String {
     }
 }
 
-/// Returns `text` without control characters other than newline and tab.
+/// Returns `text` without terminal escape sequences and control characters other than newline
+/// and tab.
 ///
 /// Guest output that ends up in an error message or a log line goes through this function, so a
 /// workspace can't make `fbk` write terminal escape sequences, such as OSC 52 to set the
-/// clipboard. This removes C0 controls, DEL and C1 controls, and keeps the text around them.
+/// clipboard. [`console::strip_ansi_codes`] removes whole escape sequences, with the C1 forms of
+/// CSI and OSC rewritten to their `ESC` forms first, and then the remaining C0 controls, DEL and
+/// C1 controls are removed, keeping the text around them.
 pub fn strip_control(text: &str) -> String {
-    text.chars()
+    let text = text.replace('\u{9b}', "\x1b[").replace('\u{9d}', "\x1b]");
+    console::strip_ansi_codes(&text)
+        .chars()
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
         .collect()
 }
@@ -620,10 +625,7 @@ mod tests {
 
     #[test]
     fn strip_control_removes_c0_controls() {
-        assert_eq!(
-            strip_control("a\x1b]52;c;eA==\x07b\r\x00c\x08"),
-            "a]52;c;eA==bc"
-        );
+        assert_eq!(strip_control("a\rb\x00c\x08"), "abc");
     }
 
     #[test]
@@ -632,10 +634,64 @@ mod tests {
     }
 
     #[test]
-    fn strip_control_removes_c1_controls() {
+    fn strip_control_removes_csi_sequences() {
+        assert_eq!(strip_control("\x1b[1;32mok\x1b[0m"), "ok");
+        assert_eq!(strip_control("a\x1b[?25lb"), "ab");
+    }
+
+    #[test]
+    fn strip_control_removes_osc_sequences() {
+        assert_eq!(strip_control("a\x1b]52;c;eA==\x07b"), "ab");
+        assert_eq!(strip_control("a\x1b]0;title\x1b\\b"), "ab");
+    }
+
+    #[test]
+    fn strip_control_removes_two_character_escapes() {
+        assert_eq!(strip_control("a\x1bcb\x1b7\x1b(Bc"), "abc");
+    }
+
+    #[test]
+    fn strip_control_removes_c1_sequences() {
         assert_eq!(
-            strip_control("a\u{9b}31mb\u{9d}52;c;eA==\u{9c}c"),
-            "a31mb52;c;eA==c"
+            strip_control("a\u{9b}31mb\u{9d}52;c;eA==\u{9c}c\u{85}d"),
+            "abcd"
         );
+    }
+
+    #[test]
+    fn strip_control_drops_unterminated_sequences_up_to_the_end() {
+        let cases = [
+            ("a\x1b]52;c;eA==", "a"),
+            ("a\x1b]x\nb", "a"),
+            ("a\x1b[31", "a"),
+            ("a\x1b", "a"),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(strip_control(text), expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn strip_control_leaves_no_control_characters() {
+        let parts = [
+            "a", "\x1b", "[", "]", "\x07", "\\", "1;", "(", " ", "\n", "\t", "\r", "\x00", "\x7f",
+            "\u{85}", "\u{9b}", "\u{9c}", "\u{9d}",
+        ];
+        let mut texts = vec![String::new()];
+        for _ in 0..3 {
+            texts = texts
+                .iter()
+                .flat_map(|text| parts.map(|part| format!("{text}{part}")))
+                .collect();
+        }
+        for text in texts {
+            let stripped = strip_control(&text);
+            assert!(
+                !stripped
+                    .chars()
+                    .any(|c| c.is_control() && !matches!(c, '\n' | '\t')),
+                "{text:?} -> {stripped:?}"
+            );
+        }
     }
 }

@@ -11,6 +11,7 @@ description = "Shared file locations, naming rules and text helpers for the Fire
 workspace = true
 
 [dependencies]
+console = { version = "0.16.6", default-features = false, features = ["alloc", "ansi-parsing"] }
 nix = { version = "0.31.3", default-features = false, features = ["user"] }
 
 [dev-dependencies]

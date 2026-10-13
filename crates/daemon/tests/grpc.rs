@@ -1881,7 +1881,7 @@ async fn start_sandbox_reports_the_stderr_of_a_failed_mise_install() {
     assert_eq!(status.code(), tonic::Code::FailedPrecondition);
     assert_eq!(
         status.message(),
-        format!("mise install failed in sandbox {name}: mise ERROR ]52;c;ZXZpbA==no such version")
+        format!("mise install failed in sandbox {name}: mise ERROR no such version")
     );
 
     daemon.stop().await;
