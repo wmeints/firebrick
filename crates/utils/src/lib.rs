@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// Name used when a path's leaf has no ASCII letters or digits left after sanitizing.
@@ -23,18 +23,75 @@ pub fn socket_path() -> PathBuf {
 }
 
 /// Returns the directory holding the unix sockets that sandboxes report their network activity
-/// to: `$XDG_RUNTIME_DIR/firebrick/netlog`.
+/// to: `$XDG_RUNTIME_DIR/firebrick/netlog`, falling back to `/private/tmp/fbk-<uid>` on macOS,
+/// which has no `XDG_RUNTIME_DIR`.
 ///
-/// Returns `None` when `XDG_RUNTIME_DIR` isn't an absolute path. Unlike [`socket_path`], it
-/// never falls back to the temp directory, where another user could create the directory
-/// first and take over the sockets.
+/// Returns `None` on other platforms when `XDG_RUNTIME_DIR` isn't an absolute path. Unlike
+/// [`socket_path`], it never falls back to the temp directory, whose path on macOS is too long
+/// for the sockets of long sandbox names. The macOS directory is in the shared `/tmp`, where
+/// another user could create it first, so check it with [`create_private_dir`] before use.
 pub fn netlog_socket_dir() -> Option<PathBuf> {
-    netlog_socket_dir_from(&env_var)
+    let uid = nix::unistd::geteuid().as_raw();
+    netlog_socket_dir_from(&env_var, cfg!(target_os = "macos"), uid)
 }
 
-/// Returns the network activity socket directory for the environment that `var` describes.
-fn netlog_socket_dir_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
-    absolute_var(var, "XDG_RUNTIME_DIR").map(|dir| dir.join("firebrick/netlog"))
+/// Returns the network activity socket directory for the environment that `var` describes,
+/// on macOS when `macos` is set, for the user `uid`. The macOS directory is canonical, because
+/// microsandbox refuses host paths that go through a symlink, such as `/tmp`.
+fn netlog_socket_dir_from(
+    var: &impl Fn(&str) -> Option<OsString>,
+    macos: bool,
+    uid: u32,
+) -> Option<PathBuf> {
+    absolute_var(var, "XDG_RUNTIME_DIR")
+        .map(|dir| dir.join("firebrick/netlog"))
+        .or_else(|| macos.then(|| PathBuf::from(format!("/private/tmp/fbk-{uid}"))))
+}
+
+/// Creates the directory with mode `0700` when it's missing, and checks that it's private to
+/// the effective user: a directory, not a symlink, owned by the user and without group or
+/// other access. Fails with [`io::ErrorKind::PermissionDenied`] when it isn't, so the caller
+/// never uses a directory that another user created first. Every error names the directory.
+pub fn create_private_dir(dir: &Path) -> io::Result<()> {
+    create_private_dir_for(dir, nix::unistd::geteuid().as_raw())
+}
+
+/// Creates the directory like [`create_private_dir`] and checks that it's private to `uid`.
+fn create_private_dir_for(dir: &Path, uid: u32) -> io::Result<()> {
+    match fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+    {
+        // Something else is in its place, which the check below refuses.
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(with_path(err, "can't create", dir)),
+        Ok(()) => {}
+    }
+
+    let metadata = fs::symlink_metadata(dir).map_err(|err| with_path(err, "can't inspect", dir))?;
+    let problem = if !metadata.is_dir() {
+        "isn't a directory"
+    } else if metadata.uid() != uid {
+        "is owned by another user"
+    } else if metadata.mode() & 0o077 != 0 {
+        "is accessible by other users"
+    } else {
+        return Ok(());
+    };
+
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "{} {problem}; remove it or make it a directory only you can access",
+            dir.display()
+        ),
+    ))
+}
+
+/// Returns the error with what failed for which path in front of its message.
+fn with_path(err: io::Error, action: &str, path: &Path) -> io::Error {
+    io::Error::new(err.kind(), format!("{action} {}: {err}", path.display()))
 }
 
 /// Returns `$XDG_RUNTIME_DIR`, falling back to the temp directory, for the environment that
@@ -348,23 +405,114 @@ mod tests {
     }
 
     #[test]
-    fn netlog_socket_dir_is_under_xdg_runtime_dir() {
+    fn netlog_socket_dir_is_under_xdg_runtime_dir_on_every_platform() {
         let var = env(&[("XDG_RUNTIME_DIR", "/run/user/1000")]);
-        assert_eq!(
-            netlog_socket_dir_from(&var),
-            Some(PathBuf::from("/run/user/1000/firebrick/netlog"))
-        );
+        for macos in [false, true] {
+            assert_eq!(
+                netlog_socket_dir_from(&var, macos, 1000),
+                Some(PathBuf::from("/run/user/1000/firebrick/netlog")),
+                "macos: {macos}"
+            );
+        }
+    }
+
+    /// Environments without an absolute `XDG_RUNTIME_DIR`.
+    const NO_RUNTIME_DIR: [&[(&str, &str)]; 3] = [
+        &[],
+        &[("XDG_RUNTIME_DIR", "run")],
+        &[("XDG_RUNTIME_DIR", "")],
+    ];
+
+    #[test]
+    fn netlog_socket_dir_is_none_on_linux_without_absolute_xdg_runtime_dir() {
+        for vars in NO_RUNTIME_DIR {
+            let dir = netlog_socket_dir_from(&env(vars), false, 1000);
+            assert_eq!(dir, None, "{vars:?}");
+        }
     }
 
     #[test]
-    fn netlog_socket_dir_is_none_without_absolute_xdg_runtime_dir() {
-        for vars in [
-            &[][..],
-            &[("XDG_RUNTIME_DIR", "run")],
-            &[("XDG_RUNTIME_DIR", "")],
-        ] {
-            assert_eq!(netlog_socket_dir_from(&env(vars)), None, "{vars:?}");
+    fn netlog_socket_dir_falls_back_to_a_canonical_tmp_dir_per_user_on_macos() {
+        for vars in NO_RUNTIME_DIR {
+            assert_eq!(
+                netlog_socket_dir_from(&env(vars), true, 501),
+                Some(PathBuf::from("/private/tmp/fbk-501")),
+                "{vars:?}"
+            );
         }
+    }
+
+    #[test]
+    fn macos_netlog_socket_dir_fits_sockets_of_63_character_sandbox_names() {
+        let dir = netlog_socket_dir_from(&env(&[]), true, u32::MAX).unwrap();
+        let socket = dir.join(format!("{}.sock", "a".repeat(63)));
+
+        assert!(socket.as_os_str().len() < 104, "{}", socket.display());
+    }
+
+    #[test]
+    fn create_private_dir_creates_a_directory_only_the_user_can_access() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let dir = temp.path().join("firebrick/netlog");
+
+        create_private_dir(&dir).unwrap();
+        create_private_dir(&dir).unwrap();
+
+        let mode = fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o7777, 0o700);
+    }
+
+    #[test]
+    fn create_private_dir_refuses_a_directory_with_group_or_other_access() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let dir = temp.path().join("netlog");
+        fs::create_dir(&dir).unwrap();
+
+        for mode in [0o750, 0o705, 0o1777] {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+            let err = create_private_dir(&dir).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{mode:o}");
+        }
+    }
+
+    #[test]
+    fn create_private_dir_refuses_a_directory_of_another_user() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let uid = fs::metadata(temp.path()).unwrap().uid();
+
+        let err = create_private_dir_for(temp.path(), uid.wrapping_add(1)).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert!(err.to_string().contains(&temp.path().display().to_string()));
+    }
+
+    /// Asserts that the path is refused as no directory.
+    fn assert_not_a_directory(path: &Path) {
+        let err = create_private_dir(path).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+        assert!(err.to_string().contains("isn't a directory"), "{err}");
+    }
+
+    #[test]
+    fn create_private_dir_refuses_a_symlink_to_a_private_directory() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let target = temp.path().join("target");
+        create_private_dir(&target).unwrap();
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert_not_a_directory(&link);
+    }
+
+    #[test]
+    fn create_private_dir_refuses_a_file() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let file = temp.path().join("file");
+        fs::write(&file, "").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+
+        assert_not_a_directory(&file);
     }
 
     #[test]

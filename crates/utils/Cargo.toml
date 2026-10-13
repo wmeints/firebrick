@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 console = { version = "0.16.6", default-features = false, features = ["alloc", "ansi-parsing"] }
+nix = { version = "0.31.3", default-features = false, features = ["user"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
