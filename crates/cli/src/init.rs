@@ -41,7 +41,6 @@ fn open_spec_file(spec_path: &Path, force: bool) -> std::io::Result<std::fs::Fil
 #[cfg(test)]
 mod tests {
     use super::*;
-    use firebrick_spec::DEFAULT_IMAGE;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
@@ -63,7 +62,7 @@ mod tests {
 
         assert_eq!(spec_path, dir.join(SPEC_FILE_NAME));
         assert_eq!(spec.name, "project");
-        assert_eq!(spec.image.as_deref(), Some(DEFAULT_IMAGE));
+        assert_eq!(spec.image, None);
         assert_eq!(resources.cpu, 2);
         assert_eq!(resources.memory, "4 GiB");
         assert_eq!(spec.init, Some(true));
@@ -134,7 +133,7 @@ mod tests {
         let spec = firebrick_spec::from_file(&spec_path).unwrap();
 
         assert_eq!(spec.name, "project");
-        assert_eq!(spec.image.as_deref(), Some(DEFAULT_IMAGE));
+        assert_eq!(spec.image, None);
     }
 
     #[test]

@@ -506,7 +506,7 @@ async fn get_sandbox_returns_not_found_for_unknown_sandbox() {
 }
 
 #[tokio::test]
-async fn get_sandbox_returns_name_status_and_workspace_path() {
+async fn get_sandbox_returns_name_status_workspace_path_and_image() {
     let name: &str = &sandbox_name("get");
     remove_sandbox(name).await;
 
@@ -527,6 +527,13 @@ async fn get_sandbox_returns_name_status_and_workspace_path() {
         Path::new(&sandbox.workspace_host_path),
         std::fs::canonicalize(workspace_path(name)).unwrap()
     );
+    assert_eq!(
+        sandbox_spec(name).await.labels.get(sandboxes::IMAGE_LABEL),
+        Some(&TEST_IMAGE.to_string())
+    );
+    assert_eq!(sandbox.image, TEST_IMAGE);
+    // The test image isn't a firebrick-base image, so it's never outdated.
+    assert_eq!(sandbox.upgrade_image, "");
 
     stop_sandbox(&mut client, name).await;
 
@@ -2789,7 +2796,14 @@ fn assert_upgraded_and_kept(
 ) {
     assert_eq!(after.update.status, Some(SandboxStatus::Running));
     assert_eq!(&after.update.settings, before);
-    assert_eq!(after.labels, labels);
+    let image_label = |image: &str| (sandboxes::IMAGE_LABEL.to_string(), image.to_string());
+    assert!(labels.contains(&image_label(OLD_IMAGE)), "{labels:?}");
+    assert!(
+        after.labels.contains(&image_label(UPGRADE_IMAGE)),
+        "{:?}",
+        after.labels
+    );
+    assert_eq!(after.labels, with_image_label(labels, UPGRADE_IMAGE));
     let network = &after.update.stored_network;
     assert!(network.contains("example.com"), "{network}");
     assert!(
@@ -2806,6 +2820,17 @@ fn assert_upgraded_and_kept(
         "{:?}",
         after.secret
     );
+}
+
+/// Returns the labels with the image label set to the image, as an upgrade to it leaves them.
+fn with_image_label(labels: &[(String, String)], image: &str) -> Vec<(String, String)> {
+    labels
+        .iter()
+        .map(|(key, value)| match key.as_str() {
+            sandboxes::IMAGE_LABEL => (key.clone(), image.to_string()),
+            _ => (key.clone(), value.clone()),
+        })
+        .collect()
 }
 
 #[tokio::test]

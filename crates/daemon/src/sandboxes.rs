@@ -16,7 +16,7 @@ use crate::zed;
 use firebrick_spec::{MountSpec, NetworkSpec, PortMapping, VolumesSpec, with_port};
 use microsandbox::sandbox::{
     HostPermissions, MountBuilder, OwnedVolumeStorage, PullPolicy, RootfsSource, SandboxBuilder,
-    SandboxHandle, SandboxStatus, VolumeMount,
+    SandboxHandle, SandboxSpec, SandboxStatus, VolumeMount,
 };
 use microsandbox::snapshot::Snapshot;
 use microsandbox::{MicrosandboxError, Sandbox};
@@ -42,6 +42,10 @@ const SNAPSHOT_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Guest path of the disk that holds Docker's data.
 const DOCKER_DATA_PATH: &str = "/var/lib/docker";
+
+/// Label that records the image reference a sandbox was created from, e.g.
+/// `ghcr.io/wmeints/firebrick-base:v0.8.0`.
+pub const IMAGE_LABEL: &str = "firebrick.image";
 
 /// Errors of sandbox management. Each variant carries the message the client sees.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
@@ -155,18 +159,65 @@ pub struct SandboxInfo {
     pub workspace_path: Option<String>,
     /// Host directory mounted as the workspace, e.g. `/home/user/project`, if it has one.
     pub workspace_host_path: Option<String>,
+    /// Image reference the sandbox was created from, if it's known.
+    pub image: Option<String>,
+    /// The default image when the sandbox runs another `firebrick-base` image, so an upgrade
+    /// moves it to this release's image.
+    pub upgrade_image: Option<String>,
 }
 
 impl SandboxInfo {
+    /// Reads the sandbox's config once. A config that can't be read leaves out everything it
+    /// holds, and is logged.
     fn of(handle: &SandboxHandle) -> Self {
+        let spec = match handle.config() {
+            Ok(config) => Some(config.spec),
+            Err(err) => {
+                tracing::warn!(
+                    "failed to read the config of sandbox {}: {err}",
+                    handle.name()
+                );
+                None
+            }
+        };
+        let spec = spec.as_ref();
+        let image = spec.and_then(|spec| recorded_image(&spec.labels, &spec.image));
+
         Self {
             name: handle.name().to_string(),
             status: handle.status_snapshot(),
-            hostname: ssh::hostname_of(handle),
-            workspace_path: workspace_path_of(handle),
-            workspace_host_path: workspace_host_path_of(handle),
+            hostname: spec.and_then(|spec| spec.labels.get(ssh::HOSTNAME_LABEL).cloned()),
+            workspace_path: spec.and_then(|spec| spec.runtime.workdir.clone()),
+            workspace_host_path: spec.and_then(workspace_host_path_in),
+            upgrade_image: image
+                .as_deref()
+                .and_then(|image| upgrade_image(image, firebrick_spec::DEFAULT_IMAGE)),
+            image,
         }
     }
+}
+
+/// Returns the image reference a sandbox was created from: its image label, or the OCI
+/// reference of its root filesystem for a sandbox created before the label existed.
+fn recorded_image(labels: &BTreeMap<String, String>, rootfs: &RootfsSource) -> Option<String> {
+    labels.get(IMAGE_LABEL).cloned().or_else(|| match rootfs {
+        RootfsSource::Oci(oci) => Some(oci.reference.clone()),
+        _ => None,
+    })
+}
+
+/// Returns `default` when `image` is another tag of the same repository, such as an older
+/// `firebrick-base` release, and `None` for the default image itself or any other image.
+fn upgrade_image(image: &str, default: &str) -> Option<String> {
+    let outdated =
+        image != default && repository(image).is_some_and(|repo| repository(default) == Some(repo));
+
+    outdated.then(|| default.to_string())
+}
+
+/// Returns the repository of an image reference with a tag, the part before the tag.
+fn repository(reference: &str) -> Option<&str> {
+    reference.rsplit_once(':').map(|(repository, _)| repository)
 }
 
 /// The result of upgrading a sandbox to the latest version of an image.
@@ -239,10 +290,14 @@ fn workspace_path_of(handle: &SandboxHandle) -> Option<String> {
 /// Returns the host directory a sandbox bind-mounts at its workspace path. microsandbox stores
 /// the host path canonicalized when it creates the sandbox.
 fn workspace_host_path_of(handle: &SandboxHandle) -> Option<String> {
-    let config = handle.config().ok()?;
-    let workdir = config.spec.runtime.workdir.as_deref()?;
+    workspace_host_path_in(&handle.config().ok()?.spec)
+}
 
-    config.spec.mounts.iter().find_map(|mount| match mount {
+/// Returns the host directory the sandbox config bind-mounts at its workspace path.
+fn workspace_host_path_in(spec: &SandboxSpec) -> Option<String> {
+    let workdir = spec.runtime.workdir.as_deref()?;
+
+    spec.mounts.iter().find_map(|mount| match mount {
         VolumeMount::Bind { host, guest, .. } if guest == workdir => {
             Some(host.to_string_lossy().into_owned())
         }
@@ -888,8 +943,11 @@ impl SandboxManager {
         image: &str,
     ) -> Result<(), SandboxError> {
         let change = Change::Image(image);
-        let settings =
+        let mut settings =
             SandboxSettings::of(sb).map_err(|err| change_failed(sb.name(), change, &err))?;
+        settings
+            .labels
+            .insert(IMAGE_LABEL.to_string(), image.to_string());
         let recreation = Recreation {
             settings: &settings,
             network,
@@ -1249,6 +1307,10 @@ fn new_sandbox_settings(
         (
             forward::PORTS_LABEL.to_string(),
             forward::label_value(request.ports.unwrap_or_default()),
+        ),
+        (
+            IMAGE_LABEL.to_string(),
+            sandbox_image(request.image).to_string(),
         ),
     ]);
 
@@ -2375,6 +2437,111 @@ mod tests {
 
         drop(second.await);
         assert_eq!(lock_count(&manager), 0);
+    }
+
+    const DEFAULT: &str = "ghcr.io/wmeints/firebrick-base:v0.8.0";
+
+    #[test]
+    fn default_image_is_not_outdated() {
+        assert_eq!(upgrade_image(DEFAULT, DEFAULT), None);
+    }
+
+    #[test]
+    fn older_firebrick_base_tag_is_outdated() {
+        assert_eq!(
+            upgrade_image("ghcr.io/wmeints/firebrick-base:v0.7.0", DEFAULT),
+            Some(DEFAULT.to_string())
+        );
+    }
+
+    #[test]
+    fn custom_image_is_never_outdated() {
+        assert_eq!(upgrade_image("alpine:3.22", DEFAULT), None);
+        assert_eq!(
+            upgrade_image("ghcr.io/acme/firebrick-base:v0.7.0", DEFAULT),
+            None
+        );
+        assert_eq!(
+            upgrade_image("ghcr.io/wmeints/firebrick-base", DEFAULT),
+            None
+        );
+    }
+
+    fn oci(reference: &str) -> RootfsSource {
+        RootfsSource::Oci(microsandbox::sandbox::OciRootfsSource {
+            reference: reference.to_string(),
+            root_disk: None,
+        })
+    }
+
+    #[test]
+    fn recorded_image_prefers_the_image_label() {
+        let labels = BTreeMap::from([(IMAGE_LABEL.to_string(), DEFAULT.to_string())]);
+
+        assert_eq!(
+            recorded_image(&labels, &oci("ghcr.io/wmeints/firebrick-base:v0.7.0")),
+            Some(DEFAULT.to_string())
+        );
+    }
+
+    #[test]
+    fn recorded_image_falls_back_to_the_oci_reference_without_a_label() {
+        let old = "ghcr.io/wmeints/firebrick-base:v0.7.0";
+
+        assert_eq!(
+            recorded_image(&BTreeMap::new(), &oci(old)),
+            Some(old.to_string())
+        );
+    }
+
+    #[test]
+    fn unknown_image_reference_is_not_recorded() {
+        let rootfs = RootfsSource::Bind {
+            path: "/tmp/rootfs".into(),
+            follow_root_symlinks: false,
+        };
+
+        assert_eq!(recorded_image(&BTreeMap::new(), &rootfs), None);
+    }
+
+    /// Returns the image label of a new sandbox created for a request with the image.
+    fn new_image_label(image: &str) -> Option<String> {
+        let request = StartSandbox {
+            name: "dev",
+            workspace: "/home/user/project",
+            image,
+            init: true,
+            mise: false,
+            network: &NetworkSpec::default(),
+            ports: None,
+            mounts: &[],
+        };
+        let resources = Resources {
+            cpus: 1,
+            memory_mib: 512,
+            docker_volume_mib: 1024,
+        };
+
+        new_sandbox_settings(request, "/workspaces/project", "project.fbk", resources)
+            .labels
+            .get(IMAGE_LABEL)
+            .cloned()
+    }
+
+    #[test]
+    fn new_sandbox_records_the_default_image_by_name() {
+        assert_eq!(
+            new_image_label(""),
+            Some(firebrick_spec::DEFAULT_IMAGE.to_string())
+        );
+    }
+
+    #[test]
+    fn new_sandbox_records_the_requested_image() {
+        assert_eq!(
+            new_image_label("alpine:3.22"),
+            Some("alpine:3.22".to_string())
+        );
     }
 
     #[test]

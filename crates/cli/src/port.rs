@@ -37,6 +37,7 @@ pub async fn forward(
             port.host, port.guest
         )
     });
+    manage::warn_if_outdated(client, &spec.name).await;
 
     Ok(())
 }
@@ -64,6 +65,7 @@ pub async fn remove(
     print_outcome(&spec.name, running, || {
         format!("Stopped forwarding localhost:{host}")
     });
+    manage::warn_if_outdated(client, &spec.name).await;
 
     Ok(())
 }

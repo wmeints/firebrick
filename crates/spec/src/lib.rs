@@ -881,11 +881,12 @@ pub fn to_file(spec: &SandboxSpec, path: &Path) -> Result<(), SandboxSpecError> 
     fs::write(path, content).map_err(SandboxSpecError::CantWriteFile)
 }
 
-/// Creates a spec with the given name and default image and resources.
+/// Creates a spec with the given name and default resources. It names no image, so the sandbox
+/// runs the [`DEFAULT_IMAGE`] of the installed release, also after an update and `fbk upgrade`.
 pub fn default_spec(name: String) -> SandboxSpec {
     SandboxSpec {
         name,
-        image: Some(DEFAULT_IMAGE.to_string()),
+        image: None,
         resources: Some(SandboxResourcesSpec::default()),
         init: Some(true),
         mise: Some(true),
@@ -1127,11 +1128,11 @@ pub mod tests {
     }
 
     #[test]
-    fn default_spec_uses_default_image_and_resources() {
+    fn default_spec_leaves_out_the_image_and_uses_default_resources() {
         let spec = default_spec("dev".to_string());
         let resources = spec.resources.unwrap();
 
-        assert_eq!(spec.image.as_deref(), Some(DEFAULT_IMAGE));
+        assert_eq!(spec.image, None);
         assert_eq!((resources.cpu, resources.memory.as_str()), (2, "4 GiB"));
         assert_eq!(spec.init, Some(true));
         assert_eq!(spec.mise, Some(true));

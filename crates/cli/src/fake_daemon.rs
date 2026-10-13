@@ -2,7 +2,8 @@
 //! a sandbox, so a test sees whether a command asks the daemon about the sandbox before it
 //! changes it. It answers an upgrade to [`UPGRADED_IMAGE`] as done from [`OLD_IMAGE`], and an
 //! upgrade to any other image as up to date with it, so a test sees which image a command asks
-//! for.
+//! for. A daemon from [`serve_outdated`] reports its sandbox as running [`OLD_IMAGE`], with
+//! [`UPGRADED_IMAGE`] as the image an upgrade moves it to.
 
 use std::pin::Pin;
 use tokio::net::TcpListener;
@@ -35,11 +36,15 @@ pub(crate) fn refusal(rpc: &str, sandbox: &str) -> String {
 }
 
 /// A daemon with one sandbox, `name`, that mounts `workspace_host_path` and has recorded the
-/// network activity `activity`, or has no network log when it's `None`.
+/// network activity `activity`, or has no network log when it's `None`. The sandbox runs
+/// `image`, and `upgrade_image` when it's outdated.
+#[derive(Default)]
 struct FakeDaemon {
     name: String,
     workspace_host_path: String,
     activity: Option<Vec<NetworkActivity>>,
+    image: String,
+    upgrade_image: String,
 }
 
 /// Serves a fake daemon with one sandbox without network activity on a free local port and
@@ -58,13 +63,35 @@ pub(crate) async fn serve_with_activity(
     workspace_host_path: &str,
     activity: Option<Vec<NetworkActivity>>,
 ) -> SandboxManagementServiceClient<Channel> {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let daemon = FakeDaemon {
+    serve_daemon(FakeDaemon {
         name: name.to_string(),
         workspace_host_path: workspace_host_path.to_string(),
         activity,
-    };
+        ..Default::default()
+    })
+    .await
+}
+
+/// Serves a fake daemon like [`serve`] whose sandbox runs [`OLD_IMAGE`], which is outdated by
+/// [`UPGRADED_IMAGE`].
+pub(crate) async fn serve_outdated(
+    name: &str,
+    workspace_host_path: &str,
+) -> SandboxManagementServiceClient<Channel> {
+    serve_daemon(FakeDaemon {
+        name: name.to_string(),
+        workspace_host_path: workspace_host_path.to_string(),
+        activity: Some(Vec::new()),
+        image: OLD_IMAGE.to_string(),
+        upgrade_image: UPGRADED_IMAGE.to_string(),
+    })
+    .await
+}
+
+/// Serves the fake daemon on a free local port and returns a client for it.
+async fn serve_daemon(daemon: FakeDaemon) -> SandboxManagementServiceClient<Channel> {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
         let result = Server::builder()
@@ -127,6 +154,8 @@ impl SandboxManagementService for FakeDaemon {
         Ok(Response::new(GetSandboxResponse {
             name: self.name.clone(),
             workspace_host_path: self.workspace_host_path.clone(),
+            image: self.image.clone(),
+            upgrade_image: self.upgrade_image.clone(),
             ..Default::default()
         }))
     }

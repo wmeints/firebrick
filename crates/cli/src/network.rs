@@ -229,6 +229,7 @@ async fn apply_to_sandbox(
         .map(|response| response.into_inner().updated);
 
     println!("{}", outcome(change, name, file_changed, result)?);
+    manage::warn_if_outdated(&mut client, name).await;
 
     Ok(())
 }
@@ -652,10 +653,7 @@ mod tests {
 
         assert!(changed);
         assert_eq!(written.name, "firebrick-abc123");
-        assert_eq!(
-            written.image.as_deref(),
-            Some(firebrick_spec::DEFAULT_IMAGE)
-        );
+        assert_eq!(written.image, None);
         assert_eq!(written.init, Some(true));
         assert_eq!(written.mise, Some(true));
         assert_eq!(

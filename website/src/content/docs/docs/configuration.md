@@ -16,15 +16,16 @@ name: my-app
 resources:
   cpu: 2
   memory: 4 GiB
-image: ghcr.io/wmeints/firebrick-base:v<version>
 init: true
 mise: true
 volumes:
   docker: 20 GiB
 ```
 
-`<version>` is the installed Firebrick version. `fbk init` refuses to replace an
-existing file; `fbk init --force` overwrites it.
+The file names no `image`, so the sandbox runs the `firebrick-base` image of the
+installed Firebrick version, `ghcr.io/wmeints/firebrick-base:v<version>`, and
+`fbk upgrade` moves it to the new release after you update Firebrick. `fbk init`
+refuses to replace an existing file; `fbk init --force` overwrites it.
 
 | Field               | Description                                                             | Default                                     |
 | ------------------- | ----------------------------------------------------------------------- | ------------------------------------------- |

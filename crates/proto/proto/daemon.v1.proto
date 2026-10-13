@@ -171,6 +171,12 @@ message GetSandboxResponse {
   string workspace_path = 4;
   // Host directory mounted as the workspace, e.g. `/home/user/project`. Empty when it has none.
   string workspace_host_path = 5;
+  // Image reference the sandbox was created from, e.g.
+  // `ghcr.io/wmeints/firebrick-base:v0.8.0`. Empty when it's unknown.
+  string image = 6;
+  // The daemon's default image when the sandbox runs another `firebrick-base` image, so
+  // `fbk upgrade` would move it to a newer release. Empty otherwise.
+  string upgrade_image = 7;
 }
 
 message SandboxSummary {
