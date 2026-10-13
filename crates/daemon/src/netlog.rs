@@ -701,16 +701,11 @@ impl NetLogs {
 
     /// Creates a registry in the directories the environment selects, see
     /// [`firebrick_utils::netlog_socket_dir`] and [`firebrick_utils::network_log_dir`]. Logs a
-    /// warning for each one the environment doesn't provide.
+    /// warning for each one the environment doesn't provide, and leaves out a socket directory
+    /// that isn't private to the user.
     pub fn from_env() -> Self {
-        let socket_dir = firebrick_utils::netlog_socket_dir();
+        let socket_dir = private_socket_dir(firebrick_utils::netlog_socket_dir());
         let record_dir = firebrick_utils::network_log_dir();
-
-        if socket_dir.is_none() {
-            tracing::warn!(
-                "XDG_RUNTIME_DIR isn't an absolute path, so sandboxes get no network log"
-            );
-        }
 
         if record_dir.is_none() {
             tracing::warn!("there's no state directory, so network records aren't saved");
@@ -832,11 +827,12 @@ impl NetLogs {
             ));
         };
 
-        tokio::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)
-            .await?;
+        // The directory may have been removed since fbkd started, for example by the cleanup
+        // of `/tmp`, so it's checked again before every bind.
+        let dir = dir.clone();
+        tokio::task::spawn_blocking(move || firebrick_utils::create_private_dir(&dir))
+            .await
+            .map_err(io::Error::other)??;
 
         if UnixStream::connect(&path).await.is_ok() {
             return Err(io::Error::new(
@@ -896,6 +892,24 @@ impl Drop for NetLogs {
     fn drop(&mut self) {
         for listening in self.listening().values() {
             listening.task.abort();
+        }
+    }
+}
+
+/// Returns the socket directory when it's private to the user, creating it when it's missing.
+/// Logs a warning when there's no directory or it isn't private, since sandboxes then get no
+/// network log.
+fn private_socket_dir(dir: Option<PathBuf>) -> Option<PathBuf> {
+    let Some(dir) = dir else {
+        tracing::warn!("XDG_RUNTIME_DIR isn't an absolute path, so sandboxes get no network log");
+        return None;
+    };
+
+    match firebrick_utils::create_private_dir(&dir) {
+        Ok(()) => Some(dir),
+        Err(err) => {
+            tracing::warn!("sandboxes get no network log: {err}");
+            None
         }
     }
 }
@@ -1337,6 +1351,19 @@ mod tests {
 
         assert!(connect_logger(&logs, "sb").await.is_err());
         assert_eq!(logs.record("sb").await.unwrap(), Record::default());
+    }
+
+    #[tokio::test]
+    async fn listen_refuses_a_socket_directory_with_group_or_other_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_dir = dir.path().join("netlog");
+        std::fs::create_dir(&socket_dir).unwrap();
+        std::fs::set_permissions(&socket_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let logs = netlogs(dir.path());
+
+        logs.listen("sb").await;
+
+        assert!(!logs.socket_path("sb").unwrap().exists());
     }
 
     #[tokio::test]
