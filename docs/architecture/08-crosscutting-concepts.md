@@ -113,6 +113,33 @@ isn't valid YAML fails the command, so a broken file never counts as approving
 nothing. Starting an existing sandbox doesn't check anything, because
 microsandbox only applies mounts when it creates a sandbox.
 
+## Outdated sandbox images
+
+A sandbox keeps the image it was created with
+([ADR 0005](decisions/0005-default-to-the-anvil-base-image-of-the-same-release.md)),
+so after a firebrick update it still runs the `firebrick-base` image of the old
+release. The daemon decides whether a sandbox is outdated, because it creates
+sandboxes from its own `DEFAULT_IMAGE` and `fbk` can be another version:
+
+- `sandboxes` records the resolved image reference in the `firebrick.image`
+  label when it creates a sandbox, and sets it to the new image when it upgrades
+  one. A network update keeps it, like every label. For a sandbox created before
+  the label existed, it reads the OCI reference from the sandbox's microsandbox
+  config; without one, the image is unknown.
+- A sandbox is outdated when its image is another tag of the default image's
+  repository, `ghcr.io/wmeints/firebrick-base`. Sandboxes with any other image
+  never are, because a firebrick update doesn't change their image. `GetSandbox`
+  returns the image as `image` and, for an outdated sandbox, the default image
+  as `upgrade_image`.
+
+`fbk start`, `fbk run`, the `fbk network` changes and `fbk port forward|rm`
+print a warning to stderr for an outdated sandbox that points to `fbk upgrade`,
+or to `fbk upgrade <name>` when the command got the sandbox's name. `fbk run`
+prints it before the session takes over the terminal. A failed lookup skips the
+warning, which never changes the exit code. Commands that don't boot or change
+the sandbox, and `fbk ssh-proxy`, whose stderr would end up in the SSH session,
+don't print it.
+
 ## Securing the daemon socket
 
 Any process that can use the daemon socket can start sandboxes, read workspace

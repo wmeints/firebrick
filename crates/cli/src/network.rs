@@ -15,7 +15,7 @@ use crate::api::{
     ListNetworkActivityRequest, NetworkActivity, NetworkActivityKind, UpdateNetworkRequest,
 };
 use crate::approval::Approver;
-use crate::manage::{self, SPEC_FILE_NAME};
+use crate::manage::{self, SPEC_FILE_NAME, Selection};
 use crate::{client, table, validate};
 
 /// The first fbk release whose sandboxes get a network log.
@@ -229,6 +229,7 @@ async fn apply_to_sandbox(
         .map(|response| response.into_inner().updated);
 
     println!("{}", outcome(change, name, file_changed, result)?);
+    manage::warn_if_outdated(&mut client, name, Selection::WorkingDir).await;
 
     Ok(())
 }

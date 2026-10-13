@@ -558,7 +558,8 @@ impl SandboxManagementService for FirebrickServer {
         Ok(Response::new(ListSandboxesResponse { sandboxes }))
     }
 
-    /// Returns the name, status, host name and workspace path of a single sandbox.
+    /// Returns the name, status, host name, workspace path and image of a single sandbox, with the
+    /// image an upgrade moves it to when it runs an older `firebrick-base` release.
     async fn get_sandbox(
         &self,
         request: Request<GetSandboxRequest>,
@@ -571,6 +572,8 @@ impl SandboxManagementService for FirebrickServer {
             hostname: sandbox.hostname.unwrap_or_default(),
             workspace_path: sandbox.workspace_path.unwrap_or_default(),
             workspace_host_path: sandbox.workspace_host_path.unwrap_or_default(),
+            image: sandbox.image.unwrap_or_default(),
+            upgrade_image: sandbox.upgrade_image.unwrap_or_default(),
         }))
     }
 

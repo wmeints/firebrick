@@ -13,7 +13,7 @@ use crate::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, attach_request,
     attach_response, sandbox_management_service_client::SandboxManagementServiceClient,
 };
-use crate::manage::{ensure_running, resolve_spec};
+use crate::manage::{Selection, ensure_running, resolve_spec, warn_if_outdated};
 
 const DEFAULT_SIZE: (u16, u16) = (80, 24);
 
@@ -63,6 +63,7 @@ pub async fn attach(
 
     // Done before entering raw mode so progress messages render normally.
     ensure_running(spec, &working_dir, assume_yes, client).await?;
+    warn_if_outdated(client, &name, Selection::WorkingDir).await;
 
     let (tx, rx) = mpsc::channel(32);
 
