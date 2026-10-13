@@ -605,18 +605,24 @@ impl SandboxManager {
             return Ok(());
         }
 
-        self.clipboards.listen(request.name).await.map_err(|err| {
-            SandboxError::failed_precondition(format!(
-                "can't share the host clipboard with sandbox {}: {err}; set XDG_RUNTIME_DIR to \
+        self.clipboards
+            .listen(request.name, true)
+            .await
+            .map_err(|err| {
+                SandboxError::failed_precondition(format!(
+                    "can't share the host clipboard with sandbox {}: {err}; set XDG_RUNTIME_DIR to \
                  a private directory, or set clipboard: false in .firebrick.yml",
-                request.name
-            ))
-        })
+                    request.name
+                ))
+            })
     }
 
-    /// Listens for the clipboard of an existing sandbox, logging an error when that fails.
-    async fn listen_for_clipboard(&self, name: &str) {
-        if let Err(err) = self.clipboards.listen(name).await {
+    /// Listens for the clipboard of an existing sandbox with the labels, logging an error when
+    /// that fails. Only a sandbox with the copy label can write the host clipboard.
+    async fn listen_for_clipboard(&self, name: &str, labels: &BTreeMap<String, String>) {
+        let copy = clipboard::can_copy(labels);
+
+        if let Err(err) = self.clipboards.listen(name, copy).await {
             tracing::error!("failed to listen for the clipboard of sandbox {name}: {err}");
         }
     }
@@ -640,16 +646,22 @@ impl SandboxManager {
             self.netlogs.listen(sb.name()).await;
         }
 
+        self.listen_for_routed_clipboard(sb.name(), &config.spec)
+            .await;
+    }
+
+    /// Listens for the clipboard of an existing sandbox with the spec when it has its route,
+    /// and warns when it shares the host clipboard without one.
+    async fn listen_for_routed_clipboard(&self, name: &str, spec: &SandboxSpec) {
         match (
-            self.clipboards.has_route(sb.name(), &config.spec),
-            clipboard::is_enabled(&config.spec.labels),
+            self.clipboards.has_route(name, spec),
+            clipboard::is_enabled(&spec.labels),
         ) {
-            (true, _) => self.listen_for_clipboard(sb.name()).await,
+            (true, _) => self.listen_for_clipboard(name, &spec.labels).await,
             (false, true) => tracing::warn!(
-                "sandbox {} shares the host clipboard but has no route to {:?}, for example \
-                 because XDG_RUNTIME_DIR changed; recreate it to paste from the host again",
-                sb.name(),
-                self.clipboards.socket_path(sb.name())
+                "sandbox {name} shares the host clipboard but has no route to {:?}, for example \
+                 because XDG_RUNTIME_DIR changed; recreate it to use the host clipboard again",
+                self.clipboards.socket_path(name)
             ),
             (false, false) => {}
         }
@@ -1051,7 +1063,8 @@ impl SandboxManager {
 
         self.netlogs.listen(name).await;
         if clipboard::is_enabled(&recreation.settings.labels) {
-            self.listen_for_clipboard(name).await;
+            self.listen_for_clipboard(name, &recreation.settings.labels)
+                .await;
         }
         let result = self.replace(sb, recreation).await;
         sync_ssh_config().await;
@@ -1385,6 +1398,7 @@ fn new_sandbox_settings(
 
     if request.clipboard {
         labels.insert(clipboard::ENABLED_LABEL.to_string(), "true".to_string());
+        labels.insert(clipboard::COPY_LABEL.to_string(), "true".to_string());
     }
 
     SandboxSettings {
@@ -2640,6 +2654,7 @@ mod tests {
             settings.labels.get(clipboard::ENABLED_LABEL),
             Some(&"true".to_string())
         );
+        assert!(clipboard::can_copy(&settings.labels));
         assert!(clipboards.has_route("dev", &spec));
     }
 
@@ -2650,6 +2665,7 @@ mod tests {
         let ports: Vec<u32> = spec.vsock.routes.iter().map(|route| route.port).collect();
 
         assert_eq!(settings.labels.get(clipboard::ENABLED_LABEL), None);
+        assert_eq!(settings.labels.get(clipboard::COPY_LABEL), None);
         assert_eq!(ports, [crate::netlog::GUEST_PORT]);
         assert!(!spec.runtime.scripts.contains_key(clipboard::MARKER));
     }

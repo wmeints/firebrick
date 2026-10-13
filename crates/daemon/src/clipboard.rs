@@ -1,17 +1,24 @@
-//! Shares the host clipboard with the sandboxes created with `clipboard: true`.
+//! Shares the host clipboard with the sandboxes created with `clipboard: true`, both ways.
 //!
-//! The `wl-paste` and `xclip` stand-ins in the `firebrick-base` image connect to vsock port
-//! [`GUEST_PORT`] on the host. Sandboxes with the [`ENABLED_LABEL`] get a stream route from that
+//! The `wl-paste`, `wl-copy` and `xclip` stand-ins in the `firebrick-base` image connect to
+//! vsock port [`GUEST_PORT`] on the host. Sandboxes with the [`ENABLED_LABEL`] get a stream route from that
 //! port to their own unix socket in [`firebrick_utils::clipboard_socket_dir`], where fbkd
 //! listens; other sandboxes get no route, so nothing in their guest reaches the clipboard, not
 //! even root. The label also gives the guest the [`MARKER`] script, so the stand-ins can tell a
 //! sandbox without the setting from one whose fbkd doesn't answer.
 //!
-//! Each connection carries one request line, `types`, `text` or `png`, and gets one answer:
-//! `ok <length>` followed by that many bytes, or one of `empty`, `too-large`, `unavailable
-//! <cause>` and `invalid`. fbkd reads the host clipboard through a [`HostClipboard`] only when
-//! asked, and never sends more than [`MAX_TEXT`] bytes of text or [`MAX_PNG`] bytes of PNG.
+//! Each connection carries one request line, `types`, `text`, `png`, or `copy text <length>` or
+//! `copy png <length>` followed by that many bytes of content, and gets one answer: `ok
+//! <length>` followed by that many bytes, or one of `empty`, `too-large`, `unavailable <cause>`,
+//! `invalid`, `bad-content`, `busy` and `denied`. fbkd reads and writes the host clipboard
+//! through a [`HostClipboard`] only when asked, and never sends or sets more than [`MAX_TEXT`]
+//! bytes of text or [`MAX_PNG`] bytes of PNG.
+//!
+//! Only sandboxes with the [`COPY_LABEL`] can copy, so sandboxes created before copying existed,
+//! whose users approved pasting only, stay paste-only until they're recreated. fbkd sets the
+//! clipboard for one sandbox at most [`MAX_COPIES`] times within [`COPY_WINDOW`].
 
+use crate::rate_limit::RateLimit;
 use crate::vsock::{self, Connections, Listeners, Refused};
 use async_trait::async_trait;
 use microsandbox::sandbox::{SandboxBuilder, SandboxSpec};
@@ -22,7 +29,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 
@@ -32,6 +39,10 @@ pub const GUEST_PORT: u32 = 52001;
 /// Sandbox label that records whether the sandbox shares the host clipboard. Only sandboxes
 /// created with the setting have it, set to `true`.
 pub const ENABLED_LABEL: &str = "firebrick.clipboard";
+
+/// Sandbox label that records whether the sandbox can also write the host clipboard. Sandboxes
+/// created with the setting since copying exists have it, set to `true`.
+pub const COPY_LABEL: &str = "firebrick.clipboard.copy";
 
 /// Name of the microsandbox script that marks a sandbox with the setting. microsandbox puts it
 /// in the guest at `/.msb/scripts/<name>`.
@@ -45,19 +56,29 @@ const MARKER_SCRIPT: &str = "#!/bin/sh\n\
 /// The name of the channel in log lines.
 const CHANNEL: &str = "clipboard";
 
-/// The most bytes of text fbkd sends.
+/// The most bytes of text fbkd sends or sets.
 pub const MAX_TEXT: usize = 1024 * 1024;
 
-/// The most bytes of PNG fbkd sends.
+/// The most bytes of PNG fbkd sends or sets.
 pub const MAX_PNG: usize = 10 * 1024 * 1024;
 
-/// The longest request line fbkd reads, in bytes, without its newline.
-const MAX_REQUEST: usize = 16;
+/// The most copies fbkd takes from one sandbox within [`COPY_WINDOW`].
+pub const MAX_COPIES: usize = 10;
 
-/// How long a stand-in gets to send its request.
+/// The window [`MAX_COPIES`] applies to.
+pub const COPY_WINDOW: Duration = Duration::from_secs(10);
+
+/// The bytes every PNG starts with.
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// The longest request line fbkd reads, in bytes, without its newline.
+const MAX_REQUEST: usize = 32;
+
+/// How long a stand-in gets to send its request, and then the content of a copy.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long reading the host clipboard may take. The stand-ins give up after 5 seconds.
+/// How long reading or writing the host clipboard may take. The stand-ins give up after 5
+/// seconds.
 const HOST_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// How often fbkd logs a warning about one sandbox's clipboard at most.
@@ -74,7 +95,12 @@ pub fn is_enabled(labels: &BTreeMap<String, String>) -> bool {
     labels.get(ENABLED_LABEL).map(String::as_str) == Some("true")
 }
 
-/// A kind of clipboard content the sandbox can read.
+/// Returns whether a sandbox with the labels can also write the host clipboard.
+pub fn can_copy(labels: &BTreeMap<String, String>) -> bool {
+    is_enabled(labels) && labels.get(COPY_LABEL).map(String::as_str) == Some("true")
+}
+
+/// A kind of clipboard content the sandbox can read and write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// UTF-8 text.
@@ -84,7 +110,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Returns the most bytes of the kind fbkd sends.
+    /// Returns the most bytes of the kind fbkd sends or sets.
     pub fn limit(self) -> usize {
         match self {
             Kind::Text => MAX_TEXT,
@@ -97,6 +123,24 @@ impl Kind {
         match self {
             Kind::Text => "text",
             Kind::Png => "png",
+        }
+    }
+
+    /// Returns the kind with the name in the protocol.
+    fn from_name(name: &[u8]) -> Option<Self> {
+        match name {
+            b"text" => Some(Kind::Text),
+            b"png" => Some(Kind::Png),
+            _ => None,
+        }
+    }
+
+    /// Returns whether the content is valid for the kind: UTF-8 text, or data that starts with
+    /// the PNG signature.
+    fn is_valid(self, content: &[u8]) -> bool {
+        match self {
+            Kind::Text => std::str::from_utf8(content).is_ok(),
+            Kind::Png => content.starts_with(PNG_SIGNATURE),
         }
     }
 }
@@ -123,7 +167,7 @@ impl Cause {
     }
 }
 
-/// Why the host clipboard can't give what was asked.
+/// Why the host clipboard can't give or take what was asked.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HostError {
     /// The clipboard is empty or doesn't hold the kind.
@@ -132,12 +176,13 @@ pub enum HostError {
     /// The content is larger than the kind's limit.
     #[error("the clipboard content is too large")]
     TooLarge,
-    /// The clipboard can't be read. The reason is only logged, never sent to the sandbox.
+    /// The clipboard can't be read or written. The reason is only logged, never sent to the
+    /// sandbox.
     #[error("{1}")]
     Unavailable(Cause, String),
 }
 
-/// Reads the clipboard of the host.
+/// Reads and writes the clipboard of the host.
 #[async_trait]
 pub trait HostClipboard: Send + Sync {
     /// Returns the kinds the clipboard holds, empty when it's empty.
@@ -146,6 +191,10 @@ pub trait HostClipboard: Send + Sync {
     /// Returns the content of the kind, failing with [`HostError::TooLarge`] without reading
     /// much more than `limit` bytes when it's larger.
     async fn read(&self, kind: Kind, limit: usize) -> Result<Vec<u8>, HostError>;
+
+    /// Replaces the clipboard with the content of the kind. fbkd checked that the content is
+    /// valid for the kind and within its limit.
+    async fn write(&self, kind: Kind, content: Vec<u8>) -> Result<(), HostError>;
 }
 
 /// A request from a stand-in.
@@ -155,6 +204,8 @@ enum Request {
     Types,
     /// The content of a kind.
     Read(Kind),
+    /// Sets the clipboard to the content of a kind, of the length, that follows the request.
+    Write(Kind, usize),
 }
 
 /// Parses a request line without its newline.
@@ -163,8 +214,23 @@ fn parse_request(line: &[u8]) -> Option<Request> {
         b"types" => Some(Request::Types),
         b"text" => Some(Request::Read(Kind::Text)),
         b"png" => Some(Request::Read(Kind::Png)),
-        _ => None,
+        _ => parse_copy(line),
     }
+}
+
+/// Parses a `copy <kind> <length>` request line.
+fn parse_copy(line: &[u8]) -> Option<Request> {
+    let mut words = line.strip_prefix(b"copy ")?.split(|byte| *byte == b' ');
+    let kind = Kind::from_name(words.next()?)?;
+    let length = words.next()?;
+
+    if words.next().is_some() || length.is_empty() || !length.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+
+    let length = std::str::from_utf8(length).ok()?.parse().ok()?;
+
+    Some(Request::Write(kind, length))
 }
 
 /// The answer to a request.
@@ -180,6 +246,12 @@ enum Reply {
     Unavailable(Cause),
     /// The request isn't one fbkd knows.
     Invalid,
+    /// The content to copy isn't valid for its kind.
+    BadContent,
+    /// The sandbox copied too often lately.
+    Busy,
+    /// The sandbox can't write the host clipboard.
+    Denied,
 }
 
 impl Reply {
@@ -191,6 +263,9 @@ impl Reply {
             Reply::TooLarge => "too-large\n".to_string(),
             Reply::Unavailable(cause) => format!("unavailable {}\n", cause.name()),
             Reply::Invalid => "invalid\n".to_string(),
+            Reply::BadContent => "bad-content\n".to_string(),
+            Reply::Busy => "busy\n".to_string(),
+            Reply::Denied => "denied\n".to_string(),
         };
         let mut encoded = status.into_bytes();
 
@@ -206,18 +281,76 @@ impl Reply {
 struct Channel {
     sandbox: String,
     host: Arc<dyn HostClipboard>,
+    /// Whether the sandbox can write the host clipboard.
+    copy: bool,
+    /// The copies the sandbox made lately.
+    copies: Mutex<RateLimit>,
     /// When fbkd last logged a warning about the sandbox's clipboard.
     last_warning: Mutex<Option<Instant>>,
 }
 
 impl Channel {
-    /// Answers a request from the sandbox.
-    async fn answer(&self, request: Request) -> Reply {
+    /// Answers a request from the sandbox, reading the content of a copy from `content`.
+    /// Returns `None` when the sandbox doesn't send all of that content in time.
+    async fn answer(&self, request: Request, content: impl AsyncRead + Unpin) -> Option<Reply> {
         let result = match request {
             Request::Types => self.host.kinds().await.map(|kinds| kind_list(&kinds)),
             Request::Read(kind) => self.read(kind).await,
+            Request::Write(kind, length) => return self.copy(kind, length, content).await,
         };
 
+        Some(self.reply(result))
+    }
+
+    /// Sets the host clipboard to the `length` bytes of the kind that `content` holds, when the
+    /// sandbox may copy, hasn't copied too often lately, and the content is within the kind's
+    /// limit and valid for it. Returns `None` when the sandbox doesn't send all of it in time.
+    async fn copy(
+        &self,
+        kind: Kind,
+        length: usize,
+        content: impl AsyncRead + Unpin,
+    ) -> Option<Reply> {
+        if !self.copy {
+            return Some(Reply::Denied);
+        }
+
+        if !self.allow_copy() {
+            self.warn(&format!(
+                "refused copies beyond the limit of {MAX_COPIES} within {COPY_WINDOW:?}"
+            ));
+            return Some(Reply::Busy);
+        }
+
+        if length > kind.limit() {
+            return Some(Reply::TooLarge);
+        }
+
+        let content = tokio::time::timeout(REQUEST_TIMEOUT, read_content(content, length))
+            .await
+            .ok()?
+            .ok()?;
+
+        if !kind.is_valid(&content) {
+            return Some(Reply::BadContent);
+        }
+
+        let written = self.host.write(kind, content).await;
+
+        Some(self.reply(written.map(|()| Vec::new())))
+    }
+
+    /// Records a copy now and returns whether the rate limit allows it.
+    fn allow_copy(&self) -> bool {
+        self.copies
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .allow(Instant::now())
+    }
+
+    /// Returns the reply for the result of using the host clipboard, logging why it isn't
+    /// available.
+    fn reply(&self, result: Result<Vec<u8>, HostError>) -> Reply {
         match result {
             Ok(content) => Reply::Content(content),
             Err(HostError::Empty) => Reply::Empty,
@@ -270,12 +403,16 @@ fn kind_list(kinds: &[Kind]) -> Vec<u8> {
 /// Reads the request of one connection and writes the answer.
 async fn serve_connection(stream: UnixStream, channel: Arc<Channel>) {
     let (read, mut write) = stream.into_split();
-    let request = tokio::time::timeout(REQUEST_TIMEOUT, read_request(read)).await;
+    let mut read = BufReader::new(read);
+    let request = tokio::time::timeout(REQUEST_TIMEOUT, read_request(&mut read)).await;
     let reply = match request {
-        Ok(Ok(Some(request))) => channel.answer(request).await,
-        Ok(Ok(None)) => Reply::Invalid,
+        Ok(Ok(Some(request))) => channel.answer(request, read).await,
+        Ok(Ok(None)) => Some(Reply::Invalid),
         // The stand-in went away or took too long; there's nobody to answer.
-        Ok(Err(_)) | Err(_) => return,
+        Ok(Err(_)) | Err(_) => None,
+    };
+    let Some(reply) = reply else {
+        return;
     };
 
     if let Err(err) = write.write_all(&reply.encode()).await {
@@ -286,16 +423,25 @@ async fn serve_connection(stream: UnixStream, channel: Arc<Channel>) {
     }
 }
 
-/// Reads the request line, at most [`MAX_REQUEST`] bytes of it. Returns `None` when it isn't a
-/// known request.
-async fn read_request(read: impl AsyncRead + Unpin) -> io::Result<Option<Request>> {
+/// Reads the request line, at most [`MAX_REQUEST`] bytes of it, and leaves what follows it in
+/// `read`. Returns `None` when it isn't a known request.
+async fn read_request(read: &mut (impl AsyncBufRead + Unpin)) -> io::Result<Option<Request>> {
     let limit = u64::try_from(MAX_REQUEST + 1).unwrap_or(u64::MAX);
     let mut line = Vec::with_capacity(MAX_REQUEST + 1);
-    BufReader::new(read.take(limit))
-        .read_until(b'\n', &mut line)
-        .await?;
+    read.take(limit).read_until(b'\n', &mut line).await?;
 
     Ok(line.strip_suffix(b"\n").and_then(parse_request))
+}
+
+/// Reads exactly `length` bytes of content, failing when the stream ends before.
+async fn read_content(read: impl AsyncRead + Unpin, length: usize) -> io::Result<Vec<u8>> {
+    let content = read_at_most(Some(read), length).await?;
+
+    if content.len() < length {
+        return Err(io::ErrorKind::UnexpectedEof.into());
+    }
+
+    Ok(content)
 }
 
 /// Answers an accepted connection, or closes it with a warning when the sandbox already has
@@ -390,12 +536,15 @@ impl Clipboards {
         self.listeners.has_route(sandbox, spec)
     }
 
-    /// Listens on the sandbox's socket unless fbkd already does. A listener that stopped is
-    /// replaced. Fails when the sandbox has no socket path, or the socket can't be bound.
-    pub async fn listen(&self, sandbox: &str) -> io::Result<()> {
+    /// Listens on the sandbox's socket unless fbkd already does, and lets the sandbox write the
+    /// host clipboard when `copy` is set. A listener that stopped is replaced. Fails when the
+    /// sandbox has no socket path, or the socket can't be bound.
+    pub async fn listen(&self, sandbox: &str, copy: bool) -> io::Result<()> {
         let channel = Channel {
             sandbox: sandbox.to_string(),
             host: Arc::clone(&self.host),
+            copy,
+            copies: Mutex::new(RateLimit::new(MAX_COPIES, COPY_WINDOW)),
             last_warning: Mutex::new(None),
         };
 
@@ -418,17 +567,17 @@ impl Clipboards {
 /// A desktop whose clipboard tools [`HostTools`] runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Desktop {
-    /// A Wayland session, read with `wl-paste`.
+    /// A Wayland session, read with `wl-paste` and written with `wl-copy`.
     Wayland,
-    /// An X11 session, read with `xclip`.
+    /// An X11 session, read and written with `xclip`.
     X11,
-    /// macOS, read with `pbpaste` and `osascript`.
+    /// macOS, read with `pbpaste` and `osascript` and written with `osascript`.
     MacOs,
 }
 
-/// Reads the host clipboard with the tools of the desktop: `wl-paste` on Wayland, `xclip` on
-/// X11, and `pbpaste` and `osascript` on macOS. fbkd inherits the display of the `fbk` that
-/// started it, so it reads the clipboard of that desktop session.
+/// Reads and writes the host clipboard with the tools of the desktop: `wl-paste` and `wl-copy`
+/// on Wayland, `xclip` on X11, and `pbpaste` and `osascript` on macOS. fbkd inherits the
+/// display of the `fbk` that started it, so it uses the clipboard of that desktop session.
 #[derive(Debug, Clone)]
 pub struct HostTools {
     desktop: Option<Desktop>,
@@ -501,6 +650,19 @@ impl HostClipboard for HostTools {
 
         content(desktop, kind, output, limit)
     }
+
+    async fn write(&self, kind: Kind, content: Vec<u8>) -> Result<(), HostError> {
+        let desktop = self.desktop()?;
+        let (program, args) = write_command(desktop, kind);
+
+        run_with_input(
+            program,
+            args,
+            self.path.as_ref(),
+            input(desktop, kind, content),
+        )
+        .await
+    }
 }
 
 /// Returns the desktop for macOS when `macos` is set, and otherwise by the display variables
@@ -545,6 +707,40 @@ fn read_command(desktop: Desktop, kind: Kind) -> Command {
         (Desktop::MacOs, Kind::Text) => ("pbpaste", &[]),
         (Desktop::MacOs, Kind::Png) => ("osascript", &["-e", "the clipboard as «class PNGf»"]),
     }
+}
+
+/// Returns the command that sets the clipboard to the content of the kind on its stdin.
+fn write_command(desktop: Desktop, kind: Kind) -> Command {
+    match (desktop, kind) {
+        (Desktop::Wayland, Kind::Text) => ("wl-copy", &["--type", "text/plain;charset=utf-8"]),
+        (Desktop::Wayland, Kind::Png) => ("wl-copy", &["--type", "image/png"]),
+        (Desktop::X11, Kind::Text) => (
+            "xclip",
+            &["-selection", "clipboard", "-t", "UTF8_STRING", "-i"],
+        ),
+        (Desktop::X11, Kind::Png) => (
+            "xclip",
+            &["-selection", "clipboard", "-t", "image/png", "-i"],
+        ),
+        // osascript reads the script from stdin.
+        (Desktop::MacOs, _) => ("osascript", &["-"]),
+    }
+}
+
+/// Returns the stdin of the [`write_command`] for the content: the content itself, or on macOS
+/// an AppleScript that sets the clipboard to it as hex data of the kind's class.
+fn input(desktop: Desktop, kind: Kind, content: Vec<u8>) -> Vec<u8> {
+    if desktop != Desktop::MacOs {
+        return content;
+    }
+
+    let class = match kind {
+        Kind::Text => "utf8",
+        Kind::Png => "PNGf",
+    };
+    let hex: String = content.iter().map(|byte| format!("{byte:02X}")).collect();
+
+    format!("set the clipboard to «data {class}{hex}»\n").into_bytes()
 }
 
 /// Returns the most bytes of output to read for content of at most `limit` bytes. AppleScript
@@ -671,28 +867,91 @@ async fn run(
     path: Option<&OsString>,
     limit: usize,
 ) -> Result<Output, HostError> {
-    let mut command = tokio::process::Command::new(program);
+    let mut command = command(program, args, path);
     command
-        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
+
+    let child = command.spawn().map_err(|err| spawn_error(program, &err))?;
+
+    tokio::time::timeout(HOST_TIMEOUT, collect(program, child, limit))
+        .await
+        .map_err(|_| timed_out(program))?
+}
+
+/// Runs the program, looked up on `path` when it's given, with the input on its stdin, and
+/// waits for it to exit. Fails with [`HostError::Unavailable`] when it can't run, fails, or
+/// takes longer than [`HOST_TIMEOUT`], and kills it when it's given up on. Its stdout and
+/// stderr go nowhere: `wl-copy` and `xclip` leave a child behind that serves the clipboard, and
+/// that child would keep pipes open.
+async fn run_with_input(
+    program: &str,
+    args: &[&str],
+    path: Option<&OsString>,
+    input: Vec<u8>,
+) -> Result<(), HostError> {
+    let mut command = command(program, args, path);
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    let child = command.spawn().map_err(|err| spawn_error(program, &err))?;
+
+    tokio::time::timeout(HOST_TIMEOUT, feed(program, child, input))
+        .await
+        .map_err(|_| timed_out(program))?
+}
+
+/// Returns the command for the program, looked up on `path` when it's given, which kills the
+/// program when its child is dropped.
+fn command(program: &str, args: &[&str], path: Option<&OsString>) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(program);
+    command.args(args).kill_on_drop(true);
 
     // A PATH set for the child is also where the program is looked up.
     if let Some(path) = path {
         command.env("PATH", path);
     }
 
-    let child = command.spawn().map_err(|err| spawn_error(program, &err))?;
-    let timed_out = |_| {
-        let reason = format!("{program} didn't finish within {HOST_TIMEOUT:?}");
-        HostError::Unavailable(Cause::Failed, reason)
-    };
+    command
+}
 
-    tokio::time::timeout(HOST_TIMEOUT, collect(program, child, limit))
+/// Returns the error for a program that took longer than [`HOST_TIMEOUT`].
+fn timed_out(program: &str) -> HostError {
+    let reason = format!("{program} didn't finish within {HOST_TIMEOUT:?}");
+
+    HostError::Unavailable(Cause::Failed, reason)
+}
+
+/// Writes the input to the stdin of the program's child, closes it and waits for the child to
+/// exit, failing when it doesn't exit successfully.
+async fn feed(
+    program: &str,
+    mut child: tokio::process::Child,
+    input: Vec<u8>,
+) -> Result<(), HostError> {
+    let failed =
+        |reason: String| HostError::Unavailable(Cause::Failed, format!("{program} {reason}"));
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(&input)
+            .await
+            .map_err(|err| failed(format!("can't be written to: {err}")))?;
+    }
+
+    let status = child
+        .wait()
         .await
-        .map_err(timed_out)?
+        .map_err(|err| failed(format!("failed: {err}")))?;
+
+    if !status.success() {
+        return Err(failed(format!("failed: {status}")));
+    }
+
+    Ok(())
 }
 
 /// Returns the error for a program that couldn't be started: a missing tool, or a failure.
@@ -762,6 +1021,8 @@ mod tests {
         available: bool,
         /// Releases reads when they should finish; `None` answers at once.
         gate: Option<tokio::sync::Semaphore>,
+        /// What was written to the clipboard, in order.
+        written: Mutex<Vec<(Kind, Vec<u8>)>>,
     }
 
     impl FakeClipboard {
@@ -771,7 +1032,12 @@ mod tests {
                 png: png.map(<[u8]>::to_vec),
                 available: true,
                 gate: None,
+                written: Mutex::new(Vec::new()),
             }
+        }
+
+        fn written(&self) -> Vec<(Kind, Vec<u8>)> {
+            self.written.lock().unwrap().clone()
         }
     }
 
@@ -802,6 +1068,13 @@ mod tests {
 
             content.clone().ok_or(HostError::Empty)
         }
+
+        async fn write(&self, kind: Kind, content: Vec<u8>) -> Result<(), HostError> {
+            self.kinds().await?;
+            self.written.lock().unwrap().push((kind, content));
+
+            Ok(())
+        }
     }
 
     fn clipboards(dir: &std::path::Path, host: FakeClipboard) -> Clipboards {
@@ -827,7 +1100,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let host = FakeClipboard::with(Some(b"hello from the host"), Some(b"\x89PNG"));
         let clipboards = clipboards(dir.path(), host);
-        clipboards.listen("sb").await.unwrap();
+        clipboards.listen("sb", true).await.unwrap();
 
         assert_eq!(
             ask(&clipboards, "sb", b"types\n").await,
@@ -844,7 +1117,7 @@ mod tests {
     async fn answers_empty_for_a_kind_the_clipboard_lacks() {
         let dir = tempfile::tempdir().unwrap();
         let clipboards = clipboards(dir.path(), FakeClipboard::with(None, None));
-        clipboards.listen("sb").await.unwrap();
+        clipboards.listen("sb", true).await.unwrap();
 
         assert_eq!(ask(&clipboards, "sb", b"types\n").await, b"ok 0\n");
         assert_eq!(ask(&clipboards, "sb", b"text\n").await, b"empty\n");
@@ -859,7 +1132,7 @@ mod tests {
             ..FakeClipboard::with(Some(b"text"), None)
         };
         let clipboards = clipboards(dir.path(), host);
-        clipboards.listen("sb").await.unwrap();
+        clipboards.listen("sb", true).await.unwrap();
 
         let unavailable = b"unavailable no-display\n";
         assert_eq!(ask(&clipboards, "sb", b"types\n").await, unavailable);
@@ -872,7 +1145,7 @@ mod tests {
         let text = vec![b'a'; MAX_TEXT + 1];
         let png = vec![0; MAX_PNG + 1];
         let clipboards = clipboards(dir.path(), FakeClipboard::with(Some(&text), Some(&png)));
-        clipboards.listen("sb").await.unwrap();
+        clipboards.listen("sb", true).await.unwrap();
 
         assert_eq!(ask(&clipboards, "sb", b"text\n").await, b"too-large\n");
         assert_eq!(ask(&clipboards, "sb", b"png\n").await, b"too-large\n");
@@ -883,7 +1156,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let text = vec![b'a'; MAX_TEXT];
         let clipboards = clipboards(dir.path(), FakeClipboard::with(Some(&text), None));
-        clipboards.listen("sb").await.unwrap();
+        clipboards.listen("sb", true).await.unwrap();
 
         let answer = ask(&clipboards, "sb", b"text\n").await;
 
@@ -895,7 +1168,7 @@ mod tests {
     async fn answers_invalid_to_unknown_or_unfinished_requests() {
         let dir = tempfile::tempdir().unwrap();
         let clipboards = clipboards(dir.path(), FakeClipboard::with(Some(b"text"), None));
-        clipboards.listen("sb").await.unwrap();
+        clipboards.listen("sb", true).await.unwrap();
 
         let answers = [
             ask(&clipboards, "sb", b"primary\n").await,
@@ -910,7 +1183,7 @@ mod tests {
     async fn sends_no_content_for_a_long_request() {
         let dir = tempfile::tempdir().unwrap();
         let clipboards = clipboards(dir.path(), FakeClipboard::with(Some(b"text"), None));
-        clipboards.listen("sb").await.unwrap();
+        clipboards.listen("sb", true).await.unwrap();
         let mut stream = connect(&clipboards, "sb").await.unwrap();
         let long = format!("text{}\n", " ".repeat(MAX_REQUEST * 4));
 
@@ -945,7 +1218,7 @@ mod tests {
         };
         let host = Arc::new(host);
         let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
-        clipboards.listen("sb").await.unwrap();
+        clipboards.listen("sb", true).await.unwrap();
         // The listener accepts connections in the order they connect, so it has accepted the
         // busy ones by the time it accepts the extra one.
         let mut busy = send_text_requests(&clipboards, vsock::MAX_CONNECTIONS).await;
@@ -966,11 +1239,201 @@ mod tests {
         assert_eq!(first, b"ok 4\ntext");
     }
 
+    /// A PNG signature and a few bytes that aren't valid UTF-8.
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\xff";
+
+    /// Sends each request on a connection of its own, one after the other, and returns the
+    /// answers.
+    async fn ask_each(clipboards: &Clipboards, requests: &[&[u8]]) -> Vec<Vec<u8>> {
+        let mut answers = Vec::new();
+
+        for request in requests {
+            answers.push(ask(clipboards, "sb", request).await);
+        }
+
+        answers
+    }
+
+    /// Returns a copy request for the content of the kind.
+    fn copy_request(kind: &str, content: &[u8]) -> Vec<u8> {
+        let mut request = format!("copy {kind} {}\n", content.len()).into_bytes();
+        request.extend_from_slice(content);
+        request
+    }
+
+    #[tokio::test]
+    async fn copies_text_and_png_to_the_host_clipboard() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = Arc::new(FakeClipboard::with(None, None));
+        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        clipboards.listen("sb", true).await.unwrap();
+
+        let text = ask(&clipboards, "sb", &copy_request("text", "héllo".as_bytes())).await;
+        let png = ask(&clipboards, "sb", &copy_request("png", PNG)).await;
+        let empty = ask(&clipboards, "sb", &copy_request("text", b"")).await;
+
+        assert_eq!([text, png, empty], [b"ok 0\n"; 3]);
+        assert_eq!(
+            host.written(),
+            [
+                (Kind::Text, "héllo".as_bytes().to_vec()),
+                (Kind::Png, PNG.to_vec()),
+                (Kind::Text, Vec::new()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn refuses_copies_over_the_limits_without_reading_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = Arc::new(FakeClipboard::with(None, None));
+        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        clipboards.listen("sb", true).await.unwrap();
+        let text = format!("copy text {}\n", MAX_TEXT + 1);
+        let png = format!("copy png {}\n", MAX_PNG + 1);
+
+        // Without the content: fbkd answers before reading it.
+        let answers = [
+            ask(&clipboards, "sb", text.as_bytes()).await,
+            ask(&clipboards, "sb", png.as_bytes()).await,
+        ];
+
+        assert_eq!(answers, [b"too-large\n"; 2]);
+        assert!(host.written().is_empty());
+    }
+
+    #[tokio::test]
+    async fn copies_content_up_to_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = Arc::new(FakeClipboard::with(None, None));
+        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        clipboards.listen("sb", true).await.unwrap();
+        let text = vec![b'a'; MAX_TEXT];
+
+        let answer = ask(&clipboards, "sb", &copy_request("text", &text)).await;
+
+        assert_eq!(answer, b"ok 0\n");
+        assert_eq!(host.written(), [(Kind::Text, text)]);
+    }
+
+    #[tokio::test]
+    async fn refuses_content_that_isnt_valid_for_its_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = Arc::new(FakeClipboard::with(None, None));
+        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        clipboards.listen("sb", true).await.unwrap();
+
+        let answers = [
+            ask(&clipboards, "sb", &copy_request("text", b"\xff\xfe")).await,
+            ask(&clipboards, "sb", &copy_request("png", b"GIF89a")).await,
+            ask(&clipboards, "sb", &copy_request("png", b"")).await,
+        ];
+
+        assert_eq!(answers, [b"bad-content\n"; 3]);
+        assert!(host.written().is_empty());
+    }
+
+    #[tokio::test]
+    async fn sets_nothing_when_the_content_ends_early() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = Arc::new(FakeClipboard::with(None, None));
+        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        clipboards.listen("sb", true).await.unwrap();
+
+        let answer = ask(&clipboards, "sb", b"copy text 10\nshort").await;
+
+        assert!(answer.is_empty(), "{answer:?}");
+        assert!(host.written().is_empty());
+    }
+
+    #[tokio::test]
+    async fn answers_invalid_to_malformed_copy_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = Arc::new(FakeClipboard::with(None, None));
+        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        clipboards.listen("sb", true).await.unwrap();
+        let requests: [&[u8]; 6] = [
+            b"copy text\nhi",
+            b"copy text +2\nhi",
+            b"copy text 2 3\nhi",
+            b"copy jpeg 2\nhi",
+            b"copy  text 2\nhi",
+            b"copy text 99999999999999999999999\n",
+        ];
+
+        let answers = ask_each(&clipboards, &requests).await;
+
+        assert_eq!(answers, [b"invalid\n"; 6]);
+        assert!(host.written().is_empty());
+    }
+
+    #[tokio::test]
+    async fn denies_copies_from_a_sandbox_without_the_copy_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = Arc::new(FakeClipboard::with(Some(b"text"), None));
+        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        clipboards.listen("sb", false).await.unwrap();
+
+        let copy = ask(&clipboards, "sb", &copy_request("text", b"hi")).await;
+        let paste = ask(&clipboards, "sb", b"text\n").await;
+
+        assert_eq!(copy, b"denied\n");
+        assert_eq!(paste, b"ok 4\ntext");
+        assert!(host.written().is_empty());
+    }
+
+    #[tokio::test]
+    async fn refuses_copies_beyond_the_rate_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = Arc::new(FakeClipboard::with(None, None));
+        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        clipboards.listen("sb", true).await.unwrap();
+
+        let request = copy_request("text", b"hi");
+        let answers = ask_each(&clipboards, &[&request[..]; MAX_COPIES + 1]).await;
+
+        assert!(
+            answers[..MAX_COPIES]
+                .iter()
+                .all(|answer| answer == b"ok 0\n")
+        );
+        assert_eq!(answers[MAX_COPIES], b"busy\n");
+        assert_eq!(host.written().len(), MAX_COPIES);
+    }
+
+    #[tokio::test]
+    async fn answers_unavailable_when_the_host_clipboard_cant_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeClipboard {
+            available: false,
+            ..FakeClipboard::with(None, None)
+        };
+        let clipboards = clipboards(dir.path(), host);
+        clipboards.listen("sb", true).await.unwrap();
+
+        let answer = ask(&clipboards, "sb", &copy_request("text", b"hi")).await;
+
+        assert_eq!(answer, b"unavailable no-display\n");
+    }
+
+    #[test]
+    fn macos_gets_an_applescript_with_the_content_as_hex() {
+        assert_eq!(
+            input(Desktop::MacOs, Kind::Png, b"\x89PN".to_vec()),
+            "set the clipboard to «data PNGf89504E»\n".as_bytes()
+        );
+        assert_eq!(
+            input(Desktop::MacOs, Kind::Text, b"hi".to_vec()),
+            "set the clipboard to «data utf86869»\n".as_bytes()
+        );
+        assert_eq!(input(Desktop::Wayland, Kind::Text, b"hi".to_vec()), b"hi");
+    }
+
     #[tokio::test]
     async fn remove_stops_listening_and_deletes_the_socket() {
         let dir = tempfile::tempdir().unwrap();
         let clipboards = clipboards(dir.path(), FakeClipboard::with(Some(b"text"), None));
-        clipboards.listen("sb").await.unwrap();
+        clipboards.listen("sb", true).await.unwrap();
 
         clipboards.remove("sb").await;
 
@@ -1015,6 +1478,23 @@ mod tests {
         assert!(is_enabled(&labels("true")));
         assert!(!is_enabled(&labels("false")));
         assert!(!is_enabled(&BTreeMap::new()));
+    }
+
+    #[test]
+    fn can_copy_needs_both_labels() {
+        let labels = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect::<BTreeMap<_, _>>()
+        };
+
+        assert!(can_copy(&labels(&[
+            (ENABLED_LABEL, "true"),
+            (COPY_LABEL, "true")
+        ])));
+        assert!(!can_copy(&labels(&[(ENABLED_LABEL, "true")])));
+        assert!(!can_copy(&labels(&[(COPY_LABEL, "true")])));
     }
 
     #[test]

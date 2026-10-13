@@ -1289,8 +1289,10 @@ A sandbox created with `clipboard: true` in `.firebrick.yml` can read the host
 clipboard through `fbkd`, so tools that paste by running `wl-paste` or `xclip`,
 such as Claude Code's image paste, work in the guest
 ([ADR 0048](decisions/0048-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)).
-The setting needs approval like `mounts`: `fbk start` lists `+ clipboard: shared
-with the host` before it creates the sandbox (see
+The same setting lets the sandbox copy to the host clipboard (see
+[Copying to the host clipboard](#copying-to-the-host-clipboard)). It needs
+approval like `mounts`: `fbk start` lists `+ clipboard: shared with the host,
+both ways` before it creates the sandbox (see
 [Approving spec changes](08-crosscutting-concepts.md#approving-spec-changes)).
 
 ```mermaid
@@ -1348,8 +1350,69 @@ when `fbkd` starts or starts the sandbox.
 | The host clipboard can't be read                   | 1           | `wl-paste: the host clipboard isn't available`, with a hint when `fbkd` has no display or no tool; `fbkd` logs why at `warn` |
 | The clipboard is empty or lacks the requested type | 1           | `wl-paste: the clipboard holds no <type>`                                                                                    |
 | Text over 1 MiB or a PNG over 10 MiB               | 1           | `wl-paste: the clipboard content is larger than <limit>`                                                                     |
-| Another type, `-selection primary` or `xclip -i`   | 2           | A usage line naming the supported forms                                                                                      |
+| Another type or `-selection primary`               | 2           | A usage line naming the supported forms                                                                                      |
 
 `xclip` prints its messages with an `xclip:` prefix. `fbkd` closes the
 connections of a sandbox beyond 4 at a time, and never sends more than the
 limits.
+
+## Copying to the host clipboard
+
+The `wl-copy` stand-in, and `xclip` without `-o`, write the host clipboard
+through the same route, so agents and CLIs that copy a result, a URL or a code
+work in a sandbox created with `clipboard: true`. Copying is how data can leave
+the sandbox without the network, which is why the setting is off by default and
+needs approval.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant C as wl-copy (guest stand-in)
+    participant D as fbkd
+    participant H as wl-copy / xclip / osascript (host)
+
+    A->>C: echo "copied in the sandbox" | wl-copy
+    C->>C: Check the marker, read stdin up to 1 MiB
+    C->>D: copy text <length> and the text
+    D->>D: Check the copy label, the rate limit,<br/>the length and that the text is UTF-8
+    D->>H: Set the clipboard to the text
+    D-->>C: ok 0
+```
+
+```text
+agent@sandbox:~$ echo "copied in the sandbox" | wl-copy
+agent@sandbox:~$ wl-copy "argument text"
+agent@sandbox:~$ wl-copy --type image/png < chart.png
+agent@sandbox:~$ xclip -selection clipboard -i < notes.txt
+```
+
+The stand-ins support `wl-copy [--type|-t <text/plain|text/plain;charset=utf-8|
+image/png>] [text...]`, which copies its arguments joined by spaces or else its
+stdin, and `xclip -selection clipboard|c [-i] [-t <UTF8_STRING|STRING|
+text/plain|image/png>]`. They return once `fbkd` has set the host clipboard,
+instead of forking to serve it like the real tools. `fbkd` reads at most the
+length the request names, which may be no more than the limit, sets text as
+UTF-8 text and PNG data only when it starts with the PNG signature, and sets the
+clipboard with `wl-copy` on Wayland, `xclip -i` on X11 and an AppleScript fed to
+`osascript` on macOS. It doesn't wait for the child that `wl-copy` and `xclip`
+leave behind to serve the clipboard.
+
+Only sandboxes with the `firebrick.clipboard.copy=true` label can copy. `fbkd`
+adds it next to `firebrick.clipboard` to sandboxes created with the setting, so
+a sandbox created before copying existed, whose user approved pasting only,
+stays paste-only until it's recreated; `fbk network` and `fbk upgrade` keep its
+labels. `fbkd` takes at most 10 copies per sandbox within 10 seconds, so a loop
+in the guest can't keep overwriting the user's clipboard.
+
+| Situation                                                          | Exit status | Message on stderr                                                                                                           |
+| ------------------------------------------------------------------ | ----------- | --------------------------------------------------------------------------------------------------------------------------- |
+| The sandbox was created without `clipboard: true`                  | 1           | `wl-copy: clipboard sharing is off for this sandbox; set clipboard: true in .firebrick.yml and recreate the sandbox`        |
+| The sandbox was created before copying existed                     | 1           | `wl-copy: this sandbox was created before copying to the host clipboard was supported; recreate the sandbox to copy`        |
+| `fbkd` doesn't answer within 5 seconds                             | 1           | `wl-copy: couldn't reach the host clipboard`                                                                                |
+| The host clipboard can't be written                                | 1           | `wl-copy: the host clipboard isn't available`, with a hint when `fbkd` has no display or no tool; `fbkd` logs why at `warn` |
+| Text over 1 MiB or a PNG over 10 MiB                               | 1           | `wl-copy: the content is larger than <limit>`                                                                               |
+| Text that isn't UTF-8, or `image/png` without the PNG signature    | 1           | `wl-copy: the content isn't valid <UTF-8 text\|image/png>`                                                                  |
+| More than 10 copies within 10 seconds                              | 1           | `wl-copy: too many copies; try again later`                                                                                 |
+| Another type, `-selection primary`, or another flag like `--clear` | 2           | A usage line naming the supported forms                                                                                     |
+
+In each case the host clipboard is unchanged.

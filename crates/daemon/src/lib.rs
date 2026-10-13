@@ -8,6 +8,7 @@ pub mod netlog;
 pub mod network;
 pub mod open;
 pub mod pull;
+mod rate_limit;
 pub mod runtime;
 pub mod sandboxes;
 pub mod secrets;

@@ -21,7 +21,7 @@ use crate::api::{
     UpgradeSandboxRequest, sandbox_management_service_client::SandboxManagementServiceClient,
     start_sandbox_response, upgrade_sandbox_response,
 };
-use crate::approval::{Approver, Settings};
+use crate::approval::{Approver, Clipboard, Settings};
 use crate::progress::{MiseProgressView, PullProgressView};
 use crate::table;
 
@@ -260,7 +260,7 @@ fn new_sandbox_settings(request: &StartSandboxRequest, network: NetworkSpec) -> 
     Settings {
         mounts: request.mounts.iter().map(MountSpec::from).collect(),
         network,
-        clipboard: request.clipboard.unwrap_or(false),
+        clipboard: Clipboard::shared(request.clipboard.unwrap_or(false)),
     }
 }
 
@@ -1825,7 +1825,7 @@ mod tests {
         let settings = new_sandbox_settings(&request, NetworkSpec::default());
 
         assert_eq!(request.clipboard, Some(true));
-        assert!(settings.clipboard);
+        assert_eq!(settings.clipboard, Clipboard::Both);
     }
 
     #[test]

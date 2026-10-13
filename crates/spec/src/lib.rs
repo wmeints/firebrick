@@ -115,7 +115,8 @@ pub struct SandboxSpec {
         skip_serializing_if = "Option::is_none"
     )]
     pub mounts: Option<Vec<MountSpec>>,
-    /// Whether programs in the sandbox can read the host clipboard. Defaults to `false`.
+    /// Whether programs in the sandbox can read and write the host clipboard. Defaults to
+    /// `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clipboard: Option<bool>,
 }

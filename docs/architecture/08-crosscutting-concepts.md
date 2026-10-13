@@ -101,16 +101,22 @@ so `fbk` can't assume what was approved before.
 Mounts and network rules are compared as sets, and a missing `enabled` equals
 `enabled: true`. When the settings differ, `fbk` prints each added (`+`) or
 removed (`-`) mount and rule, each changed (`~`) network switch and `+
-clipboard: shared with the host` or `- clipboard: shared with the host` on
-stderr, then asks `Apply these changes? [y/N]`. Only `y` or `yes` approves; any
-other answer, or EOF, aborts before the sandbox is created or `UpdateNetwork` is
-sent, and `fbk network` keeps its edit to the file. Without a terminal on stdin
-the command fails unless `--yes` is passed, which approves without asking but
-still prints the difference. Approved settings are recorded, so the next command
-with the same settings doesn't ask. `fbk network` records the section it sends
-and keeps the approved mounts and clipboard setting. `approved.yml` leaves out a
-`clipboard` that is off, and a file without the field loads with it off, so
-files of older versions keep working both ways.
+clipboard: shared with the host, both ways` or `- clipboard: shared with the
+host, both ways` on stderr, then asks `Apply these changes? [y/N]`. Only `y` or
+`yes` approves; any other answer, or EOF, aborts before the sandbox is created
+or `UpdateNetwork` is sent, and `fbk network` keeps its edit to the file.
+Without a terminal on stdin the command fails unless `--yes` is passed, which
+approves without asking but still prints the difference. Approved settings are
+recorded, so the next command with the same settings doesn't ask. `fbk network`
+records the section it sends and keeps the approved mounts and clipboard
+setting. `approved.yml` stores the approved clipboard as a mode, `both` for
+`clipboard: true`, and leaves it out when it's off, so a file without the field
+loads with it off. Files from before the sandbox could copy store `clipboard:
+true`, which loads as the mode `paste`: what the user approved changed, so the
+next `fbk start` of such a workspace asks again, with `- clipboard: shared with
+the host, paste only` and `+ clipboard: shared with the host, both ways`. Older
+`fbk` versions can't read a file that stores `clipboard: both`, and fail with
+`isn't a valid approvals file` instead of treating it as approved.
 
 `approved.yml` is written with mode `0600` through a temp file and a rename,
 with `firebrick_utils::write_private`, which `secrets.yml` uses too. The CLI

@@ -230,7 +230,7 @@ C4Component
     System_Ext(editors, "settings.json", "VS Code-family user settings")
     System_Ext(zedsettings, "zed/settings.json", "Zed user settings")
     System_Ext(browser, "xdg-open / open", "Host browser")
-    System_Ext(hostclip, "wl-paste / xclip / pbpaste", "Host clipboard")
+    System_Ext(hostclip, "wl-paste / wl-copy / xclip / pbpaste / osascript", "Host clipboard")
 
     Rel(main, runtime, "Ensures runtime")
     Rel(main, ssh, "Ensures keys")
@@ -255,7 +255,7 @@ C4Component
     Rel(sandboxes, clipboard, "Adds vsock routes, listens for clipboard requests")
     Rel(clipboard, vsock, "Binds and removes sockets")
     Rel(clipboard, utils, "Finds socket directory")
-    Rel(clipboard, hostclip, "Reads the clipboard")
+    Rel(clipboard, hostclip, "Reads and writes the clipboard")
     Rel(sandboxes, ssh, "Host names, SSH config")
     Rel(sandboxes, vscode, "Syncs Remote-SSH platforms")
     Rel(sandboxes, zed, "Syncs remote projects")
@@ -400,15 +400,16 @@ C4Component
   creates a sandbox with `clipboard` set listens for its clipboard first, and
   fails with `FAILED_PRECONDITION` naming `XDG_RUNTIME_DIR` when it can't, so an
   approved setting never silently does nothing. It gives the sandbox the
-  `firebrick.clipboard=true` label, and the shared builder chain adds the vsock
-  route and marker of `clipboard` to every sandbox with that label, so the
-  setting survives `UpdateNetwork` and `UpgradeSandbox`. A sandbox without the
-  label gets neither. `sandboxes` makes `clipboard` listen for such a sandbox
-  the same way as for its network log, and `RemoveSandbox` deletes its clipboard
-  socket. `SandboxManager::network_activity` returns a sandbox's record from
-  `netlog` with its rules from the `firebrick.network` label
-  (`network::rules_of`), `FAILED_PRECONDITION` when the sandbox has no network
-  log route, or `INTERNAL` when its record can't be read.
+  `firebrick.clipboard=true` label, and the `firebrick.clipboard.copy=true`
+  label that lets it copy, and the shared builder chain adds the vsock route and
+  marker of `clipboard` to every sandbox with the first label, so the setting
+  survives `UpdateNetwork` and `UpgradeSandbox`. A sandbox without the label
+  gets neither. `sandboxes` makes `clipboard` listen for such a sandbox the same
+  way as for its network log, and `RemoveSandbox` deletes its clipboard socket.
+  `SandboxManager::network_activity` returns a sandbox's record from `netlog`
+  with its rules from the `firebrick.network` label (`network::rules_of`),
+  `FAILED_PRECONDITION` when the sandbox has no network log route, or `INTERNAL`
+  when its record can't be read.
 - `pull` - Turns microsandbox's `PullProgress` events into pull updates: it adds
   up the downloaded bytes per layer, takes the total from the manifest, and
   reports at most one update every 100 ms, one for each layer that finishes and
@@ -543,11 +544,13 @@ C4Component
   for can't be read or is corrupt. `NetLogs::remove` stops the listener, waits
   until it can't write anymore, and then deletes the socket and the record, so a
   removed sandbox's record can't come back.
-- `clipboard` - Answers the `wl-paste` and `xclip` stand-ins of a sandbox
-  created with `clipboard: true` with the host clipboard (see
-  [ADR 0048](decisions/0048-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)
+- `clipboard` - Answers the `wl-paste`, `wl-copy` and `xclip` stand-ins of a
+  sandbox created with `clipboard: true` with the host clipboard, and sets it to
+  what they copy (see
+  [ADR 0048](decisions/0048-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md),
+  [Pasting from the host clipboard](06-runtime-view.md#pasting-from-the-host-clipboard)
   and
-  [Pasting from the host clipboard](06-runtime-view.md#pasting-from-the-host-clipboard)).
+  [Copying to the host clipboard](06-runtime-view.md#copying-to-the-host-clipboard)).
   `Clipboards::add_route` adds a stream route from guest vsock port `52001` to
   `$XDG_RUNTIME_DIR/firebrick/clipboard/<sandbox>.sock`, or on macOS without
   `XDG_RUNTIME_DIR` to `/private/tmp/fbkc-<uid>/<sandbox>.sock`, and the
@@ -555,23 +558,34 @@ C4Component
   `/.msb/scripts/firebrick-clipboard`, so the stand-ins can tell a sandbox
   without the setting from an `fbkd` that doesn't answer. The socket directory
   gets the same checks as the network log's, through `vsock`. Each connection
-  carries one request line, `types`, `text` or `png`, of at most 16 bytes, sent
-  within 5 seconds, and gets `ok <length>` with the content, or `empty`,
-  `too-large`, `unavailable <cause>` or `invalid`. The cause is `no-display`,
-  `no-tool` or `failed`, so the stand-ins can give a hint; the reason itself
-  stays in `fbkd`'s log. A sandbox gets at most 4 connections at a time; further
-  ones are closed. `fbkd` sends at most 1 MiB of text and 10 MiB of PNG, also
-  when the `HostClipboard` returns more. `HostTools`, the `HostClipboard` of
-  `fbkd`, lists the clipboard's types and then reads the requested one with
-  `wl-paste` when `WAYLAND_DISPLAY` is set, otherwise with `xclip` when
-  `DISPLAY` is, and with `osascript` and `pbpaste` on macOS
-  (`HostTools::from_env`). It runs them with `tokio::process`, without a shell,
-  stops reading past the limit, and kills them after 4 seconds. A tool that
-  reports an empty clipboard means `empty`; no display, a missing tool and any
-  other failure mean `unavailable` with their cause, logged at `warn` with the
-  reason, at most once a minute per sandbox. `Clipboards::listen` fails when the
-  sandbox has no socket path or the socket can't be bound, and `sandboxes` then
-  refuses to create a sandbox with the setting. The unit tests pass a fake
+  carries one request line, `types`, `text`, `png`, or `copy text <length>` or
+  `copy png <length>` followed by the content, of at most 32 bytes, sent within
+  5 seconds, and gets `ok <length>` with the content, or `empty`, `too-large`,
+  `unavailable <cause>`, `invalid`, `bad-content`, `busy` or `denied`. A copy is
+  `denied` unless `listen` was told the sandbox has the copy label, `busy` past
+  10 copies within 10 seconds (the `RateLimit` of `rate_limit`, which `open`
+  shares), `too-large` when its length is over the limit, before `fbkd` reads
+  the content, and `bad-content` when text isn't UTF-8 or a PNG lacks the PNG
+  signature; `fbkd` waits at most 5 seconds for the content and sets nothing
+  when it doesn't all arrive. The cause is `no-display`, `no-tool` or `failed`,
+  so the stand-ins can give a hint; the reason itself stays in `fbkd`'s log. A
+  sandbox gets at most 4 connections at a time; further ones are closed. `fbkd`
+  sends at most 1 MiB of text and 10 MiB of PNG, also when the `HostClipboard`
+  returns more. `HostTools`, the `HostClipboard` of `fbkd`, lists the
+  clipboard's types and then reads the requested one with `wl-paste` when
+  `WAYLAND_DISPLAY` is set, otherwise with `xclip` when `DISPLAY` is, and with
+  `osascript` and `pbpaste` on macOS (`HostTools::from_env`). It writes it by
+  feeding the content to `wl-copy --type <type>`, `xclip -selection clipboard -t
+  <target> -i`, or on macOS an AppleScript with the content as hex data to
+  `osascript -`, with stdout and stderr going nowhere, because `wl-copy` and
+  `xclip` leave a child behind that serves the clipboard and would hold the
+  pipes open. It runs the tools with `tokio::process`, without a shell, stops
+  reading past the limit, and kills them after 4 seconds. A tool that reports an
+  empty clipboard means `empty`; no display, a missing tool and any other
+  failure mean `unavailable` with their cause, logged at `warn` with the reason,
+  at most once a minute per sandbox. `Clipboards::listen` fails when the sandbox
+  has no socket path or the socket can't be bound, and `sandboxes` then refuses
+  to create a sandbox with the setting. The unit tests pass a fake
   `HostClipboard`; `tests/host_tools.rs` runs `HostTools::new` against stub
   tools on a `PATH` of its own, in a test binary of its own, because a process
   spawned in the unit tests can briefly hold the port of a listener that a
@@ -774,18 +788,24 @@ images. It builds on `ubuntu:26.04` and adds:
   FIFO is missing or no relay reads it within 5 seconds, it exits 1 and prints
   `firebrick-open: couldn't reach the host; open this URL yourself: <url>`. See
   [Opening a URL on the host](06-runtime-view.md#opening-a-url-on-the-host).
-- `/usr/local/bin/firebrick-paste` - a stand-in for `wl-paste` and `xclip`,
-  symlinked under both names, from `image/firebrick-paste`. It's a Python script
-  that reads the host clipboard's text and PNG content from `fbkd` over vsock
-  port `52001` in sandboxes created with `clipboard: true`, and behaves like the
-  tool it's called as: `wl-paste [--no-newline|-n] [--type|-t <type>]`,
-  `wl-paste --list-types|-l` and `xclip -selection clipboard|c -o [-t
-  <target>]`, for `text/plain`, `UTF8_STRING`, `STRING`, `image/png` and
-  `TARGETS`. Other forms exit 2 with a usage line. Without the
+- `/usr/local/bin/firebrick-clipboard` - a stand-in for `wl-paste`, `wl-copy`
+  and `xclip`, symlinked under all three names, from
+  `image/firebrick-clipboard`. It's a Python script that reads and writes the
+  host clipboard's text and PNG content through `fbkd` over vsock port `52001`
+  in sandboxes created with `clipboard: true`, and behaves like the tool it's
+  called as: `wl-paste [--no-newline|-n] [--type|-t <type>]`, `wl-paste
+  --list-types|-l`, `xclip -selection clipboard|c -o [-t <target>]`, `wl-copy
+  [--type|-t <type>] [text...]` and `xclip -selection clipboard|c [-i] [-t
+  <target>]`, for `text/plain`, `UTF8_STRING`, `STRING`, `image/png` and, when
+  pasting, `TARGETS`. The copy forms read at most the limit plus one byte of
+  stdin, so they can refuse larger content themselves, and return once `fbkd`
+  has set the clipboard. Other forms exit 2 with a usage line. Without the
   `/.msb/scripts/firebrick-clipboard` marker it exits 1 and says that sharing is
   off; when `fbkd` doesn't answer within 5 seconds, it exits 1 with `couldn't
   reach the host clipboard`. See
-  [Pasting from the host clipboard](06-runtime-view.md#pasting-from-the-host-clipboard).
+  [Pasting from the host clipboard](06-runtime-view.md#pasting-from-the-host-clipboard)
+  and
+  [Copying to the host clipboard](06-runtime-view.md#copying-to-the-host-clipboard).
 - `/usr/local/sbin/firebrick-netlog` - the network logger, a Python script that
   runs as root. It runs two `tcpdump`s on the interface of the default route:
   one for outgoing UDP datagrams and TCP SYNs, and one for the answers of DNS

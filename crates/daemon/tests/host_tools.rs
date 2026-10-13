@@ -1,5 +1,5 @@
-//! Tests for reading the host clipboard with `HostTools`, against stub `wl-paste` and `xclip`
-//! scripts instead of a real desktop.
+//! Tests for reading and writing the host clipboard with `HostTools`, against stub `wl-paste`,
+//! `wl-copy` and `xclip` scripts instead of a real desktop.
 //!
 //! They spawn processes, so they live in a test binary of their own: in the unit tests a forked
 //! child can briefly hold the port of a listener another test just closed.
@@ -153,4 +153,108 @@ async fn a_tool_that_hangs_is_given_up_on() {
     let kinds = tools(Desktop::Wayland, dir.path()).kinds().await;
 
     assert_eq!(cause(kinds), Cause::Failed);
+}
+
+/// A stub copy tool that records its arguments in `args` and its stdin in `copied`, next to
+/// itself.
+const RECORD_COPY: &str = r#"dir=$(dirname "$0")
+echo "$*" > "$dir/args"
+cat > "$dir/copied""#;
+
+/// Returns the arguments and stdin that the stub in `dir` recorded.
+fn recorded(dir: &Path) -> (String, Vec<u8>) {
+    let args = std::fs::read_to_string(dir.join("args")).unwrap();
+
+    (
+        args.trim_end().to_string(),
+        std::fs::read(dir.join("copied")).unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn wl_copy_writes_text_and_png() {
+    let dir = stubs(&[("wl-copy", RECORD_COPY)]);
+    let tools = tools(Desktop::Wayland, dir.path());
+
+    tools.write(Kind::Text, b"hello".to_vec()).await.unwrap();
+    let text = recorded(dir.path());
+    tools.write(Kind::Png, b"\x89PNG".to_vec()).await.unwrap();
+    let png = recorded(dir.path());
+
+    assert_eq!(
+        text,
+        (
+            "--type text/plain;charset=utf-8".to_string(),
+            b"hello".to_vec()
+        )
+    );
+    assert_eq!(png, ("--type image/png".to_string(), b"\x89PNG".to_vec()));
+}
+
+#[tokio::test]
+async fn xclip_writes_text_and_png() {
+    let dir = stubs(&[("xclip", RECORD_COPY)]);
+    let tools = tools(Desktop::X11, dir.path());
+
+    tools.write(Kind::Text, b"hello".to_vec()).await.unwrap();
+    let text = recorded(dir.path());
+    tools.write(Kind::Png, b"\x89PNG".to_vec()).await.unwrap();
+    let png = recorded(dir.path());
+
+    assert_eq!(
+        text,
+        (
+            "-selection clipboard -t UTF8_STRING -i".to_string(),
+            b"hello".to_vec()
+        )
+    );
+    assert_eq!(
+        png,
+        (
+            "-selection clipboard -t image/png -i".to_string(),
+            b"\x89PNG".to_vec()
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_copy_tool_that_leaves_a_child_serving_the_clipboard_returns_at_once() {
+    // Like wl-copy and xclip, the stub exits once it read its input and leaves a child behind
+    // that keeps the stdout and stderr it inherited open.
+    let dir = stubs(&[("wl-copy", "cat > /dev/null; sleep 30 & exit 0")]);
+    let started = std::time::Instant::now();
+
+    let written = tools(Desktop::Wayland, dir.path())
+        .write(Kind::Text, b"hello".to_vec())
+        .await;
+
+    assert_eq!(written, Ok(()));
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+}
+
+#[tokio::test]
+async fn a_failing_copy_tool_is_reported_as_unavailable() {
+    let dir = stubs(&[("wl-copy", "cat > /dev/null; exit 1")]);
+
+    let written = tools(Desktop::Wayland, dir.path())
+        .write(Kind::Text, b"hello".to_vec())
+        .await;
+
+    assert_eq!(cause(written), Cause::Failed);
+}
+
+#[tokio::test]
+async fn copying_without_a_tool_or_a_display_is_reported_as_such() {
+    let empty = TempDir::new().unwrap();
+    let missing = HostTools::new(
+        Some(Desktop::Wayland),
+        Some(empty.path().as_os_str().into()),
+    );
+    let no_display = HostTools::new(None, None);
+
+    let missing = missing.write(Kind::Text, b"hi".to_vec()).await;
+    let no_display = no_display.write(Kind::Text, b"hi".to_vec()).await;
+
+    assert_eq!(cause(missing), Cause::NoTool);
+    assert_eq!(cause(no_display), Cause::NoDisplay);
 }
