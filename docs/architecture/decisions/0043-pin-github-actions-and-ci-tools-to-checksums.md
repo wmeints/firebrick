@@ -61,6 +61,9 @@ checked against known checksums either.
   spans three platforms.
 - `core:rust` lock entries record only the version; rustup verifies the
   toolchain itself.
-- Repository settings that also block this, such as requiring SHA-pinned actions
-  and a protected environment for the `publish` job, live outside the
-  repository.
+- The repository requires SHA-pinned actions, and the `image` and `publish` jobs
+  wait for approval in a `release` environment that crates.io Trusted Publishing
+  requires. These settings live outside the repository; the Supply chain section
+  of the [deployment view](../07-deployment-view.md#supply-chain) lists them,
+  and [ADR 0045](0045-approve-publishing-in-a-release-environment.md) explains
+  them.

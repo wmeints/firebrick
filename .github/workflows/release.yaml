@@ -88,6 +88,8 @@ jobs:
     name: Publish firebrick-base image
     # Publish the image only once every package has built, so a failed build pushes nothing.
     needs: package
+    # The release environment waits for a required reviewer, so a compromised action can't push without approval.
+    environment: release
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -123,6 +125,8 @@ jobs:
     name: Publish crates to crates.io
     # Publish only once the packages and the image succeed, so a failed build publishes no crate.
     needs: [package, image]
+    # crates.io accepts only OIDC tokens with the release environment claim, which a job gets after approval.
+    environment: release
     runs-on: ubuntu-latest
     permissions:
       contents: read
