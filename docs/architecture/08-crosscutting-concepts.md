@@ -1,5 +1,10 @@
 # Crosscutting concepts
 
+The [threat model](concepts/threat-model.md) describes the assets, adversaries,
+trust boundaries and invariants behind the security concepts below. Update it
+with every new channel between the guest and the host, spec setting or host
+file.
+
 ## Error reporting in the daemon
 
 The daemon doesn't send the errors of microsandbox, the secret store or the SSH
