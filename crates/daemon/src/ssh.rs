@@ -4,6 +4,7 @@
 //! name at `fbk ssh-proxy`, which tunnels the connection through the daemon socket to the
 //! SSH server microsandbox runs for the sandbox. No sshd, TCP port or DNS record is involved.
 
+use crate::atomic_file;
 use anyhow::{Context, Result};
 use microsandbox::sandbox::SandboxHandle;
 use russh::keys::ssh_key::LineEnding;
@@ -156,9 +157,10 @@ fn render_config(hostnames: &[String], ssh_dir: &Path, cli: &Path) -> String {
 fn ensure_include(user_config: &Path, include: &Path) -> Result<()> {
     let include_line = format!("Include \"{}\"", include.display());
 
+    // A symlink to a missing file is an error, so the rename doesn't replace the link.
     let existing = match fs::read_to_string(user_config) {
         Ok(content) => content,
-        Err(err) if err.kind() == ErrorKind::NotFound => {
+        Err(err) if err.kind() == ErrorKind::NotFound && !user_config.is_symlink() => {
             if let Some(dir) = user_config.parent() {
                 fs::create_dir_all(dir)?;
                 fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
@@ -172,8 +174,7 @@ fn ensure_include(user_config: &Path, include: &Path) -> Result<()> {
         return Ok(());
     }
 
-    // Write in place rather than renaming, so a symlinked config (dotfiles) stays a symlink.
-    write_file(user_config, &format!("{include_line}\n\n{existing}"))
+    atomic_file::write(user_config, &format!("{include_line}\n\n{existing}"), 0o600)
         .with_context(|| format!("failed to update {}", user_config.display()))
 }
 
@@ -293,6 +294,75 @@ mod tests {
                 .unwrap()
                 .starts_with("Include \"/data/firebrick/ssh/config\"\n")
         );
+    }
+
+    #[test]
+    fn failed_write_leaves_config_unchanged() {
+        let dir = TempDir::new().unwrap();
+        let ssh_dir = dir.path().join(".ssh");
+        let user_config = ssh_dir.join("config");
+
+        fs::create_dir_all(&ssh_dir).unwrap();
+        fs::write(&user_config, "Host github.com\n").unwrap();
+        // A directory without write permission fails the write, like a full disk would.
+        fs::set_permissions(&ssh_dir, fs::Permissions::from_mode(0o500)).unwrap();
+
+        let result = ensure_include(&user_config, Path::new("/data/firebrick/ssh/config"));
+
+        fs::set_permissions(&ssh_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(&user_config).unwrap(),
+            "Host github.com\n"
+        );
+    }
+
+    #[test]
+    fn symlinked_config_stays_symlink() {
+        let dir = TempDir::new().unwrap();
+        let dotfiles = dir.path().join("dotfiles/ssh_config");
+        let user_config = dir.path().join(".ssh/config");
+
+        fs::create_dir_all(dotfiles.parent().unwrap()).unwrap();
+        fs::create_dir_all(user_config.parent().unwrap()).unwrap();
+        fs::write(&dotfiles, "Host github.com\n").unwrap();
+        std::os::unix::fs::symlink(&dotfiles, &user_config).unwrap();
+
+        ensure_include(&user_config, Path::new("/data/firebrick/ssh/config")).unwrap();
+
+        assert!(user_config.is_symlink());
+        assert!(
+            fs::read_to_string(&dotfiles)
+                .unwrap()
+                .starts_with("Include \"/data/firebrick/ssh/config\"\n")
+        );
+    }
+
+    #[test]
+    fn dangling_symlink_is_left_alone() {
+        let dir = TempDir::new().unwrap();
+        let user_config = dir.path().join(".ssh/config");
+
+        fs::create_dir_all(user_config.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("missing"), &user_config).unwrap();
+
+        assert!(ensure_include(&user_config, Path::new("/data/firebrick/ssh/config")).is_err());
+        assert!(user_config.is_symlink());
+    }
+
+    #[test]
+    fn existing_config_keeps_mode() {
+        let dir = TempDir::new().unwrap();
+        let user_config = dir.path().join(".ssh/config");
+
+        fs::create_dir_all(user_config.parent().unwrap()).unwrap();
+        fs::write(&user_config, "Host github.com\n").unwrap();
+        fs::set_permissions(&user_config, fs::Permissions::from_mode(0o640)).unwrap();
+
+        ensure_include(&user_config, Path::new("/data/firebrick/ssh/config")).unwrap();
+
+        let mode = fs::metadata(&user_config).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o640);
     }
 
     #[test]
