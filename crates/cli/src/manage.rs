@@ -932,14 +932,11 @@ fn default_name(working_dir: &Path, legacy_exists: bool) -> String {
 }
 
 /// Loads the spec file from the working directory, or returns `None` when there isn't one.
+/// Fails when it is a symlink.
 fn read_spec_file(working_dir: &Path) -> Result<Option<SandboxSpec>> {
-    let spec_path = working_dir.join(SPEC_FILE_NAME);
-
-    if !spec_path.is_file() {
-        return Ok(None);
-    }
-
-    Ok(Some(firebrick_spec::from_file(&spec_path)?))
+    Ok(firebrick_spec::from_file(
+        &working_dir.join(SPEC_FILE_NAME),
+    )?)
 }
 
 /// Names the sandbox `firebrick-` followed by the first 6 hex digits of the SHA-256 hash of
@@ -990,6 +987,7 @@ fn format_status(status: SandboxStatus) -> String {
 mod tests {
     use super::*;
     use crate::fake_daemon::{self, OTHER_WORKSPACE};
+    use crate::symlinked_spec;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1247,6 +1245,26 @@ mod tests {
         let result = resolve_spec(dir.path(), &mut unreachable_client()).await;
 
         assert!(result.is_err());
+    }
+
+    async fn assert_resolve_refuses_symlink(content: Option<&str>) {
+        let (dir, _target) = symlinked_spec::workspace(content);
+
+        let err = resolve_spec(dir.path(), &mut unreachable_client())
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), symlinked_spec::SYMLINK_ERROR);
+    }
+
+    #[tokio::test]
+    async fn symlinked_spec_file_returns_error() {
+        assert_resolve_refuses_symlink(Some("name: dev\n")).await;
+    }
+
+    #[tokio::test]
+    async fn dangling_symlinked_spec_file_returns_error() {
+        assert_resolve_refuses_symlink(None).await;
     }
 
     #[tokio::test]

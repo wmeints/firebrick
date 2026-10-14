@@ -11,6 +11,8 @@ pub mod progress;
 pub mod secret;
 pub mod session;
 pub mod ssh;
+#[cfg(test)]
+mod symlinked_spec;
 pub mod table;
 pub mod validate;
 
