@@ -102,10 +102,17 @@
 - **A shared clipboard crosses the sandbox boundary:** in a sandbox created with
   `clipboard: true`, any process can read the host clipboard through `fbkd` at
   any time, without the user noticing, including passwords and tokens the user
-  copied for something else. `fbkd` reads it only when asked and caps each
-  answer at 1 MiB of text or 10 MiB of PNG, but doesn't ask the user before each
-  paste. The setting is off by default and needs approval, and the route only
-  exists in sandboxes created with it
+  copied for something else. It can also overwrite the host clipboard, which is
+  a way for data to leave the sandbox without the network, past the egress
+  rules: whatever the user pastes next on the host, into a chat, a document or
+  another project, is what the agent copied. The copied content may also be
+  crafted to do harm where it's pasted, such as a shell command that differs
+  from the one the user expects. `fbkd` reads and writes the clipboard only when
+  asked, caps each answer and each copy at 1 MiB of text or 10 MiB of PNG, and
+  takes at most 10 copies per sandbox within 10 seconds, but doesn't ask the
+  user before each paste or copy, nor shows a notification. The setting is off
+  by default and needs approval, and the route only exists in sandboxes created
+  with it
   ([ADR 0048](decisions/0048-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)).
 - **Workspace files can run code on the host:** the workspace is mounted
   read/write, so the agent can plant files that run on the host when the user

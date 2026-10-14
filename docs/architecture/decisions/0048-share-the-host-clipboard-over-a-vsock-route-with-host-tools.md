@@ -8,9 +8,11 @@ Accepted
 
 Programs in a sandbox can't read the host's clipboard. Text pastes through the
 terminal, but tools that read the clipboard themselves, such as Claude Code's
-image paste, run `wl-paste` or `xclip`, and the guest has no display server. A
-shared clipboard is a way for data to cross the sandbox boundary, so it has to
-be off by default and approved like `mounts` and `network`
+image paste, run `wl-paste` or `xclip`, and the guest has no display server.
+Likewise, agents and CLIs that copy a result, a URL or a code to the clipboard
+with `wl-copy` or `xclip -i` fail. A shared clipboard is a way for data to cross
+the sandbox boundary, so it has to be off by default and approved like `mounts`
+and `network`
 ([ADR 0037](0037-approve-mounts-and-network-changes-in-the-spec.md)), because
 the agent can edit `.firebrick.yml`.
 
@@ -45,11 +47,11 @@ clipboard:
 
 - **Opt-in setting.** `.firebrick.yml` gets a top-level `clipboard` boolean,
   `false` when absent. `fbk start` and `fbk run` add it to the approved settings
-  in `approved.yml` and list `+ clipboard: shared with the host` or `-
-  clipboard: shared with the host` when it differs. `approved.yml` leaves the
-  field out while it's off, so older `fbk` versions can still read the file.
-  `StartSandboxRequest` carries it as `optional bool clipboard`, applied when
-  the sandbox is created.
+  in `approved.yml` and list `+ clipboard: shared with the host, both ways` or
+  `- clipboard: shared with the host, both ways` when it differs. `approved.yml`
+  leaves the field out while it's off, so older `fbk` versions can still read
+  the file. `StartSandboxRequest` carries it as `optional bool clipboard`,
+  applied when the sandbox is created.
 - **Label, route and marker.** A sandbox created with the setting gets the
   `firebrick.clipboard=true` label. `SandboxSettings::builder` reads the label,
   so created, network-updated and upgraded sandboxes all get a stream route from
@@ -67,9 +69,9 @@ clipboard:
   gets `ok <length>` and the content, or one of `empty`, `too-large`,
   `unavailable <cause>` and `invalid`. The cause, `no-display`, `no-tool` or
   `failed`, lets the stand-ins give a hint, without sending the guest the host
-  tools' messages. `fbkd` reads at most 16 bytes of the request, waits at most 5
-  seconds for it, accepts at most 4 connections per sandbox at a time and sends
-  at most 1 MiB of text or 10 MiB of PNG.
+  tools' messages. `fbkd` reads at most 32 bytes of the request line, waits at
+  most 5 seconds for it, accepts at most 4 connections per sandbox at a time and
+  sends at most 1 MiB of text or 10 MiB of PNG.
 - **Host tools.** `HostTools` reads the clipboard only when a stand-in asks: on
   macOS with `osascript -e 'clipboard info'`, `pbpaste` and `osascript` for
   `«class PNGf»`; on Linux with `wl-paste` when `WAYLAND_DISPLAY` is set and
@@ -77,19 +79,42 @@ clipboard:
   reading their output past the limit, kills them after 4 seconds, and logs why
   the clipboard isn't available at `warn`, at most once a minute per sandbox.
   The `HostClipboard` trait lets the tests use a fake clipboard.
-- **Stand-ins.** The `firebrick-base` image installs `image/firebrick-paste`, a
-  Python script, as `/usr/local/bin/wl-paste` and `/usr/local/bin/xclip`. It
-  supports the paste forms of both tools for text and PNG on the clipboard
-  selection, uses the marker to say that sharing is off, and gives up after 5
-  seconds.
+- **Stand-ins.** The `firebrick-base` image installs
+  `image/firebrick-clipboard`, a Python script, as `/usr/local/bin/wl-paste`,
+  `/usr/local/bin/wl-copy` and `/usr/local/bin/xclip`. It supports the paste and
+  copy forms of the tools for text and PNG on the clipboard selection, uses the
+  marker to say that sharing is off, and gives up after 5 seconds. The copy
+  forms return once `fbkd` has set the clipboard instead of forking to serve it.
+- **Copying.** The same setting shares the clipboard both ways; separate
+  switches per direction would be more to approve for little gain. A stand-in
+  sends `copy text <length>` or `copy png <length>` and the content, and gets
+  `ok 0`, `too-large`, `bad-content`, `busy`, `denied` or `unavailable <cause>`.
+  `fbkd` refuses a length over 1 MiB of text or 10 MiB of PNG before reading the
+  content, waits at most 5 seconds for it, sets text only when it's UTF-8 and
+  PNG data only when it starts with the PNG signature, and takes at most 10
+  copies per sandbox within 10 seconds, the rate limit pattern of the URL relay,
+  so a loop can't keep overwriting the user's clipboard. `HostTools` feeds the
+  content to `wl-copy`, `xclip -i`, or on macOS an AppleScript with the content
+  as hex data to `osascript`, and doesn't wait for the child that `wl-copy` and
+  `xclip` leave behind to serve the clipboard.
+- **Approving copying.** Sandboxes created before copying existed have the
+  route, but their users approved pasting only. New sandboxes with the setting
+  also get the `firebrick.clipboard.copy=true` label, and `fbkd` denies copies
+  from a sandbox without it, so older sandboxes stay paste-only until they're
+  recreated. `approved.yml` stores the approved clipboard as a mode, `both`, and
+  reads the `true` of older files as `paste`, so a workspace that approved
+  pasting is asked once more before its next sandbox can copy.
 
 ## Consequences
 
 - Programs in a sandbox with the setting can paste text and PNG images from the
   host clipboard, including Claude Code's image paste.
+- Programs in such a sandbox can copy text and PNG images to the host clipboard.
 - Any process in such a sandbox can read the host clipboard whenever it wants,
-  without the user noticing, including passwords the user copied. The setting is
-  off by default and needs approval, and the user docs warn about this.
+  without the user noticing, including passwords the user copied, and overwrite
+  it, which is a way for data to leave the sandbox past the egress rules and for
+  crafted content to reach where the user pastes next. The setting is off by
+  default and needs approval, and the user docs warn about this.
 - The host needs `wl-clipboard` on Wayland or `xclip` on X11. Without them, or
   when `fbkd` was started without a display, for example from an SSH session,
   the stand-ins report that the host clipboard isn't available and `fbkd` logs
@@ -97,5 +122,6 @@ clipboard:
 - Changing the setting takes `fbk rm --force && fbk start`, like `mounts`.
 - Sandboxes on images older than the release that adds the stand-ins don't have
   them, and get the real tools' absence.
-- Copying from the sandbox to the host can reuse the route, the protocol and the
-  setting.
+- Workspaces that approved the setting before copying existed are asked again,
+  and an `approved.yml` that stores `clipboard: both` can't be read by older
+  `fbk` versions.

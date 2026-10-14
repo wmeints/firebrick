@@ -19,7 +19,7 @@ use firebrick_daemon::api::{
     StopSandboxRequest, UpdateNetworkRequest, UpgradeSandboxRequest, UpgradeSandboxResponse,
     attach_request, attach_response, start_sandbox_response, upgrade_sandbox_response,
 };
-use firebrick_daemon::clipboard::{self, Cause, HostClipboard, HostError, Kind};
+use firebrick_daemon::clipboard::{self, Cause, Clipboards, HostClipboard, HostError, Kind};
 use firebrick_daemon::open::{self, Opener};
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{mise, netlog, sandboxes, server};
@@ -87,9 +87,10 @@ enum FakeContent {
 }
 
 /// A host clipboard whose content the test sets, so the tests don't need a display. It starts
-/// [`FakeContent::Full`].
+/// [`FakeContent::Full`], and records what the sandbox copies.
 struct FakeClipboard {
     content: Mutex<FakeContent>,
+    written: Mutex<Vec<(Kind, Vec<u8>)>>,
 }
 
 impl FakeClipboard {
@@ -120,6 +121,15 @@ impl HostClipboard for FakeClipboard {
                 Err(HostError::Unavailable(cause, "fake".to_string()))
             }
         }
+    }
+
+    async fn write(&self, kind: Kind, content: Vec<u8>) -> Result<(), HostError> {
+        if let FakeContent::Unavailable(cause) = self.content() {
+            return Err(HostError::Unavailable(cause, "fake".to_string()));
+        }
+
+        self.written.lock().unwrap().push((kind, content));
+        Ok(())
     }
 }
 
@@ -171,6 +181,7 @@ impl TestDaemon {
         let opener = Arc::new(RecordingOpener::default());
         let clipboard = Arc::new(FakeClipboard {
             content: Mutex::new(FakeContent::Full),
+            written: Mutex::new(Vec::new()),
         });
         let service = server::FirebrickServer::new(secrets, opener.clone(), clipboard.clone());
 
@@ -194,6 +205,11 @@ impl TestDaemon {
     /// Sets what the daemon's fake host clipboard holds.
     fn set_clipboard(&self, content: FakeContent) {
         *self.clipboard.content.lock().unwrap() = content;
+    }
+
+    /// Returns what the sandboxes copied to the daemon's fake host clipboard, in order.
+    fn copied(&self) -> Vec<(Kind, Vec<u8>)> {
+        self.clipboard.written.lock().unwrap().clone()
     }
 
     async fn client(&self) -> SandboxManagementServiceClient<Channel> {
@@ -3860,17 +3876,19 @@ fn has_clipboard_route(name: &str, spec: &SandboxSpec) -> bool {
 const PYTHON_IMAGE: &str = "python:3.13-slim-trixie";
 
 /// The stand-in of the `firebrick-base` image.
-const PASTE_STAND_IN: &[u8] = include_bytes!("../../../image/firebrick-paste");
+const CLIPBOARD_STAND_IN: &[u8] = include_bytes!("../../../image/firebrick-clipboard");
 
-/// Installs the stand-in as `wl-paste` and `xclip`, like the `firebrick-base` image does.
-async fn install_paste_stand_in(sb: &Sandbox) {
-    let script = "cat > /usr/local/bin/firebrick-paste \
-        && chmod 755 /usr/local/bin/firebrick-paste \
-        && ln -sf firebrick-paste /usr/local/bin/wl-paste \
-        && ln -sf firebrick-paste /usr/local/bin/xclip";
+/// Installs the stand-in as `wl-paste`, `wl-copy` and `xclip`, like the `firebrick-base` image
+/// does.
+async fn install_clipboard_stand_in(sb: &Sandbox) {
+    let script = "cat > /usr/local/bin/firebrick-clipboard \
+        && chmod 755 /usr/local/bin/firebrick-clipboard \
+        && ln -sf firebrick-clipboard /usr/local/bin/wl-paste \
+        && ln -sf firebrick-clipboard /usr/local/bin/wl-copy \
+        && ln -sf firebrick-clipboard /usr/local/bin/xclip";
     let output = sb
         .exec_with("sh", |exec| {
-            exec.args(["-c", script]).stdin_bytes(PASTE_STAND_IN)
+            exec.args(["-c", script]).stdin_bytes(CLIPBOARD_STAND_IN)
         })
         .await
         .expect("failed to install the stand-in");
@@ -3901,7 +3919,7 @@ fn pasted(stdout: &[u8]) -> Pasted {
 }
 
 /// Creates a sandbox from [`PYTHON_IMAGE`] with the clipboard setting and the stand-in.
-async fn start_paste_sandbox(
+async fn start_clipboard_sandbox(
     client: &mut SandboxManagementServiceClient<Channel>,
     name: &str,
     clipboard: bool,
@@ -3918,7 +3936,7 @@ async fn start_paste_sandbox(
         .connect()
         .await
         .expect("failed to connect to the sandbox");
-    install_paste_stand_in(&sb).await;
+    install_clipboard_stand_in(&sb).await;
 
     sb
 }
@@ -3930,7 +3948,7 @@ async fn stand_ins_paste_the_host_clipboard_in_a_sandbox_with_the_setting() {
 
     let daemon = TestDaemon::start("clipboard").await;
     let mut client = daemon.client().await;
-    let sb = start_paste_sandbox(&mut client, name, true).await;
+    let sb = start_clipboard_sandbox(&mut client, name, true).await;
     let (spec, label) = (sandbox_spec(name).await, firebrick_labels(name).await);
 
     let mut pastes = Vec::new();
@@ -3948,11 +3966,201 @@ async fn stand_ins_paste_the_host_clipboard_in_a_sandbox_with_the_setting() {
     assert!(has_clipboard_route(name, &spec));
     let expected: Vec<Pasted> = PASTES.iter().map(|(_, out)| pasted(out)).collect();
     assert_eq!(pastes, expected);
-    let usage = "xclip: only these forms are supported: xclip -selection clipboard|c -o \
-                 [-t UTF8_STRING|STRING|text/plain|image/png|TARGETS]\n";
-    assert_eq!(primary, (2, vec![], usage.to_string()));
+    assert_eq!(primary, (2, vec![], XCLIP_USAGE.to_string()));
     let message = "wl-paste: couldn't reach the host clipboard\n";
     assert_eq!(unreachable, (1, vec![], message.to_string()));
+}
+
+/// What `xclip` prints for a form the stand-in doesn't support.
+const XCLIP_USAGE: &str = "xclip: only these forms are supported: xclip -selection clipboard|c \
+                           -o [-t UTF8_STRING|STRING|text/plain|image/png|TARGETS], or xclip \
+                           -selection clipboard|c [-i] [-t UTF8_STRING|STRING|text/plain|\
+                           image/png]\n";
+
+/// What `wl-copy` prints for a form the stand-in doesn't support.
+const WL_COPY_USAGE: &str = "wl-copy: only these forms are supported: wl-copy [--type|-t \
+                             text/plain|text/plain;charset=utf-8|image/png] [text...]\n";
+
+/// Runs the shell command in the sandbox with the input on its stdin, without a terminal.
+async fn copy(sb: &Sandbox, command: &str, input: &[u8]) -> Pasted {
+    let output = sb
+        .exec_with("sh", |exec| {
+            exec.args(["-c", command]).stdin_bytes(input.to_vec())
+        })
+        .await
+        .expect("failed to run the stand-in");
+
+    (
+        output.status().code,
+        output.stdout_bytes().to_vec(),
+        String::from_utf8_lossy(output.stderr_bytes()).into_owned(),
+    )
+}
+
+/// The stand-in commands that copy, their input, and what they set the host clipboard to.
+const COPIES: [(&str, &[u8], Kind, &[u8]); 6] = [
+    (
+        "wl-copy",
+        b"copied in the sandbox\n",
+        Kind::Text,
+        b"copied in the sandbox\n",
+    ),
+    ("wl-copy argument text", b"", Kind::Text, b"argument text"),
+    (
+        "wl-copy --type image/png",
+        CLIPBOARD_PNG,
+        Kind::Png,
+        CLIPBOARD_PNG,
+    ),
+    ("xclip -selection clipboard", b"notes", Kind::Text, b"notes"),
+    (
+        "xclip -selection clipboard -i -t UTF8_STRING",
+        "héllo".as_bytes(),
+        Kind::Text,
+        "héllo".as_bytes(),
+    ),
+    (
+        "xclip -selection c -t image/png",
+        CLIPBOARD_PNG,
+        Kind::Png,
+        CLIPBOARD_PNG,
+    ),
+];
+
+#[tokio::test]
+async fn stand_ins_copy_to_the_host_clipboard_in_a_sandbox_with_the_setting() {
+    let name: &str = &sandbox_name("clipboard-copy");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("clipboard-copy").await;
+    let mut client = daemon.client().await;
+    let sb = start_clipboard_sandbox(&mut client, name, true).await;
+    let labels = firebrick_labels(name).await;
+
+    let mut copies = Vec::new();
+    for (command, input, _, _) in COPIES {
+        copies.push(copy(&sb, command, input).await);
+    }
+    let copied = daemon.copied();
+    daemon.stop().await;
+    let unreachable = copy(&sb, "wl-copy", b"text").await;
+    remove_sandbox(name).await;
+
+    let copy_label = (clipboard::COPY_LABEL.to_string(), "true".to_string());
+    assert!(labels.contains(&copy_label), "{labels:?}");
+    assert_eq!(copies, vec![pasted(b""); COPIES.len()]);
+    let expected: Vec<(Kind, Vec<u8>)> = COPIES
+        .iter()
+        .map(|(_, _, kind, content)| (*kind, content.to_vec()))
+        .collect();
+    assert_eq!(copied, expected);
+    let message = "wl-copy: couldn't reach the host clipboard\n";
+    assert_eq!(unreachable, (1, vec![], message.to_string()));
+}
+
+#[tokio::test]
+async fn sandbox_created_before_copying_can_paste_but_not_copy_after_fbkd_restarts() {
+    let name: &str = &sandbox_name("clipboard-paste-only");
+    remove_sandbox(name).await;
+    // Like a sandbox fbkd created with `clipboard: true` before copying existed: the clipboard
+    // label, route and marker, but no copy label.
+    let routes = Clipboards::from_env(Arc::new(FakeClipboard {
+        content: Mutex::new(FakeContent::Empty),
+        written: Mutex::new(Vec::new()),
+    }));
+    let builder = Sandbox::builder(name)
+        .image(PYTHON_IMAGE)
+        .label(clipboard::ENABLED_LABEL, "true");
+    let sb = routes
+        .add_route(builder, name)
+        .detached(true)
+        .create()
+        .await
+        .expect("failed to create a paste-only sandbox");
+    install_clipboard_stand_in(&sb).await;
+
+    let daemon = TestDaemon::start_restoring_listeners("clipboard-paste-only").await;
+    let copy_attempt = copy(&sb, "wl-copy", b"text").await;
+    let pasted_text = paste(&sb, "wl-paste --no-newline").await;
+    let copied = daemon.copied();
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    let message = "wl-copy: this sandbox was created before copying to the host clipboard was \
+                   supported; recreate the sandbox to copy\n";
+    assert_eq!(copy_attempt, (1, vec![], message.to_string()));
+    assert_eq!(pasted_text, pasted(CLIPBOARD_TEXT));
+    assert!(copied.is_empty(), "{copied:?}");
+}
+
+/// The stand-in commands that can't copy, their input, and what they exit with and print.
+const COPY_ERRORS: [(&str, &[u8], i32, &str); 7] = [
+    // The stand-in stops reading at the limit, so the content comes from a pipe in the
+    // guest that may be left unread.
+    (
+        "head -c 1048577 /dev/zero | wl-copy",
+        b"",
+        1,
+        "wl-copy: the content is larger than 1 MiB\n",
+    ),
+    (
+        "head -c 10485761 /dev/zero | wl-copy -t image/png",
+        b"",
+        1,
+        "wl-copy: the content is larger than 10 MiB\n",
+    ),
+    (
+        "wl-copy",
+        b"\xff\xfe",
+        1,
+        "wl-copy: the content isn't valid UTF-8 text\n",
+    ),
+    (
+        "xclip -selection clipboard -t image/png",
+        b"GIF89a",
+        1,
+        "xclip: the content isn't valid image/png\n",
+    ),
+    ("wl-copy --clear", b"", 2, WL_COPY_USAGE),
+    ("wl-copy --type image/jpeg", b"", 2, WL_COPY_USAGE),
+    ("xclip -selection primary -i", b"text", 2, XCLIP_USAGE),
+];
+
+#[tokio::test]
+async fn stand_ins_report_what_keeps_them_from_copying() {
+    let name: &str = &sandbox_name("clipboard-copy-errors");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("clipboard-copy-errors").await;
+    let mut client = daemon.client().await;
+    let sb = start_clipboard_sandbox(&mut client, name, true).await;
+    let mut errors = Vec::new();
+    for (command, input, _, _) in COPY_ERRORS {
+        errors.push(copy(&sb, command, input).await);
+    }
+    daemon.set_clipboard(FakeContent::Unavailable(Cause::Failed));
+    let unavailable = copy(&sb, "wl-copy", b"text").await;
+    daemon.set_clipboard(FakeContent::Full);
+    // More copies than fbkd takes within its window, counting the ones above that reached it.
+    let flood = "for i in 1 2 3 4 5 6 7 8 9 10 11; do echo $i | wl-copy; done";
+    let (_, _, flooded) = copy(&sb, flood, b"").await;
+    let copied = daemon.copied();
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    let expected: Vec<Pasted> = COPY_ERRORS
+        .iter()
+        .map(|(_, _, status, message)| (*status, vec![], message.to_string()))
+        .collect();
+    assert_eq!(errors, expected);
+    let message = "wl-copy: the host clipboard isn't available\n";
+    assert_eq!(unavailable, (1, vec![], message.to_string()));
+    let busy = "wl-copy: too many copies; try again later";
+    assert!(!flooded.is_empty(), "every copy of the flood was taken");
+    assert!(flooded.lines().all(|line| line == busy), "{flooded}");
+    assert!(copied.len() <= clipboard::MAX_COPIES, "{}", copied.len());
 }
 
 /// The stand-in commands that paste the [`FakeClipboard`], and what they print.
@@ -3983,12 +4191,14 @@ async fn sandbox_without_the_setting_has_no_clipboard_route() {
 
     let daemon = TestDaemon::start("clipboard-off").await;
     let mut client = daemon.client().await;
-    let sb = start_paste_sandbox(&mut client, name, false).await;
+    let sb = start_clipboard_sandbox(&mut client, name, false).await;
     let (spec, labels) = (sandbox_spec(name).await, firebrick_labels(name).await);
 
     let off = paste(&sb, "wl-paste").await;
+    let copy_off = copy(&sb, "wl-copy", b"text").await;
     // Root in the guest can't ask fbkd either: the sandbox has no route to it.
     let direct = paste(&sb, ASK_FBKD_DIRECTLY).await;
+    let copied = daemon.copied();
 
     daemon.stop().await;
     remove_sandbox(name).await;
@@ -3999,6 +4209,9 @@ async fn sandbox_without_the_setting_has_no_clipboard_route() {
     assert!(!labeled, "{labels:?}");
     assert!(!has_clipboard_route(name, &spec));
     assert_eq!(off, (1, vec![], OFF_MESSAGE.to_string()));
+    let copy_off_message = OFF_MESSAGE.replacen("wl-paste", "wl-copy", 1);
+    assert_eq!(copy_off, (1, vec![], copy_off_message));
+    assert!(copied.is_empty(), "{copied:?}");
     assert_eq!(
         (direct.0, direct.1.as_slice()),
         (1, &b"connection failed"[..]),
@@ -4059,7 +4272,7 @@ async fn stand_ins_report_what_keeps_them_from_pasting() {
 
     let daemon = TestDaemon::start("clipboard-errors").await;
     let mut client = daemon.client().await;
-    let sb = start_paste_sandbox(&mut client, name, true).await;
+    let sb = start_clipboard_sandbox(&mut client, name, true).await;
     let mut errors = Vec::new();
     for (content, command, _) in PASTE_ERRORS {
         daemon.set_clipboard(content);

@@ -44,12 +44,12 @@ refuses to replace an existing file; `fbk init --force` overwrites it.
 | `mounts[].host`     | Host directory: absolute, `~/...`, `~user/...` or relative to the spec. | Required per mount                          |
 | `mounts[].guest`    | Absolute guest path to mount it at. Each path may appear only once.     | Required per mount                          |
 | `mounts[].readonly` | Mount the directory read-only.                                          | `false`                                     |
-| `clipboard`         | Let programs in the sandbox read the host clipboard.                    | `false`                                     |
+| `clipboard`         | Let programs in the sandbox read and write the host clipboard.          | `false`                                     |
 
 When you set `resources`, set both `cpu` and `memory`. The `network` and `ports`
 fields are described in [Networking](/docs/networking/), and `image` and `init`
 in [Custom images](/docs/custom-images/), and `clipboard` in
-[Pasting from the host clipboard](#pasting-from-the-host-clipboard).
+[Sharing the host clipboard](#sharing-the-host-clipboard).
 
 Firebrick rejects fields it doesn't know, so a typo such as `memroy` is an error
 rather than a setting that's silently ignored. Check the file with `fbk
@@ -126,7 +126,7 @@ $ fbk start
   + mount /home/me -> /mnt/home (read/write)
   ~ network.enforce: true -> false
   + network.allow: *.attacker.example
-  + clipboard: shared with the host
+  + clipboard: shared with the host, both ways
 Apply these changes? [y/N] n
 Error: aborted: the changes to mounts, network and clipboard in .firebrick.yml weren't approved
 ```
@@ -198,28 +198,36 @@ terminal, for example in CI, `fbk start` prints `Installing mise tools...` and
 mise's error and the sandbox keeps running, so you can connect and fix the
 config. Images without mise skip this step. Set `mise: false` to turn it off.
 
-## Pasting from the host clipboard
+## Sharing the host clipboard
 
-The sandbox has no display, so programs that read the clipboard themselves, such
-as Claude Code when you paste an image, can't reach it. Pasting text into the
-terminal works without this setting. To share the host clipboard with the
-sandbox, set `clipboard`:
+The sandbox has no display, so programs that use the clipboard themselves, such
+as Claude Code when you paste an image, or a CLI that copies a URL or a code,
+can't reach it. Pasting text into the terminal works without this setting. To
+share the host clipboard with the sandbox, both ways, set `clipboard`:
 
 ```yaml
 name: my-project
 clipboard: true
 ```
 
-**Any process in the sandbox can read your clipboard.** While `clipboard` is on,
-the agent and every program it runs can read your host clipboard at any time,
-without asking, including passwords and tokens you copied for something else.
-Only turn it on for projects whose agent you'd trust with what you copy.
+**Any process in the sandbox can read and overwrite your clipboard.** While
+`clipboard` is on, the agent and every program it runs can read your host
+clipboard at any time, without asking, including passwords and tokens you copied
+for something else. They can also replace what's on it, so what you paste next
+on the host, into a chat, a document or a terminal, may be something the agent
+put there: data leaving the sandbox past your network rules, or a command other
+than the one you copied. Only turn it on for projects whose agent you'd trust
+with what you copy and paste.
 
 `fbk start` asks you to approve the setting before it creates the sandbox, like
-mounts (see [Approving settings changes](#approving-settings-changes)). It
-applies when the sandbox is created, so recreate an existing one with `fbk rm
---force && fbk start`. In the `firebrick-base` image, `wl-paste` and `xclip`
-then read the host clipboard's text and PNG images:
+mounts (see [Approving settings changes](#approving-settings-changes)). It lists
+it as `+ clipboard: shared with the host, both ways`. If you approved
+`clipboard: true` before Firebrick could copy to the host clipboard, `fbk` asks
+once more, because what the setting allows changed. The setting applies when the
+sandbox is created, so recreate an existing one with `fbk rm --force && fbk
+start`. In the `firebrick-base` image, `wl-paste` and `xclip -o` then read the
+host clipboard's text and PNG images, and `wl-copy` and `xclip` without `-o`
+write them:
 
 ```console
 agent@sandbox:~$ wl-paste --list-types
@@ -228,23 +236,30 @@ image/png
 agent@sandbox:~$ wl-paste --no-newline
 hello from the host
 agent@sandbox:~$ xclip -selection clipboard -t image/png -o > shot.png
+agent@sandbox:~$ echo "copied in the sandbox" | wl-copy
+agent@sandbox:~$ wl-copy --type image/png < chart.png
+agent@sandbox:~$ xclip -selection clipboard -i < notes.txt
 ```
 
 They support `wl-paste [--no-newline|-n] [--type|-t <type>]`, `wl-paste
---list-types|-l` and `xclip -selection clipboard|c -o [-t <target>]`, for text
-and `image/png`. Only pasting from the clipboard works: copying into it, the
-primary selection and other types don't. Text is limited to 1 MiB and images to
-10 MiB.
+--list-types|-l`, `xclip -selection clipboard|c -o [-t <target>]`, `wl-copy
+[--type|-t <type>] [text...]` and `xclip -selection clipboard|c [-i] [-t
+<target>]`, for text and `image/png`. `wl-copy` copies its arguments, or else
+its input. The primary selection, other types and options such as `wl-copy
+--clear` don't work. Text is limited to 1 MiB and images to 10 MiB, text you
+copy must be UTF-8 and images PNG, and a sandbox can copy at most 10 times
+within 10 seconds. A sandbox created before copying was supported can only
+paste: `wl-copy` asks you to recreate it.
 
-`fbkd` reads the clipboard with `wl-paste` on Wayland, `xclip` on X11, and
-`pbpaste` and `osascript` on macOS, so install `wl-clipboard` or `xclip` on
-Linux. It uses the display of the terminal where you first ran `fbk`. When `fbk`
-started it from an SSH session without a display, `wl-paste` in the sandbox
-prints `the host clipboard isn't available; fbkd has no display`; stop `fbkd`
-and run `fbk` from your desktop. On Linux, `fbkd` needs `XDG_RUNTIME_DIR` set to
-a private directory for the clipboard; without it, `fbk start` refuses to create
-a sandbox with `clipboard: true`. In a sandbox without the setting, `wl-paste`
-prints `clipboard sharing is off for this sandbox`.
+`fbkd` uses the clipboard with `wl-paste` and `wl-copy` on Wayland, `xclip` on
+X11, and `pbpaste` and `osascript` on macOS, so install `wl-clipboard` or
+`xclip` on Linux. It uses the display of the terminal where you first ran `fbk`.
+When `fbk` started it from an SSH session without a display, `wl-paste` in the
+sandbox prints `the host clipboard isn't available; fbkd has no display`; stop
+`fbkd` and run `fbk` from your desktop. On Linux, `fbkd` needs `XDG_RUNTIME_DIR`
+set to a private directory for the clipboard; without it, `fbk start` refuses to
+create a sandbox with `clipboard: true`. In a sandbox without the setting,
+`wl-paste` and `wl-copy` print `clipboard sharing is off for this sandbox`.
 
 ## Docker data disk
 

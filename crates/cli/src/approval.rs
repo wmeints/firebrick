@@ -5,7 +5,8 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use firebrick_spec::{MountSpec, NetworkRule, NetworkSpec};
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -28,8 +29,63 @@ const CHANGES_HEADER: &str =
 const FIRST_HEADER: &str = ".firebrick.yml sets mounts, network or clipboard settings you haven't \
                             approved for this workspace yet:";
 
-/// The line that describes the clipboard setting.
-const CLIPBOARD_LINE: &str = "clipboard: shared with the host";
+/// How a sandbox shares the host clipboard.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Clipboard {
+    /// Not at all.
+    #[default]
+    Off,
+    /// The sandbox can read the host clipboard. Approvals files from before copying existed
+    /// store it as `clipboard: true`; `fbk` no longer requests it.
+    Paste,
+    /// The sandbox can read and write the host clipboard.
+    Both,
+}
+
+impl Clipboard {
+    /// Returns the mode of the `clipboard` setting in `.firebrick.yml`, which shares the
+    /// clipboard both ways when it's on.
+    pub fn shared(on: bool) -> Self {
+        if on { Clipboard::Both } else { Clipboard::Off }
+    }
+
+    /// Whether the clipboard isn't shared.
+    fn is_off(&self) -> bool {
+        *self == Clipboard::Off
+    }
+
+    /// Returns the line that describes the mode, or `None` when it's off.
+    fn line(self) -> Option<&'static str> {
+        match self {
+            Clipboard::Off => None,
+            Clipboard::Paste => Some("clipboard: shared with the host, paste only"),
+            Clipboard::Both => Some("clipboard: shared with the host, both ways"),
+        }
+    }
+}
+
+/// Reads the approved clipboard mode, or the boolean of approvals files from before copying
+/// existed, where `true` means paste only.
+fn clipboard_mode<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Clipboard, D::Error> {
+    /// The forms the mode is stored in.
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Stored {
+        Shared(bool),
+        Mode(Clipboard),
+    }
+
+    let stored = Stored::deserialize(deserializer).map_err(|_| {
+        D::Error::custom("invalid clipboard mode; expected off, paste, both, true or false")
+    })?;
+
+    Ok(match stored {
+        Stored::Shared(true) => Clipboard::Paste,
+        Stored::Shared(false) => Clipboard::Off,
+        Stored::Mode(mode) => mode,
+    })
+}
 
 /// The settings of a workspace that need approval.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
@@ -41,10 +97,14 @@ pub struct Settings {
     /// The network section, or its default when the spec has none.
     #[serde(default)]
     pub network: NetworkSpec,
-    /// Whether the sandbox shares the host clipboard. Left out of the file when it's off, so
+    /// How the sandbox shares the host clipboard. Left out of the file when it's off, so
     /// approvals files stay readable by `fbk` versions without the setting.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub clipboard: bool,
+    #[serde(
+        default,
+        deserialize_with = "clipboard_mode",
+        skip_serializing_if = "Clipboard::is_off"
+    )]
+    pub clipboard: Clipboard,
 }
 
 /// Layout of the approvals file.
@@ -226,16 +286,17 @@ pub fn difference(approved: &Settings, requested: &Settings) -> Vec<String> {
     lines
 }
 
-/// Returns a `+` line when the requested settings share the clipboard and the approved ones
-/// don't, and a `-` line the other way round.
-fn clipboard_difference(approved: &Settings, requested: &Settings) -> Option<String> {
-    let sign = match (approved.clipboard, requested.clipboard) {
-        (false, true) => '+',
-        (true, false) => '-',
-        _ => return None,
-    };
+/// Returns, when the clipboard modes differ, a `-` line for the approved mode and a `+` line
+/// for the requested one, leaving out a mode that is off.
+fn clipboard_difference(approved: &Settings, requested: &Settings) -> Vec<String> {
+    if approved.clipboard == requested.clipboard {
+        return Vec::new();
+    }
 
-    Some(format!("{sign} {CLIPBOARD_LINE}"))
+    let removed = approved.clipboard.line().map(|line| format!("- {line}"));
+    let added = requested.clipboard.line().map(|line| format!("+ {line}"));
+
+    removed.into_iter().chain(added).collect()
 }
 
 /// Returns the lines for the network fields that differ.
@@ -650,24 +711,47 @@ mod tests {
         assert!(difference(&approved, &requested).is_empty());
     }
 
-    fn clipboard(on: bool) -> Settings {
+    fn clipboard(mode: Clipboard) -> Settings {
         Settings {
-            clipboard: on,
+            clipboard: mode,
             ..Settings::default()
         }
     }
 
+    /// Writes an approvals file whose entry for the fixture's workspace has the fields.
+    fn write_entry(fixture: &Fixture, fields: &str) {
+        let workspace = fs::canonicalize(fixture.workspace.path()).unwrap();
+        fs::create_dir_all(fixture.path().parent().unwrap()).unwrap();
+        let content = format!("workspaces:\n  {}:\n{fields}", workspace.display());
+        fs::write(fixture.path(), content).unwrap();
+    }
+
+    #[test]
+    fn the_clipboard_setting_shares_both_ways() {
+        assert_eq!(Clipboard::shared(true), Clipboard::Both);
+        assert_eq!(Clipboard::shared(false), Clipboard::Off);
+    }
+
     #[test]
     fn difference_lists_a_changed_clipboard() {
+        let both = "clipboard: shared with the host, both ways";
+
         assert_eq!(
-            difference(&clipboard(false), &clipboard(true)),
-            ["+ clipboard: shared with the host"]
+            difference(&clipboard(Clipboard::Off), &clipboard(Clipboard::Both)),
+            [format!("+ {both}")]
         );
         assert_eq!(
-            difference(&clipboard(true), &clipboard(false)),
-            ["- clipboard: shared with the host"]
+            difference(&clipboard(Clipboard::Both), &clipboard(Clipboard::Off)),
+            [format!("- {both}")]
         );
-        assert!(difference(&clipboard(true), &clipboard(true)).is_empty());
+        assert_eq!(
+            difference(&clipboard(Clipboard::Paste), &clipboard(Clipboard::Both)),
+            [
+                "- clipboard: shared with the host, paste only".to_string(),
+                format!("+ {both}")
+            ]
+        );
+        assert!(difference(&clipboard(Clipboard::Both), &clipboard(Clipboard::Both)).is_empty());
     }
 
     #[test]
@@ -677,15 +761,18 @@ mod tests {
         let mut prompt = prompt("y\n");
 
         approvals
-            .approve_sandbox(clipboard(true), &mut prompt)
+            .approve_sandbox(clipboard(Clipboard::Both), &mut prompt)
             .unwrap();
 
         assert_eq!(
             printed(&prompt),
             ".firebrick.yml changes settings you haven't approved for this workspace:\n  \
-             + clipboard: shared with the host\nApply these changes? [y/N] "
+             + clipboard: shared with the host, both ways\nApply these changes? [y/N] "
         );
-        assert_eq!(approvals.approved().unwrap(), Some(clipboard(true)));
+        assert_eq!(
+            approvals.approved().unwrap(),
+            Some(clipboard(Clipboard::Both))
+        );
     }
 
     #[test]
@@ -695,7 +782,7 @@ mod tests {
 
         let error = fixture
             .approvals()
-            .approve_sandbox(clipboard(true), &mut prompt)
+            .approve_sandbox(clipboard(Clipboard::Both), &mut prompt)
             .unwrap_err();
 
         assert_eq!(error.to_string(), ABORTED);
@@ -703,9 +790,67 @@ mod tests {
             printed(&prompt),
             ".firebrick.yml sets mounts, network or clipboard settings you haven't approved \
              for this workspace yet:\n  network.enabled: true\n  network.enforce: false\n  \
-             + clipboard: shared with the host\nApply these changes? [y/N] "
+             + clipboard: shared with the host, both ways\nApply these changes? [y/N] "
         );
         assert_eq!(fixture.approvals().approved().unwrap(), None);
+    }
+
+    #[test]
+    fn a_clipboard_approved_before_copying_existed_is_asked_about_again() {
+        let fixture = Fixture::new();
+        write_entry(&fixture, "    clipboard: true\n");
+        let approvals = fixture.approvals();
+        let mut prompt = prompt("y\n");
+
+        approvals
+            .approve_sandbox(clipboard(Clipboard::Both), &mut prompt)
+            .unwrap();
+
+        assert_eq!(
+            printed(&prompt),
+            ".firebrick.yml changes settings you haven't approved for this workspace:\n  \
+             - clipboard: shared with the host, paste only\n  \
+             + clipboard: shared with the host, both ways\nApply these changes? [y/N] "
+        );
+        assert_eq!(
+            approvals.approved().unwrap(),
+            Some(clipboard(Clipboard::Both))
+        );
+        let file = fs::read_to_string(fixture.path()).unwrap();
+        assert!(file.contains("clipboard: both"), "{file}");
+    }
+
+    #[test]
+    fn approvals_file_with_an_unknown_clipboard_mode_is_invalid() {
+        let fixture = Fixture::new();
+        write_entry(&fixture, "    clipboard: always\n");
+
+        let error = fixture.approvals().approved().unwrap_err();
+
+        assert!(
+            format!("{error:#}")
+                .contains("invalid clipboard mode; expected off, paste, both, true or false"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn approvals_file_with_each_clipboard_mode_loads() {
+        let modes = [
+            ("off", Clipboard::Off),
+            ("false", Clipboard::Off),
+            ("paste", Clipboard::Paste),
+            ("both", Clipboard::Both),
+        ];
+
+        for (stored, mode) in modes {
+            let fixture = Fixture::new();
+            write_entry(&fixture, &format!("    clipboard: {stored}\n"));
+
+            let approved = fixture.approvals().approved().unwrap().unwrap();
+
+            assert_eq!(approved.clipboard, mode, "{stored}");
+        }
     }
 
     #[test]
@@ -721,7 +866,7 @@ mod tests {
 
         let approved = fixture.approvals().approved().unwrap().unwrap();
 
-        assert!(!approved.clipboard);
+        assert_eq!(approved.clipboard, Clipboard::Off);
         assert!(approved.network.enforce);
     }
 
@@ -731,11 +876,14 @@ mod tests {
 
         fixture.approvals().record(home_mount()).unwrap();
         let without = fs::read_to_string(fixture.path()).unwrap();
-        fixture.approvals().record(clipboard(true)).unwrap();
+        fixture
+            .approvals()
+            .record(clipboard(Clipboard::Both))
+            .unwrap();
         let with = fs::read_to_string(fixture.path()).unwrap();
 
         assert!(!without.contains("clipboard"), "{without}");
-        assert!(with.contains("clipboard: true"), "{with}");
+        assert!(with.contains("clipboard: both"), "{with}");
     }
 
     #[test]

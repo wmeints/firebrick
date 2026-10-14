@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Stands in for wl-paste and xclip in Firebrick sandboxes, which have no display server.
+"""Stands in for wl-paste, wl-copy and xclip in Firebrick sandboxes, which have no display server.
 
-It reads the host clipboard through fbkd: it connects to vsock port 52001 on the host (CID 2),
-sends one request line, `types`, `text` or `png`, and reads the answer, `ok <length>` followed
-by the content, or `empty`, `too-large`, `unavailable <cause>` or `invalid`. Only sandboxes
-created with `clipboard: true` in .firebrick.yml have the route, and they have the marker
-script that microsandbox mounts at /.msb/scripts/firebrick-clipboard. Installed as
-/usr/local/bin/wl-paste and /usr/local/bin/xclip, it behaves like the tool it's called as.
+It reads and writes the host clipboard through fbkd: it connects to vsock port 52001 on the host
+(CID 2), sends one request line, `types`, `text` or `png` to paste, or `copy text <length>` or
+`copy png <length>` followed by the content to copy, and reads the answer, `ok <length>`
+followed by the content, or `empty`, `too-large`, `unavailable <cause>`, `invalid`,
+`bad-content`, `busy` or `denied`. Only sandboxes created with `clipboard: true` in
+.firebrick.yml have the route, and they have the marker script that microsandbox mounts at
+/.msb/scripts/firebrick-clipboard. Installed as /usr/local/bin/wl-paste, /usr/local/bin/wl-copy
+and /usr/local/bin/xclip, it behaves like the tool it's called as. Unlike the real tools, the
+copy forms return once fbkd has set the host clipboard, instead of forking to serve it.
 """
 
 import os
@@ -20,13 +23,14 @@ TIMEOUT = 5.0
 MARKER = "/.msb/scripts/firebrick-clipboard"
 MAX_HEADER = 64
 
-TEXT_LIMIT = "1 MiB"
-PNG_LIMIT = "10 MiB"
+LIMITS = {"text": 1024 * 1024, "png": 10 * 1024 * 1024}
+LIMIT_NAMES = {"text": "1 MiB", "png": "10 MiB"}
+VALID_NAMES = {"text": "UTF-8 text", "png": "image/png"}
 
 WL_TEXT_TYPES = ("text/plain", "text/plain;charset=utf-8")
 XCLIP_TEXT_TYPES = ("UTF8_STRING", "STRING", "text/plain")
 
-# Hints for the causes fbkd gives when it can't read the host clipboard.
+# Hints for the causes fbkd gives when it can't use the host clipboard.
 UNAVAILABLE_HINTS = {
     "no-display": "; fbkd has no display, so stop it and run fbk from your desktop session",
     "no-tool": "; install wl-clipboard or xclip on the host",
@@ -35,8 +39,10 @@ UNAVAILABLE_HINTS = {
 USAGE = {
     "wl-paste": "wl-paste [--no-newline|-n] [--type|-t text/plain|text/plain;charset=utf-8|"
     "image/png], or wl-paste --list-types|-l",
+    "wl-copy": "wl-copy [--type|-t text/plain|text/plain;charset=utf-8|image/png] [text...]",
     "xclip": "xclip -selection clipboard|c -o [-t UTF8_STRING|STRING|text/plain|image/png|"
-    "TARGETS]",
+    "TARGETS], or xclip -selection clipboard|c [-i] [-t UTF8_STRING|STRING|text/plain|"
+    "image/png]",
 }
 
 
@@ -60,6 +66,14 @@ class Paste:
         self.type_name = type_name
         self.newline = newline
         self.list_format = list_format
+
+
+class Copy:
+    """What to copy: the kind, and the text from the arguments, or `None` to read stdin."""
+
+    def __init__(self, kind, text=None):
+        self.kind = kind
+        self.text = text
 
 
 def wl_paste(args):
@@ -90,10 +104,35 @@ def wl_paste(args):
     raise usage("wl-paste")
 
 
+def wl_copy(args):
+    type_name = None
+    words = []
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg == "--":
+            words += rest
+            break
+        if arg in ("--type", "-t") and rest:
+            type_name = rest.pop(0)
+        elif arg.startswith("--type="):
+            type_name = arg[len("--type="):]
+        elif arg.startswith("-") and arg != "-":
+            raise usage("wl-copy")
+        else:
+            words.append(arg)
+    text = " ".join(words).encode() if words else None
+    if type_name is None or type_name in WL_TEXT_TYPES:
+        return Copy("text", text)
+    if type_name == "image/png":
+        return Copy("png", text)
+    raise usage("wl-copy")
+
+
 def xclip(args):
     selection = "primary"
     output = False
-    target = "UTF8_STRING"
+    target = None
     rest = list(args)
     while rest:
         arg = rest.pop(0)
@@ -101,18 +140,30 @@ def xclip(args):
             selection = rest.pop(0)
         elif arg in ("-o", "-out"):
             output = True
+        elif arg in ("-i", "-in"):
+            pass
         elif arg in ("-t", "-target") and rest:
             target = rest.pop(0)
         else:
             raise usage("xclip")
-    if not output or selection not in ("clipboard", "c"):
+    if selection not in ("clipboard", "c"):
         raise usage("xclip")
+    if not output:
+        return xclip_copy(target)
     if target == "TARGETS":
         return Paste("types", target, list_format="xclip")
-    if target in XCLIP_TEXT_TYPES:
-        return Paste("text", target)
+    if target is None or target in XCLIP_TEXT_TYPES:
+        return Paste("text", target or "UTF8_STRING")
     if target == "image/png":
         return Paste("png", target)
+    raise usage("xclip")
+
+
+def xclip_copy(target):
+    if target is None or target in XCLIP_TEXT_TYPES:
+        return Copy("text")
+    if target == "image/png":
+        return Copy("png")
     raise usage("xclip")
 
 
@@ -136,15 +187,17 @@ def read_header(sock, deadline):
     return header[:-1].decode("ascii", "replace")
 
 
-def ask(request):
-    """Sends the request to fbkd and returns the status and the content, or for a status other
-    than `ok` the rest of its line, such as the cause of `unavailable`."""
-    deadline = time.monotonic() + TIMEOUT
+def ask(request, content=b""):
+    """Sends the request and the content to fbkd and returns the status and the content, or for
+    a status other than `ok` the rest of its line, such as the cause of `unavailable`. fbkd
+    gets TIMEOUT to answer once it has the request and the content, which covers its 4 seconds
+    for the host tool."""
     try:
         with socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM) as sock:
             sock.settimeout(TIMEOUT)
             sock.connect((HOST_CID, PORT))
-            sock.sendall(request.encode() + b"\n")
+            sock.sendall(request.encode() + b"\n" + content)
+            deadline = time.monotonic() + TIMEOUT
             status, _, length = read_header(sock, deadline).partition(" ")
             if status != "ok":
                 return status, length.encode()
@@ -166,6 +219,11 @@ def listing(names, list_format):
     return "".join(f"{name}\n" for name in types).encode()
 
 
+def unavailable(cause):
+    hint = UNAVAILABLE_HINTS.get(cause.decode("ascii", "replace"), "")
+    return Failure(f"the host clipboard isn't available{hint}")
+
+
 def content(paste, status, data):
     if status == "ok" and paste.request == "types":
         names = data.decode("ascii", "replace").split()
@@ -177,12 +235,66 @@ def content(paste, status, data):
     if status == "empty":
         raise Failure(f"the clipboard holds no {paste.type_name}")
     if status == "too-large":
-        limit = PNG_LIMIT if paste.request == "png" else TEXT_LIMIT
+        limit = LIMIT_NAMES["png" if paste.request == "png" else "text"]
         raise Failure(f"the clipboard content is larger than {limit}")
     if status == "unavailable":
-        hint = UNAVAILABLE_HINTS.get(data.decode("ascii", "replace"), "")
-        raise Failure(f"the host clipboard isn't available{hint}")
+        raise unavailable(data)
     raise Failure("couldn't reach the host clipboard")
+
+
+def to_copy(copy):
+    """Returns the content to copy, from the arguments or stdin, refusing it over the limit."""
+    limit = LIMITS[copy.kind]
+    data = copy.text if copy.text is not None else sys.stdin.buffer.read(limit + 1)
+    if len(data) > limit:
+        raise Failure(f"the content is larger than {LIMIT_NAMES[copy.kind]}")
+    return data
+
+
+def copied(copy, status, data):
+    if status == "ok":
+        return
+    if status == "too-large":
+        raise Failure(f"the content is larger than {LIMIT_NAMES[copy.kind]}")
+    if status == "bad-content":
+        raise Failure(f"the content isn't valid {VALID_NAMES[copy.kind]}")
+    if status == "busy":
+        raise Failure("too many copies; try again later")
+    if status == "denied":
+        raise Failure(
+            "this sandbox was created before copying to the host clipboard was supported; "
+            "recreate the sandbox to copy"
+        )
+    if status == "unavailable":
+        raise unavailable(data)
+    raise Failure("couldn't reach the host clipboard")
+
+
+def check_marker():
+    if not os.path.exists(MARKER):
+        raise Failure(
+            "clipboard sharing is off for this sandbox; set clipboard: true in "
+            ".firebrick.yml and recreate the sandbox"
+        )
+
+
+def parse(tool, args):
+    if tool == "xclip":
+        return xclip(args)
+    if tool == "wl-copy":
+        return wl_copy(args)
+    return wl_paste(args)
+
+
+def run(tool, args):
+    """Pastes or copies, and returns what to print."""
+    action = parse(tool, args)
+    check_marker()
+    if isinstance(action, Copy):
+        data = to_copy(action)
+        copied(action, *ask(f"copy {action.kind} {len(data)}", data))
+        return b""
+    return content(action, *ask(action.request))
 
 
 def main():
@@ -190,13 +302,7 @@ def main():
     if tool not in USAGE:
         tool = "wl-paste"
     try:
-        paste = xclip(sys.argv[1:]) if tool == "xclip" else wl_paste(sys.argv[1:])
-        if not os.path.exists(MARKER):
-            raise Failure(
-                "clipboard sharing is off for this sandbox; set clipboard: true in "
-                ".firebrick.yml and recreate the sandbox"
-            )
-        output = content(paste, *ask(paste.request))
+        output = run(tool, sys.argv[1:])
     except Failure as failure:
         print(f"{tool}: {failure}", file=sys.stderr)
         return failure.status

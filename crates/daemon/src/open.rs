@@ -15,11 +15,12 @@
 
 use crate::forward::{CALLBACK_IDLE_TIMEOUT, CallbackForwards, Forwards, SshConnector};
 use crate::network;
+use crate::rate_limit::RateLimit;
 use firebrick_spec::NetworkSpec;
 use firebrick_utils::strip_control;
 use microsandbox::Sandbox;
 use microsandbox::sandbox::exec::{ExecEvent, ExecHandle};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::process::Stdio;
@@ -239,32 +240,6 @@ impl LineSplitter {
     }
 }
 
-/// Allows at most [`MAX_OPENS`] URLs within [`OPEN_WINDOW`].
-#[derive(Debug, Default)]
-struct RateLimit {
-    opened: VecDeque<Instant>,
-}
-
-impl RateLimit {
-    /// Records an open at `now` and returns `true` when the limit allows it.
-    fn allow(&mut self, now: Instant) -> bool {
-        while self
-            .opened
-            .front()
-            .is_some_and(|opened| now.duration_since(*opened) >= OPEN_WINDOW)
-        {
-            self.opened.pop_front();
-        }
-
-        if self.opened.len() >= MAX_OPENS {
-            return false;
-        }
-
-        self.opened.push_back(now);
-        true
-    }
-}
-
 /// Handles the output of the relay of one sandbox. Dropping it closes its callback forwards.
 struct RelayOutput {
     sandbox: String,
@@ -291,7 +266,7 @@ impl RelayOutput {
             opener,
             forwards,
             lines: LineSplitter::default(),
-            limit: RateLimit::default(),
+            limit: RateLimit::new(MAX_OPENS, OPEN_WINDOW),
             stderr: Vec::new(),
         }
     }
@@ -925,18 +900,6 @@ mod tests {
             check("https://github.com@attacker.example/", &network),
             Err(Rejection::NotAllowed)
         );
-    }
-
-    #[test]
-    fn rate_limit_allows_a_burst_then_waits_for_the_window() {
-        let mut limit = RateLimit::default();
-        let start = Instant::now();
-
-        for _ in 0..MAX_OPENS {
-            assert!(limit.allow(start));
-        }
-        assert!(!limit.allow(start + OPEN_WINDOW / 2));
-        assert!(limit.allow(start + OPEN_WINDOW));
     }
 
     #[tokio::test]
