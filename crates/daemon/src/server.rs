@@ -1721,6 +1721,20 @@ mod tests {
         results.into_iter().for_each(assert_invalid_image);
     }
 
+    #[tokio::test]
+    async fn upgrade_accepts_an_empty_image_as_the_default() {
+        let request = UpgradeSandboxRequest {
+            name: format!("fbk-unit-{}-empty-image", std::process::id()),
+            image: String::new(),
+        };
+
+        // The checks passed when the upgrade starts streaming; the stream itself would report
+        // that the sandbox doesn't exist.
+        let result = name_server().upgrade_sandbox(Request::new(request)).await;
+
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
     fn assert_invalid_image(result: Result<(), Status>) {
         let status = result.unwrap_err();
 

@@ -719,13 +719,19 @@ impl Visitor<'_> for SandboxNameVisitor {
     }
 }
 
-/// An image reference that microsandbox can't pull.
-#[derive(Error, Debug, Clone, PartialEq, Eq)]
+/// An image reference that microsandbox can't pull, with the reason the OCI grammar gives.
+#[derive(Error, Debug, PartialEq, Eq)]
 #[error(
-    "invalid image {0:?}: use an OCI reference such as `ubuntu:24.04` or \
-     `ghcr.io/org/image:tag`, with a lowercase repository name"
+    "invalid image {image:?}: {source}; use an OCI reference such as `ubuntu:24.04` or \
+     `ghcr.io/org/image:tag`"
 )]
-pub struct InvalidImage(pub String);
+pub struct InvalidImage {
+    /// The refused reference.
+    pub image: String,
+    /// What is wrong with it. Its messages hold no input, so the error stays safe to show.
+    #[source]
+    pub source: oci_spec::distribution::ParseError,
+}
 
 /// Checks an image reference with the OCI reference grammar that microsandbox parses it with:
 /// an optional registry, a lowercase repository name, and an optional tag and digest. A valid
@@ -733,7 +739,10 @@ pub struct InvalidImage(pub String);
 pub fn validate_image(image: &str) -> Result<(), InvalidImage> {
     oci_spec::distribution::Reference::try_from(image)
         .map(drop)
-        .map_err(|_| InvalidImage(image.to_string()))
+        .map_err(|source| InvalidImage {
+            image: image.to_string(),
+            source,
+        })
 }
 
 /// Deserializes an optional image reference, rejecting one [`validate_image`] refuses.
@@ -762,7 +771,12 @@ impl<'de> Visitor<'de> for ImageVisitor {
         deserializer.deserialize_str(self)
     }
 
+    /// An empty image means the default image, like a missing one.
     fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        if value.is_empty() {
+            return Ok(None);
+        }
+
         validate_image(value).map_err(E::custom)?;
         Ok(Some(value.to_string()))
     }
@@ -1325,7 +1339,6 @@ pub mod tests {
     #[test]
     fn invalid_image_returns_diagnostic() {
         let images = [
-            "\"\"",
             "Ubuntu:24.04",
             "ubuntu:24.04 latest",
             "\"ubuntu\\e]0;pwned\\a\"",
@@ -1370,10 +1383,31 @@ pub mod tests {
     }
 
     #[test]
-    fn null_image_means_no_image() {
-        let spec = from_str("name: dev\nimage: ~\n").unwrap();
+    fn null_or_empty_image_means_no_image() {
+        for image in ["~", "\"\""] {
+            let spec = from_str(&format!("name: dev\nimage: {image}\n")).unwrap();
 
-        assert!(spec.image.is_none());
+            assert!(spec.image.is_none(), "{image:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_image_diagnostic_says_what_is_wrong() {
+        // 40 hex digits pass the reference format, but a sha256 digest has 64.
+        let image = format!("ubuntu@sha256:{}", "a".repeat(40));
+
+        let diagnostic = from_str(&format!("name: dev\nimage: {image}\n"))
+            .unwrap_err()
+            .diagnostic()
+            .unwrap();
+
+        assert_eq!(
+            diagnostic.message,
+            format!(
+                "image: invalid image {image:?}: invalid checksum digest length; use an OCI \
+                 reference such as `ubuntu:24.04` or `ghcr.io/org/image:tag`"
+            )
+        );
     }
 
     #[test]

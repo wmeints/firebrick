@@ -230,7 +230,9 @@ are closed (ADR 0044, ADR 0050):
   and `server` checks the image of every `StartSandbox` and `UpgradeSandbox`
   request with `INVALID_ARGUMENT` before it reaches a status message, such as
   `image ... doesn't exist`, or a log line. An empty image means the default
-  image.
+  image, in the spec and in a request. The error names the image escaped with
+  `{:?}` and the reason oci-spec gives, such as `invalid checksum digest
+  length`.
 
 ## Securing the daemon socket
 

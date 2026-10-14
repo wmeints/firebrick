@@ -51,13 +51,15 @@ contains only ASCII letters, digits, `.`, `-` and `_`, such as `my-project` or
 `My.App_2`. This is the rule microsandbox uses, and Firebrick checks it before
 the name is used, because the daemon names files after the sandbox.
 
-The `image` is an OCI image reference: an optional registry with a port, a
-repository name in lowercase letters, digits, `.`, `-`, `_` and `/`, then an
-optional `:tag` and an optional `@sha256:<digest>`, such as `ubuntu:24.04`,
-`localhost:5000/my-sandbox:dev` or `ghcr.io/wmeints/firebrick-base:v0.1.0`. A
-tag may also hold uppercase letters. Firebrick checks the reference with the
-grammar microsandbox pulls images with, so `fbk validate` reports an image
-microsandbox can't use.
+The `image` is an OCI image reference: an optional registry host with an
+optional `:port`, a repository name in lowercase letters, digits, `.`, `-`, `_`
+and `/`, then an optional `:tag` and an optional `@<algorithm>:<digest>`, such
+as `ubuntu:24.04`, `localhost:5000/my-sandbox:dev`,
+`ghcr.io/wmeints/firebrick-base:v0.1.0` or `alpine@sha256:<digest>`. A tag may
+also hold uppercase letters. An empty `image` means the default image, like a
+missing one. Firebrick checks the reference with the grammar microsandbox pulls
+images with, so `fbk validate` reports an image microsandbox can't use, and says
+what is wrong with it.
 
 When you set `resources`, set both `cpu` and `memory`. The `network` and `ports`
 fields are described in [Networking](/docs/networking/), and `image` and `init`
