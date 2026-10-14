@@ -68,8 +68,8 @@ scope:
 - A sandbox, or a repository's `.firebrick.yml`, that widens its own access
   without the user's approval.
 - Another local user who can use your daemon, sandboxes, secrets or keys.
-- Flaws in the release artifacts: the binaries, the install scripts and the
-  `firebrick-base` image.
+- Flaws in the release artifacts: the release archives and their checksums, the
+  install instructions in the docs and the `firebrick-base` image.
 
 These are out of scope:
 
@@ -77,7 +77,8 @@ These are out of scope:
 - Escapes from libkrun, the guest kernel or microsandbox itself, unless
   firebrick configures them in a weaker way than their defaults. Report those to
   the [microsandbox](https://github.com/superradcompany/microsandbox) project.
-- What the agent does inside the guest, including becoming root through `sudo`.
+- What the agent does inside the guest, including becoming root through `sudo`
+  or Docker.
 - Misuse of access the user granted, such as an allowed host, a mounted
   directory, a secret for its allowed hosts or the shared clipboard.
 - Windows, which has no release yet.

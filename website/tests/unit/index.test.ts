@@ -29,6 +29,10 @@ test("the home page links to the repository and the releases", () => {
   );
 });
 
+test("the footer links to the page on reporting security issues", () => {
+  expect(html).toContain('href="/docs/security/"');
+});
+
 test("the documentation cards link to their docs pages", async () => {
   const container = await AstroContainer.create();
   const cards = await container.renderToString(Documentation);
