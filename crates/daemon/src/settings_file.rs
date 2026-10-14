@@ -3,6 +3,7 @@
 //! Shared by the editor modules that keep sandbox hosts in an editor's user settings. Edits go
 //! through `jsonc-parser`'s CST, so comments and formatting stay as the user wrote them.
 
+use crate::atomic_file;
 use jsonc_parser::ParseOptions;
 use jsonc_parser::cst::CstObject;
 use std::fs;
@@ -78,36 +79,11 @@ pub(crate) fn key_count(object: &CstObject, key: &str) -> usize {
         .count()
 }
 
-/// Writes a temporary file next to the settings file and renames it, so the editor never reads
-/// a half-written file. A symlinked settings file (dotfiles) stays a symlink, because the
-/// rename replaces the file it points to.
+/// Replaces a settings file atomically, so the editor never reads a half-written file. A
+/// symlinked settings file (dotfiles) stays a symlink.
 pub(crate) fn write(path: &Path, content: &str) -> io::Result<()> {
-    let target = match fs::canonicalize(path) {
-        Ok(target) => target,
-        Err(err) if err.kind() == ErrorKind::NotFound => path.to_path_buf(),
-        Err(err) => return Err(err),
-    };
-    let file_name = target.file_name().unwrap_or_default().to_string_lossy();
-    let temp = target.with_file_name(format!(".{file_name}.firebrick-tmp"));
-
-    let result = fs::write(&temp, content)
-        .and_then(|()| keep_permissions(&target, &temp))
-        .and_then(|()| fs::rename(&temp, &target));
-
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-
-    result
-}
-
-/// Gives `temp` the permissions of `target`, when `target` exists.
-fn keep_permissions(target: &Path, temp: &Path) -> io::Result<()> {
-    match fs::metadata(target) {
-        Ok(metadata) => fs::set_permissions(temp, metadata.permissions()),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err),
-    }
+    // 0o666 minus the umask is the mode `fs::write` creates a file with.
+    atomic_file::write(path, content, 0o666)
 }
 
 #[cfg(test)]
@@ -121,17 +97,6 @@ mod tests {
         let dir = TempDir::new().unwrap();
 
         assert_eq!(read(&dir.path().join("settings.json")).unwrap(), "");
-    }
-
-    #[test]
-    fn writes_file_without_leaving_temp_file() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("settings.json");
-
-        write(&path, "{}\n").unwrap();
-
-        assert_eq!(read(&path).unwrap(), "{}\n");
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

@@ -638,7 +638,10 @@ C4Component
   `*.fbk` in a `known_hosts` file, picks a unique `<leaf>.fbk` host name per
   sandbox (stored in the `firebrick.hostname` label, with the leaf sanitized by
   `firebrick_utils::sanitize_label`), and writes the generated SSH config that
-  `~/.ssh/config` includes.
+  `~/.ssh/config` includes. It prepends the `Include` line to `~/.ssh/config`
+  through `atomic_file`, so a failed write leaves the config as it was and a
+  symlinked config stays a symlink; a symlink to a missing file is left
+  unchanged. An existing config keeps its mode and a new one gets `0600`.
 - `vscode` - Keeps `remote.SSH.remotePlatform` in the user `settings.json` of VS
   Code, VS Code Insiders, Cursor and VSCodium in sync with the sandbox host
   names, so Remote-SSH doesn't ask for the platform. Every host maps to
@@ -655,7 +658,8 @@ C4Component
   when it's a symlink to a missing file. Writes go to a temporary file that is
   renamed onto the file a symlink points to, so a symlinked settings file stays
   a symlink. The reading, writing and parse options live in `settings_file`,
-  which `zed` shares.
+  which `zed` shares; the atomic write itself lives in `atomic_file`, which
+  `ssh` shares.
 - `zed` - Keeps the `ssh_connections` array in Zed's user `settings.json` in
   sync with the sandboxes, so they show up in Zed's Remote Projects. Each
   sandbox with a host name gets an entry with `host`, the sandbox name as

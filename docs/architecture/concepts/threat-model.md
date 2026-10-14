@@ -199,14 +199,14 @@ Grouped by STRIDE category. The status of each threat is one of:
 
 ### Spoofing and denial of service
 
-| Threat                                                                                              | Mitigation                                                   | Status                                                        |
-| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------- |
-| Another local user binds `fbkd.sock` in the temp dir first and receives `fbk secret set` values     | The CLI checks the peer's UID                                | Mitigated                                                     |
-| Another local user connects to the daemon socket                                                    | `0600` and `SO_PEERCRED`                                     | Mitigated                                                     |
-| Another local user plants a data or log directory in the temp dir                                   | Data and logs never fall back to the temp dir                | Mitigated                                                     |
-| A sandbox claims a loopback port before a host service, or receives an OAuth code meant for another | Rate limit, idle limit                                       | Accepted                                                      |
-| The guest floods `fbkd` with log events, clipboard requests, URLs or huge lines and exhausts memory | Bounded records, line limits, connection limits, rate limits | Check                                                         |
-| An interrupted write leaves the user's `~/.ssh/config` empty                                        | None yet: `fbkd` truncates and rewrites it in place          | Open, [#198](https://github.com/wmeints/firebrick/issues/198) |
+| Threat                                                                                              | Mitigation                                                   | Status    |
+| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | --------- |
+| Another local user binds `fbkd.sock` in the temp dir first and receives `fbk secret set` values     | The CLI checks the peer's UID                                | Mitigated |
+| Another local user connects to the daemon socket                                                    | `0600` and `SO_PEERCRED`                                     | Mitigated |
+| Another local user plants a data or log directory in the temp dir                                   | Data and logs never fall back to the temp dir                | Mitigated |
+| A sandbox claims a loopback port before a host service, or receives an OAuth code meant for another | Rate limit, idle limit                                       | Accepted  |
+| The guest floods `fbkd` with log events, clipboard requests, URLs or huge lines and exhausts memory | Bounded records, line limits, connection limits, rate limits | Check     |
+| An interrupted write leaves the user's `~/.ssh/config` empty                                        | Synced temp file renamed over the file (`atomic_file`)       | Mitigated |
 
 ### Supply chain
 
