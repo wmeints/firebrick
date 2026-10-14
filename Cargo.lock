@@ -2052,6 +2052,8 @@ dependencies = [
 name = "firebrick-spec"
 version = "0.7.0"
 dependencies = [
+ "firebrick-utils",
+ "oci-spec",
  "serde",
  "serde_yaml",
  "tempfile",

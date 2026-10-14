@@ -357,6 +357,7 @@ impl SandboxManagementService for FirebrickServer {
     ) -> Result<Response<Self::StartSandboxStream>, Status> {
         let request_data = request.into_inner();
         check_name(&request_data.name)?;
+        check_image(&request_data.image)?;
         let network = network_spec(request_data.network.as_ref())?;
         let ports = request_data.ports.as_ref().map(port_mappings).transpose()?;
         let mounts = mount_specs(&request_data.mounts);
@@ -423,6 +424,7 @@ impl SandboxManagementService for FirebrickServer {
     ) -> Result<Response<Self::UpgradeSandboxStream>, Status> {
         let request_data = request.into_inner();
         check_name(&request_data.name)?;
+        check_image(&request_data.image)?;
         let sandboxes = Arc::clone(&self.sandboxes);
         let (tx, rx) = mpsc::channel(16);
 
@@ -651,6 +653,17 @@ impl SandboxManagementService for FirebrickServer {
 fn check_name(name: &str) -> Result<(), Status> {
     firebrick_spec::validate_sandbox_name(name)
         .map_err(|err| Status::invalid_argument(err.to_string()))
+}
+
+/// Fails with `InvalidArgument` when the image isn't an OCI reference. Empty means the default
+/// image. fbkd shows the image in status messages and logs, so a request checks it before the
+/// image reaches either.
+fn check_image(image: &str) -> Result<(), Status> {
+    if image.is_empty() {
+        return Ok(());
+    }
+
+    firebrick_spec::validate_image(image).map_err(|err| Status::invalid_argument(err.to_string()))
 }
 
 /// Returns the start message, which must be the first message of an `Attach` stream.
@@ -1681,6 +1694,39 @@ mod tests {
         calls
             .into_iter()
             .for_each(|(name, results)| assert_invalid_names(name, results));
+    }
+
+    #[tokio::test]
+    async fn start_and_upgrade_reject_an_invalid_image_before_using_it() {
+        let server = name_server();
+        let image = "alpine\u{1b}]0;pwned\u{7}".to_string();
+        let start = StartSandboxRequest {
+            name: "dev".to_string(),
+            image: image.clone(),
+            ..Default::default()
+        };
+        let upgrade = UpgradeSandboxRequest {
+            name: "dev".to_string(),
+            image,
+        };
+
+        let results = [
+            server.start_sandbox(Request::new(start)).await.map(drop),
+            server
+                .upgrade_sandbox(Request::new(upgrade))
+                .await
+                .map(drop),
+        ];
+
+        results.into_iter().for_each(assert_invalid_image);
+    }
+
+    fn assert_invalid_image(result: Result<(), Status>) {
+        let status = result.unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("invalid image"), "{status}");
+        assert!(!status.message().contains(char::is_control), "{status}");
     }
 
     /// Returns the time `seconds` after 2026-10-11 14:00:00 UTC.

@@ -82,10 +82,9 @@ impl SandboxSpecError {
         // The yaml error message ends with the position, which we report separately.
         let message = err.to_string();
         let suffix = format!(" at line {line} column {column}");
-        let message = message
-            .strip_suffix(&suffix)
-            .unwrap_or(&message)
-            .to_string();
+        // It quotes spec text, such as an unknown key, so it loses its escape sequences.
+        let message =
+            firebrick_utils::strip_control(message.strip_suffix(&suffix).unwrap_or(&message));
 
         Some(SpecDiagnostic {
             line,
@@ -104,7 +103,12 @@ pub struct SandboxSpec {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<SandboxResourcesSpec>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// OCI reference of the image the sandbox runs, checked by [`validate_image`].
+    #[serde(
+        default,
+        deserialize_with = "deserialize_image",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub image: Option<String>,
     /// Whether the sandbox runs the image's `/sbin/init` as PID 1. Defaults to `true`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -715,6 +719,55 @@ impl Visitor<'_> for SandboxNameVisitor {
     }
 }
 
+/// An image reference that microsandbox can't pull.
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[error(
+    "invalid image {0:?}: use an OCI reference such as `ubuntu:24.04` or \
+     `ghcr.io/org/image:tag`, with a lowercase repository name"
+)]
+pub struct InvalidImage(pub String);
+
+/// Checks an image reference with the OCI reference grammar that microsandbox parses it with:
+/// an optional registry, a lowercase repository name, and an optional tag and digest. A valid
+/// reference holds no whitespace or control characters, so it's safe to show in a message.
+pub fn validate_image(image: &str) -> Result<(), InvalidImage> {
+    oci_spec::distribution::Reference::try_from(image)
+        .map(drop)
+        .map_err(|_| InvalidImage(image.to_string()))
+}
+
+/// Deserializes an optional image reference, rejecting one [`validate_image`] refuses.
+fn deserialize_image<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    deserializer.deserialize_option(ImageVisitor)
+}
+
+/// Checks the image reference while the parser still points at it, so a problem is reported
+/// at the image's line and column.
+struct ImageVisitor;
+
+impl<'de> Visitor<'de> for ImageVisitor {
+    type Value = Option<String>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an image reference")
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_str(self)
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        validate_image(value).map_err(E::custom)?;
+        Ok(Some(value.to_string()))
+    }
+}
+
 /// Loads and parses a sandbox spec from a YAML file, or returns `None` when it doesn't exist.
 /// Refuses a symlink and other files that aren't regular files, like [`read_text`].
 pub fn from_file(path: &Path) -> Result<Option<SandboxSpec>, SandboxSpecError> {
@@ -1270,6 +1323,77 @@ pub mod tests {
     }
 
     #[test]
+    fn invalid_image_returns_diagnostic() {
+        let images = [
+            "\"\"",
+            "Ubuntu:24.04",
+            "ubuntu:24.04 latest",
+            "\"ubuntu\\e]0;pwned\\a\"",
+            "ubuntu@sha256:abc",
+            "-ubuntu",
+        ];
+
+        for image in images {
+            let diagnostic = from_str(&format!("name: dev\nimage: {image}\n"))
+                .unwrap_err()
+                .diagnostic()
+                .unwrap();
+
+            assert_eq!((diagnostic.line, diagnostic.column), (2, 8), "{image:?}");
+            assert!(
+                diagnostic.message.starts_with("image: invalid image"),
+                "{}",
+                diagnostic.message
+            );
+        }
+    }
+
+    #[test]
+    fn parses_images_microsandbox_accepts() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let images = [
+            "alpine",
+            "ubuntu:24.04",
+            "ghcr.io/wmeints/firebrick-base:v0.1.0",
+            "localhost:5000/firebrick-base:dev",
+            "my_org/app:V1.0-RC",
+            DEFAULT_IMAGE,
+            &format!("alpine@{digest}"),
+            &format!("ghcr.io/wmeints/firebrick-base:v0.1.0@{digest}"),
+        ];
+
+        for image in images {
+            let spec = from_str(&format!("name: dev\nimage: {image}\n")).unwrap();
+
+            assert_eq!(spec.image.as_deref(), Some(image));
+        }
+    }
+
+    #[test]
+    fn null_image_means_no_image() {
+        let spec = from_str("name: dev\nimage: ~\n").unwrap();
+
+        assert!(spec.image.is_none());
+    }
+
+    #[test]
+    fn diagnostic_strips_escape_sequences_from_quoted_spec_text() {
+        let diagnostic = from_str("name: dev\n\"bogus\\e]0;pwned\\a\\x9b31m\": 1\n")
+            .unwrap_err()
+            .diagnostic()
+            .unwrap();
+
+        assert!(
+            diagnostic
+                .message
+                .starts_with("unknown field `bogus`, expected one of"),
+            "{:?}",
+            diagnostic.message
+        );
+        assert!(!diagnostic.message.contains(char::is_control));
+    }
+
+    #[test]
     fn misindented_line_after_name_is_folded_into_the_name() {
         // YAML folds a more-indented line into the plain scalar before it, so the name becomes
         // `dev bad`, and the name check rejects it before the parser reaches the `:`.
@@ -1290,11 +1414,18 @@ pub mod tests {
 
     #[test]
     fn diagnostic_reports_position_of_syntax_error() {
-        let file = write_spec("image: dev\n  bad: indent\nname: dev\n");
+        // The mount's host is free text, so the parser folds the misindented line into it and
+        // fails at its `:` rather than a field check rejecting the folded value first.
+        let file =
+            write_spec("mounts:\n  - host: dev\n      bad: indent\n    guest: /x\nname: dev\n");
 
         let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
 
-        assert_eq!((diagnostic.line, diagnostic.column), (2, 6));
+        assert_eq!((diagnostic.line, diagnostic.column), (3, 10));
+        assert_eq!(
+            diagnostic.message,
+            "mapping values are not allowed in this context"
+        );
         assert!(!diagnostic.message.contains("at line"));
     }
 

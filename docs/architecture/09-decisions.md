@@ -49,3 +49,4 @@
 - [ADR 0047 - Run development tasks with mise](decisions/0047-run-development-tasks-with-mise.md)
 - [ADR 0048 - Share the host clipboard over a vsock route with host tools](decisions/0048-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md)
 - [ADR 0049 - Pin the base image digest and the apt signing keys](decisions/0049-pin-the-base-image-digest-and-apt-signing-keys.md)
+- [ADR 0050 - Validate image references with oci-spec](decisions/0050-validate-image-references-with-oci-spec.md)

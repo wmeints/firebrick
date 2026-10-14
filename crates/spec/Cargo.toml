@@ -11,6 +11,8 @@ description = "Parses and validates the .firebrick.yml sandbox spec."
 workspace = true
 
 [dependencies]
+firebrick-utils = { workspace = true }
+oci-spec = { version = "0.10.0", default-features = false, features = ["distribution"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_yaml = "0.9.34"
 thiserror = "2.0.21"
