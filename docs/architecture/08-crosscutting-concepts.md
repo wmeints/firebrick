@@ -133,6 +133,25 @@ nothing. Starting an existing sandbox doesn't check anything, because
 microsandbox only applies mounts, and `fbkd` the clipboard setting, when it
 creates a sandbox.
 
+## Reading and writing the spec file
+
+The agent can also replace `.firebrick.yml` with a symlink to any file of the
+user. So every command that reads or writes the spec goes through
+`firebrick_spec::read_text` and `firebrick_spec::write_text`, which refuse a
+symlink, dangling or not, with `.firebrick.yml is a symlink; firebrick only uses
+a regular file in the workspace`. That covers `fbk init`, with and without
+`--force`, `fbk validate`, `fbk network`, `fbk port`, and `fbk start`, `fbk run`
+and the other commands that resolve the spec. `fbk network` and `fbk port` read
+the spec before they write it, so they fail before they change anything.
+
+`read_text` checks the path with `symlink_metadata`, opens it, and fails when
+the opened file isn't the one it checked, so a symlink swapped in between isn't
+followed. `write_text` writes a new temp file next to the spec, created with
+`create_new` so it never follows a link, and renames it over the spec. A symlink
+created between the check and the write is replaced, not followed. A missing
+spec reads as `None`, and `fbk init` without `--force` still refuses to replace
+an existing file.
+
 ## Outdated sandbox images
 
 A sandbox keeps the image it was created with

@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::fmt;
+use std::io::{ErrorKind, Read, Write};
 use std::net::IpAddr;
+use std::os::unix::fs::MetadataExt;
 use std::str::FromStr;
 use std::{fs, path::Path};
 
@@ -22,6 +24,10 @@ pub enum SandboxSpecError {
     CantSerialize(#[source] serde_yaml::Error),
     #[error("can't write the spec file")]
     CantWriteFile(#[source] std::io::Error),
+    /// The spec file is a symlink, which could make firebrick read or write a file outside the
+    /// workspace. Holds the file name.
+    #[error("{0} is a symlink; firebrick only uses a regular file in the workspace")]
+    Symlink(String),
 }
 
 /// Errors that can occur while parsing a memory or disk size.
@@ -645,15 +651,81 @@ pub fn guest_mount_path(guest: &str) -> Result<String, InvalidGuestPath> {
     Ok(format!("/{}", parts.join("/")))
 }
 
-/// Loads and parses a sandbox spec from a YAML file.
+/// Loads and parses a sandbox spec from a YAML file. Refuses a symlink, like [`read_text`].
 pub fn from_file(path: &Path) -> Result<SandboxSpec, SandboxSpecError> {
-    if !path.exists() {
-        return Err(SandboxSpecError::FileNotFound);
-    }
-
-    let file_content = fs::read_to_string(path).map_err(SandboxSpecError::CantReadInputFile)?;
+    let file_content = read_text(path)?.ok_or(SandboxSpecError::FileNotFound)?;
 
     from_str(&file_content)
+}
+
+/// Reads the text of a spec file, or returns `None` when it doesn't exist. Fails with
+/// [`SandboxSpecError::Symlink`] when the path is a symlink, dangling or not, because the agent
+/// in the sandbox controls the workspace and could point the spec at any file of the user.
+pub fn read_text(path: &Path) -> Result<Option<String>, SandboxSpecError> {
+    let Some(metadata) = regular_file_metadata(path)? else {
+        return Ok(None);
+    };
+
+    let mut file = fs::File::open(path)?;
+
+    // A symlink swapped in after the check opens another file than the one checked.
+    let opened = file.metadata()?;
+    if (opened.dev(), opened.ino()) != (metadata.dev(), metadata.ino()) {
+        return Err(symlink_error(path));
+    }
+
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+
+    Ok(Some(text))
+}
+
+/// Replaces the spec file with `text`. Fails with [`SandboxSpecError::Symlink`] when the path is
+/// a symlink. Writes a temporary file next to it and renames that over the path, so a symlink
+/// created in the meantime is replaced instead of followed, and readers never see a partial
+/// file.
+pub fn write_text(path: &Path, text: &str) -> Result<(), SandboxSpecError> {
+    regular_file_metadata(path)?;
+
+    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+    let temp = path.with_file_name(format!("{file_name}.{}.tmp", std::process::id()));
+    let result = write_new(&temp, text).and_then(|()| fs::rename(&temp, path));
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+
+    result.map_err(SandboxSpecError::CantWriteFile)
+}
+
+/// Returns the metadata of the file at `path` without following a symlink, or `None` when it
+/// doesn't exist. Fails when it is a symlink.
+fn regular_file_metadata(path: &Path) -> Result<Option<fs::Metadata>, SandboxSpecError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_symlink() => Err(symlink_error(path)),
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(SandboxSpecError::CantReadInputFile(err)),
+    }
+}
+
+/// Writes `text` to a file that doesn't exist yet. Creating it exclusively never follows a
+/// symlink at the path.
+fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+
+    file.write_all(text.as_bytes())?;
+    file.sync_all()
+}
+
+/// Returns the error for a spec file at `path` that is a symlink.
+fn symlink_error(path: &Path) -> SandboxSpecError {
+    let file_name = path.file_name().unwrap_or(path.as_os_str());
+
+    SandboxSpecError::Symlink(file_name.to_string_lossy().into_owned())
 }
 
 /// Parses a sandbox spec from the YAML text of a spec file.
@@ -878,11 +950,12 @@ fn ports_block_text(ports: &[PortMapping]) -> String {
 }
 
 /// Writes the spec to a YAML file, replacing the file's contents. Comments and formatting of an
-/// existing file are lost, and fields that aren't set are left out.
+/// existing file are lost, and fields that aren't set are left out. Refuses a symlink, like
+/// [`write_text`].
 pub fn to_file(spec: &SandboxSpec, path: &Path) -> Result<(), SandboxSpecError> {
     let content = serde_yaml::to_string(spec).map_err(SandboxSpecError::CantSerialize)?;
 
-    fs::write(path, content).map_err(SandboxSpecError::CantWriteFile)
+    write_text(path, &content)
 }
 
 /// Creates a spec with the given name and default resources. It names no image, so the sandbox
@@ -1932,5 +2005,92 @@ pub mod tests {
         let result = to_file(&default_spec("dev".to_string()), dir.path());
 
         assert!(matches!(result, Err(SandboxSpecError::CantWriteFile(_))));
+    }
+
+    /// Creates `.firebrick.yml` in a new directory as a symlink to `target` in that directory.
+    fn symlinked_spec(target: &str) -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".firebrick.yml");
+        let target = dir.path().join(target);
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        (dir, path, target)
+    }
+
+    const SYMLINK_ERROR: &str =
+        ".firebrick.yml is a symlink; firebrick only uses a regular file in the workspace";
+
+    #[test]
+    fn read_text_refuses_a_symlink() {
+        let (_dir, path, target) = symlinked_spec("notes.txt");
+        fs::write(&target, "name: dev\n").unwrap();
+
+        let err = read_text(&path).unwrap_err();
+
+        assert_eq!(err.to_string(), SYMLINK_ERROR);
+    }
+
+    #[test]
+    fn read_text_refuses_a_dangling_symlink() {
+        let (_dir, path, _target) = symlinked_spec("missing.yml");
+
+        let err = read_text(&path).unwrap_err();
+
+        assert_eq!(err.to_string(), SYMLINK_ERROR);
+    }
+
+    #[test]
+    fn read_text_returns_none_for_a_missing_file() {
+        let dir = TempDir::new().unwrap();
+
+        let text = read_text(&dir.path().join(".firebrick.yml")).unwrap();
+
+        assert_eq!(text, None);
+    }
+
+    #[test]
+    fn from_file_refuses_a_symlink() {
+        let (_dir, path, target) = symlinked_spec("notes.txt");
+        fs::write(&target, "name: dev\n").unwrap();
+
+        let result = from_file(&path);
+
+        assert!(matches!(result, Err(SandboxSpecError::Symlink(_))));
+    }
+
+    #[test]
+    fn write_text_refuses_a_symlink_and_leaves_its_target_alone() {
+        let (dir, path, target) = symlinked_spec("notes.txt");
+        fs::write(&target, "precious host content\n").unwrap();
+
+        let err = write_text(&path, "name: dev\n").unwrap_err();
+
+        assert_eq!(err.to_string(), SYMLINK_ERROR);
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            "precious host content\n"
+        );
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn write_text_refuses_a_dangling_symlink() {
+        let (_dir, path, target) = symlinked_spec("missing.yml");
+
+        let err = write_text(&path, "name: dev\n").unwrap_err();
+
+        assert_eq!(err.to_string(), SYMLINK_ERROR);
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn write_text_replaces_a_regular_file_without_leaving_a_temp_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".firebrick.yml");
+        fs::write(&path, "name: old\n").unwrap();
+
+        write_text(&path, "name: new\n").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "name: new\n");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }

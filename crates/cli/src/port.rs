@@ -3,8 +3,6 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use firebrick_spec::PortMapping;
-use std::fs;
-use std::io::ErrorKind;
 use std::path::Path;
 use tonic::Code;
 use tonic::transport::Channel;
@@ -150,17 +148,16 @@ impl<'a> SpecFile<'a> {
     ) -> Result<Self> {
         let path = working_dir.join(SPEC_FILE_NAME);
 
-        let (name, text) = match fs::read_to_string(&path) {
-            Ok(text) => (
+        let (name, text) = match validate::read_spec_text(&path)? {
+            Some(text) => (
                 firebrick_spec::from_str(&text).map_err(spec_error)?.name,
                 text,
             ),
-            Err(err) if err.kind() == ErrorKind::NotFound => {
+            None => {
                 let name = manage::resolve_spec(working_dir, client).await?.name;
                 let text = format!("name: {name}\n");
                 (name, text)
             }
-            Err(err) => return Err(err).with_context(|| format!("can't read {}", path.display())),
         };
 
         manage::check_workspace_owner(&name, working_dir, client).await?;
@@ -175,7 +172,9 @@ impl<'a> SpecFile<'a> {
     fn write(&self, text: &str) -> Result<()> {
         let path = self.working_dir.join(SPEC_FILE_NAME);
 
-        fs::write(&path, text).with_context(|| format!("can't write {}", path.display()))
+        firebrick_spec::write_text(&path, text)
+            .map_err(spec_error)
+            .with_context(|| format!("can't write {}", path.display()))
     }
 }
 
@@ -183,6 +182,8 @@ impl<'a> SpecFile<'a> {
 mod tests {
     use super::*;
     use crate::fake_daemon::{self, OTHER_WORKSPACE};
+    use crate::symlinked_spec;
+    use std::fs;
     use tempfile::TempDir;
 
     const SPEC: &str = "name: dev\nports:\n  - 8080:80\n";
@@ -223,5 +224,31 @@ mod tests {
         remove(8080, dir.path(), &mut client).await.unwrap();
 
         assert!(!spec_text(&dir).contains("8080"), "{}", spec_text(&dir));
+    }
+
+    async fn assert_forward_and_remove_refuse_symlink(content: Option<&str>) {
+        let (dir, target) = symlinked_spec::workspace(content);
+        let mut client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
+        let port = PortMapping {
+            host: 3000,
+            guest: 3000,
+        };
+
+        let forward_err = forward(port, dir.path(), &mut client).await.unwrap_err();
+        let remove_err = remove(8080, dir.path(), &mut client).await.unwrap_err();
+
+        assert_eq!(forward_err.to_string(), symlinked_spec::SYMLINK_ERROR);
+        assert_eq!(remove_err.to_string(), symlinked_spec::SYMLINK_ERROR);
+        assert_eq!(symlinked_spec::target_content(&target).as_deref(), content);
+    }
+
+    #[tokio::test]
+    async fn forward_and_remove_refuse_a_symlink_to_a_spec_and_leave_it_alone() {
+        assert_forward_and_remove_refuse_symlink(Some(SPEC)).await;
+    }
+
+    #[tokio::test]
+    async fn forward_and_remove_refuse_a_dangling_symlink_and_create_no_file() {
+        assert_forward_and_remove_refuse_symlink(None).await;
     }
 }

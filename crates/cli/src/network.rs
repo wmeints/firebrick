@@ -105,15 +105,9 @@ async fn update_with(
 }
 
 /// Loads the spec file, or returns `None` when it doesn't exist. An invalid file is reported
-/// like `fbk validate` reports it.
+/// like `fbk validate` reports it, and a symlink is refused.
 fn read_spec(spec_path: &Path) -> Result<Option<SandboxSpec>> {
-    if !spec_path.is_file() {
-        return Ok(None);
-    }
-
     validate::load_spec(spec_path)
-        .map(Some)
-        .map_err(|report| anyhow!(report))
 }
 
 /// Fails when the spec's sandbox belongs to another directory. Without a connection to the
@@ -402,6 +396,7 @@ where
 mod tests {
     use super::*;
     use crate::fake_daemon::{self, OTHER_WORKSPACE};
+    use crate::symlinked_spec;
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -510,6 +505,28 @@ mod tests {
                 .unwrap()
                 .contains("example.org")
         );
+    }
+
+    async fn assert_update_refuses_symlink(content: Option<&str>) {
+        let (dir, target) = symlinked_spec::workspace(content);
+        let client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
+
+        let error = update_with(rules_change(), dir.path(), Ok(client), approve_all(&dir))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), symlinked_spec::SYMLINK_ERROR);
+        assert_eq!(symlinked_spec::target_content(&target).as_deref(), content);
+    }
+
+    #[tokio::test]
+    async fn update_refuses_a_symlink_to_a_spec_and_leaves_it_alone() {
+        assert_update_refuses_symlink(Some("name: dev\n")).await;
+    }
+
+    #[tokio::test]
+    async fn update_refuses_a_dangling_symlink_and_creates_no_file() {
+        assert_update_refuses_symlink(None).await;
     }
 
     #[test]

@@ -1,46 +1,45 @@
 use anyhow::{Context, Result, bail};
-use std::fs::OpenOptions;
-use std::io::{ErrorKind, Write};
+use firebrick_spec::SandboxSpecError;
 use std::path::{Path, PathBuf};
 
 use crate::manage::SPEC_FILE_NAME;
 
 /// Writes the default spec, named after the working directory, to `.firebrick.yml` in the
 /// working directory and returns its path. Refuses to replace an existing file unless `force`
-/// is set.
+/// is set, and refuses a symlink either way.
 pub fn init_spec(working_dir: &Path, force: bool) -> Result<PathBuf> {
     let spec_path = working_dir.join(SPEC_FILE_NAME);
     let spec = firebrick_spec::default_spec(firebrick_utils::sanitize_label(working_dir));
     let content = serde_yaml::to_string(&spec).context("can't serialize the default spec")?;
 
-    let mut file = match open_spec_file(&spec_path, force) {
-        Err(err) if err.kind() == ErrorKind::AlreadyExists => bail!(
+    if firebrick_spec::read_text(&spec_path)
+        .map_err(|err| spec_error(err, &spec_path))?
+        .is_some()
+        && !force
+    {
+        bail!(
             "{SPEC_FILE_NAME} already exists in {}; use fbk init --force to overwrite it",
             working_dir.display()
-        ),
-        result => result.with_context(|| format!("can't create {}", spec_path.display()))?,
-    };
+        );
+    }
 
-    file.write_all(content.as_bytes())
-        .with_context(|| format!("can't write {}", spec_path.display()))?;
+    firebrick_spec::write_text(&spec_path, &content).map_err(|err| spec_error(err, &spec_path))?;
 
     Ok(spec_path)
 }
 
-/// Opens the spec file for writing, failing with `AlreadyExists` when it exists and `force`
-/// isn't set, so a file created in the meantime is never overwritten.
-fn open_spec_file(spec_path: &Path, force: bool) -> std::io::Result<std::fs::File> {
-    OpenOptions::new()
-        .write(true)
-        .create_new(!force)
-        .create(force)
-        .truncate(force)
-        .open(spec_path)
+/// Reports a symlinked spec as is, and names the path for other failures.
+fn spec_error(err: SandboxSpecError, spec_path: &Path) -> anyhow::Error {
+    match err {
+        SandboxSpecError::Symlink(_) => err.into(),
+        err => anyhow::Error::new(err).context(format!("can't create {}", spec_path.display())),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::symlinked_spec;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
@@ -134,6 +133,23 @@ mod tests {
 
         assert_eq!(spec.name, "project");
         assert_eq!(spec.image, None);
+    }
+
+    #[test]
+    fn refuses_a_symlinked_spec_and_leaves_its_target_alone() {
+        for (content, force) in [
+            (Some("notes\n"), false),
+            (Some("notes\n"), true),
+            (None, false),
+            (None, true),
+        ] {
+            let (dir, target) = symlinked_spec::workspace(content);
+
+            let err = init_spec(dir.path(), force).unwrap_err();
+
+            assert_eq!(err.to_string(), symlinked_spec::SYMLINK_ERROR);
+            assert_eq!(symlinked_spec::target_content(&target).as_deref(), content);
+        }
     }
 
     #[test]
