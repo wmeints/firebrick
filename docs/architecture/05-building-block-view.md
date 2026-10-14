@@ -288,6 +288,9 @@ C4Component
   an invalid rule with `INVALID_ARGUMENT`, also when the sandbox already exists.
   It rejects a port outside 1 to 65535 or a host port that is listed twice, and
   an `UpgradeSandbox` request without a sandbox name, with `INVALID_ARGUMENT`.
+  Every request that names a sandbox, including the scope of a secret, has its
+  name checked with `firebrick_spec::validate_sandbox_name` first (see
+  [Validating sandbox names](08-crosscutting-concepts.md#validating-sandbox-names)).
   `ListNetworkActivity` turns a sandbox's record into one entry per DNS name and
   per connection address and protocol, sorted by last seen, newest first, and
   evaluates the sandbox's current rules for each with `network::allows_host`:
@@ -596,15 +599,16 @@ C4Component
   `Listeners<S>` keeps one listener per sandbox for a channel, with the state
   `S` it shares with the channel, such as the network record. It knows the
   socket path of a sandbox, which is `None` when it doesn't fit in a unix socket
-  address, adds the route to a builder and checks whether a sandbox's spec has
-  it. `Listeners::private` checks the socket directory with
-  `firebrick_utils::create_private_dir`. `Listeners::listen` checks it again,
-  leaves a socket that another process answers on alone, removes a stale one,
-  binds it and runs the channel's listener, replacing one that stopped; it
-  returns the error when it can't. `remove` stops a sandbox's listener and
-  deletes its socket, `close` stops them all, and dropping the registry aborts
-  them. `Connections` runs a task per accepted connection and closes the ones
-  beyond 4 per sandbox.
+  address or the name isn't a single path component (`sandbox_file`, which
+  `netlog` also uses for its record files), adds the route to a builder and
+  checks whether a sandbox's spec has it. `Listeners::private` checks the socket
+  directory with `firebrick_utils::create_private_dir`. `Listeners::listen`
+  checks it again, leaves a socket that another process answers on alone,
+  removes a stale one, binds it and runs the channel's listener, replacing one
+  that stopped; it returns the error when it can't. `remove` stops a sandbox's
+  listener and deletes its socket, `close` stops them all, and dropping the
+  registry aborts them. `Connections` runs a task per accepted connection and
+  closes the ones beyond 4 per sandbox.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `fbkd` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,

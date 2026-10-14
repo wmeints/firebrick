@@ -29,7 +29,7 @@ refuses to replace an existing file; `fbk init --force` overwrites it.
 
 | Field               | Description                                                             | Default                                     |
 | ------------------- | ----------------------------------------------------------------------- | ------------------------------------------- |
-| `name`              | Name of the sandbox.                                                    | Required                                    |
+| `name`              | Name of the sandbox, following the rule below the table.                | Required                                    |
 | `image`             | OCI image the sandbox runs.                                             | `ghcr.io/wmeints/firebrick-base:v<version>` |
 | `init`              | Run the image's `/sbin/init` as PID 1.                                  | `true`                                      |
 | `mise`              | Trust and install the project's mise tools when it starts.              | `true`                                      |
@@ -45,6 +45,11 @@ refuses to replace an existing file; `fbk init --force` overwrites it.
 | `mounts[].guest`    | Absolute guest path to mount it at. Each path may appear only once.     | Required per mount                          |
 | `mounts[].readonly` | Mount the directory read-only.                                          | `false`                                     |
 | `clipboard`         | Let programs in the sandbox read and write the host clipboard.          | `false`                                     |
+
+The `name` is 1 to 128 characters long, starts with a letter or digit, and
+contains only ASCII letters, digits, `.`, `-` and `_`, such as `my-project` or
+`My.App_2`. This is the rule microsandbox uses, and Firebrick checks it before
+the name is used, because the daemon names files after the sandbox.
 
 When you set `resources`, set both `cpu` and `memory`. The `network` and `ports`
 fields are described in [Networking](/docs/networking/), and `image` and `init`

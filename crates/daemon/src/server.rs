@@ -356,6 +356,7 @@ impl SandboxManagementService for FirebrickServer {
         request: Request<StartSandboxRequest>,
     ) -> Result<Response<Self::StartSandboxStream>, Status> {
         let request_data = request.into_inner();
+        check_name(&request_data.name)?;
         let network = network_spec(request_data.network.as_ref())?;
         let ports = request_data.ports.as_ref().map(port_mappings).transpose()?;
         let mounts = mount_specs(&request_data.mounts);
@@ -397,6 +398,7 @@ impl SandboxManagementService for FirebrickServer {
         request: Request<UpdateNetworkRequest>,
     ) -> Result<Response<UpdateNetworkResponse>, Status> {
         let request_data = request.into_inner();
+        check_name(&request_data.name)?;
         let network = network_spec(request_data.network.as_ref())?;
         let sandboxes = Arc::clone(&self.sandboxes);
 
@@ -420,6 +422,7 @@ impl SandboxManagementService for FirebrickServer {
         request: Request<UpgradeSandboxRequest>,
     ) -> Result<Response<Self::UpgradeSandboxStream>, Status> {
         let request_data = request.into_inner();
+        check_name(&request_data.name)?;
         let sandboxes = Arc::clone(&self.sandboxes);
         let (tx, rx) = mpsc::channel(16);
 
@@ -450,6 +453,11 @@ impl SandboxManagementService for FirebrickServer {
         request: Request<SetSecretRequest>,
     ) -> Result<Response<SetSecretResponse>, Status> {
         let request_data = request.into_inner();
+        request_data
+            .sandbox
+            .as_deref()
+            .map(check_name)
+            .transpose()?;
         let failed_sandboxes = self
             .sandboxes
             .set_secret(NewSecret {
@@ -485,6 +493,7 @@ impl SandboxManagementService for FirebrickServer {
         request: Request<RemoveSecretRequest>,
     ) -> Result<Response<RemoveSecretResponse>, Status> {
         let request = request.into_inner();
+        request.sandbox.as_deref().map(check_name).transpose()?;
         let failed_sandboxes = self
             .sandboxes
             .remove_secret(&request.name, request.sandbox.as_deref())
@@ -499,6 +508,7 @@ impl SandboxManagementService for FirebrickServer {
         request: Request<ForwardPortRequest>,
     ) -> Result<Response<ForwardPortResponse>, Status> {
         let request = request.into_inner();
+        check_name(&request.name)?;
         let port = request
             .port
             .ok_or_else(|| Status::invalid_argument("port is required"))?;
@@ -517,6 +527,7 @@ impl SandboxManagementService for FirebrickServer {
         request: Request<RemovePortRequest>,
     ) -> Result<Response<RemovePortResponse>, Status> {
         let request = request.into_inner();
+        check_name(&request.name)?;
         let host = port_number(request.host)?;
         let running = self.sandboxes.remove_port(&request.name, host).await?;
 
@@ -529,10 +540,9 @@ impl SandboxManagementService for FirebrickServer {
         &self,
         request: Request<ListNetworkActivityRequest>,
     ) -> Result<Response<ListNetworkActivityResponse>, Status> {
-        let (record, rules) = self
-            .sandboxes
-            .network_activity(&request.into_inner().name)
-            .await?;
+        let name = request.into_inner().name;
+        check_name(&name)?;
+        let (record, rules) = self.sandboxes.network_activity(&name).await?;
 
         Ok(Response::new(ListNetworkActivityResponse {
             entries: network_activity(record, &rules),
@@ -544,7 +554,9 @@ impl SandboxManagementService for FirebrickServer {
         &self,
         request: Request<StopSandboxRequest>,
     ) -> Result<Response<StopSandboxResponse>, Status> {
-        self.sandboxes.stop(&request.into_inner().name).await?;
+        let name = request.into_inner().name;
+        check_name(&name)?;
+        self.sandboxes.stop(&name).await?;
 
         Ok(Response::new(StopSandboxResponse {}))
     }
@@ -571,7 +583,9 @@ impl SandboxManagementService for FirebrickServer {
         &self,
         request: Request<GetSandboxRequest>,
     ) -> Result<Response<GetSandboxResponse>, Status> {
-        let sandbox = self.sandboxes.get(&request.into_inner().name).await?;
+        let name = request.into_inner().name;
+        check_name(&name)?;
+        let sandbox = self.sandboxes.get(&name).await?;
 
         Ok(Response::new(GetSandboxResponse {
             name: sandbox.name,
@@ -590,6 +604,7 @@ impl SandboxManagementService for FirebrickServer {
         request: Request<RemoveSandboxRequest>,
     ) -> std::result::Result<Response<RemoveSandboxResponse>, Status> {
         let request = request.into_inner();
+        check_name(&request.name)?;
         self.sandboxes.remove(&request.name, request.force).await?;
 
         Ok(Response::new(RemoveSandboxResponse {}))
@@ -602,6 +617,7 @@ impl SandboxManagementService for FirebrickServer {
     ) -> Result<Response<Self::AttachStream>, Status> {
         let mut inbound = request.into_inner();
         let start = attach_start(&mut inbound).await?;
+        check_name(&start.name)?;
         let size = session::window_size(start.size)?;
         let sb = self.sandboxes.connect(&start.name).await?;
 
@@ -627,6 +643,14 @@ impl SandboxManagementService for FirebrickServer {
 
         Ok(Response::new(Box::pin(outbound)))
     }
+}
+
+/// Fails with `InvalidArgument` when the sandbox name isn't one microsandbox accepts. fbkd names
+/// files after sandboxes, so every request checks the name before it touches the file system or
+/// microsandbox.
+fn check_name(name: &str) -> Result<(), Status> {
+    firebrick_spec::validate_sandbox_name(name)
+        .map_err(|err| Status::invalid_argument(err.to_string()))
 }
 
 /// Returns the start message, which must be the first message of an `Attach` stream.
@@ -1490,6 +1514,139 @@ mod tests {
 
         assert_eq!(status.code(), tonic::Code::NotFound);
         assert_eq!(SecretStore::new(&path).load().unwrap().len(), 1);
+    }
+
+    /// Names that would escape fbkd's socket and record directories.
+    const ESCAPING_NAMES: [&str; 3] = ["../../x", "a/b", ".."];
+
+    fn name_server() -> FirebrickServer {
+        FirebrickServer::new(
+            unused_store(),
+            Arc::new(HostOpener),
+            Arc::new(HostTools::new(None, None)),
+        )
+    }
+
+    fn assert_invalid_names(name: &str, results: Vec<Result<(), Status>>) {
+        for result in results {
+            let status = result.expect_err(name);
+
+            assert_eq!(status.code(), tonic::Code::InvalidArgument, "{name:?}");
+            assert!(
+                status.message().contains("invalid sandbox name"),
+                "{status}"
+            );
+        }
+    }
+
+    /// Starts a sandbox that shares the clipboard, so a start would listen on both sockets.
+    async fn start_named(server: &FirebrickServer, name: &str) -> Result<(), Status> {
+        let request = StartSandboxRequest {
+            name: name.to_string(),
+            clipboard: Some(true),
+            ..Default::default()
+        };
+
+        server.start_sandbox(Request::new(request)).await.map(drop)
+    }
+
+    /// Calls the RPCs that change a sandbox with the name.
+    async fn change_named(server: &FirebrickServer, name: &str) -> Vec<Result<(), Status>> {
+        let name = name.to_string();
+        let port = Some(PortForward {
+            host: 8080,
+            guest: 80,
+        });
+        let network = UpdateNetworkRequest {
+            name: name.clone(),
+            network: None,
+        };
+        let upgrade = UpgradeSandboxRequest {
+            name: name.clone(),
+            ..Default::default()
+        };
+        let forward = ForwardPortRequest {
+            name: name.clone(),
+            port,
+        };
+        let unforward = RemovePortRequest { name, host: 8080 };
+
+        vec![
+            server.update_network(Request::new(network)).await.map(drop),
+            server
+                .upgrade_sandbox(Request::new(upgrade))
+                .await
+                .map(drop),
+            server.forward_port(Request::new(forward)).await.map(drop),
+            server.remove_port(Request::new(unforward)).await.map(drop),
+        ]
+    }
+
+    /// Calls the RPCs that look up, stop or remove a sandbox with the name.
+    async fn manage_named(server: &FirebrickServer, name: &str) -> Vec<Result<(), Status>> {
+        let name = name.to_string();
+        let activity = ListNetworkActivityRequest { name: name.clone() };
+        let stop = StopSandboxRequest { name: name.clone() };
+        let get = GetSandboxRequest { name: name.clone() };
+        let remove = RemoveSandboxRequest { name, force: true };
+
+        vec![
+            server
+                .list_network_activity(Request::new(activity))
+                .await
+                .map(drop),
+            server.stop_sandbox(Request::new(stop)).await.map(drop),
+            server.get_sandbox(Request::new(get)).await.map(drop),
+            server.remove_sandbox(Request::new(remove)).await.map(drop),
+        ]
+    }
+
+    /// Calls the secret RPCs with the name as the secret's scope.
+    async fn scope_named(server: &FirebrickServer, name: &str) -> Vec<Result<(), Status>> {
+        let sandbox = Some(name.to_string());
+        let set = SetSecretRequest {
+            name: "TOKEN".to_string(),
+            value: "value".to_string(),
+            allowed_hosts: vec![],
+            sandbox: sandbox.clone(),
+        };
+        let remove = RemoveSecretRequest {
+            name: "TOKEN".to_string(),
+            sandbox,
+        };
+
+        vec![
+            server.set_secret(Request::new(set)).await.map(drop),
+            server.remove_secret(Request::new(remove)).await.map(drop),
+        ]
+    }
+
+    /// Calls every RPC that takes a sandbox name with each of the escaping names.
+    async fn call_with_escaping_names(
+        server: &FirebrickServer,
+    ) -> Vec<(&'static str, Vec<Result<(), Status>>)> {
+        let mut calls = Vec::new();
+
+        for name in ESCAPING_NAMES {
+            let mut results = vec![start_named(server, name).await];
+            results.extend(change_named(server, name).await);
+            results.extend(manage_named(server, name).await);
+            results.extend(scope_named(server, name).await);
+            calls.push((name, results));
+        }
+
+        calls
+    }
+
+    #[tokio::test]
+    async fn rpcs_reject_an_invalid_sandbox_name_before_using_it() {
+        // An error from `StartSandbox` itself means fbkd didn't spawn the start, so it didn't
+        // listen for the sandbox's network log or clipboard.
+        let calls = call_with_escaping_names(&name_server()).await;
+
+        calls
+            .into_iter()
+            .for_each(|(name, results)| assert_invalid_names(name, results));
     }
 
     /// Returns the time `seconds` after 2026-10-11 14:00:00 UTC.

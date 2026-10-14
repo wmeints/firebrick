@@ -82,6 +82,8 @@ impl SandboxSpecError {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct SandboxSpec {
+    /// Name of the sandbox, checked by [`validate_sandbox_name`].
+    #[serde(deserialize_with = "deserialize_sandbox_name")]
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<SandboxResourcesSpec>,
@@ -645,6 +647,57 @@ pub fn guest_mount_path(guest: &str) -> Result<String, InvalidGuestPath> {
     Ok(format!("/{}", parts.join("/")))
 }
 
+/// The longest sandbox name microsandbox accepts, in bytes.
+pub const MAX_SANDBOX_NAME_BYTES: usize = 128;
+
+/// A sandbox name that microsandbox refuses or that fbkd can't use as a file name.
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[error(
+    "invalid sandbox name {0:?}: use 1 to 128 ASCII letters, digits, '.', '-' and '_', \
+     starting with a letter or digit"
+)]
+pub struct InvalidSandboxName(pub String);
+
+/// Checks a sandbox name with microsandbox's rule: 1 to [`MAX_SANDBOX_NAME_BYTES`] bytes, an
+/// ASCII letter or digit first, then only ASCII letters, digits, `.`, `-` and `_`. A valid
+/// name is always a single path component, so fbkd can name files after it.
+pub fn validate_sandbox_name(name: &str) -> Result<(), InvalidSandboxName> {
+    let starts_alphanumeric = name.starts_with(|c: char| c.is_ascii_alphanumeric());
+    let charset_ok = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+
+    if starts_alphanumeric && charset_ok && name.len() <= MAX_SANDBOX_NAME_BYTES {
+        Ok(())
+    } else {
+        Err(InvalidSandboxName(name.to_string()))
+    }
+}
+
+/// Deserializes a sandbox name, rejecting one [`validate_sandbox_name`] refuses.
+fn deserialize_sandbox_name<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    deserializer.deserialize_str(SandboxNameVisitor)
+}
+
+/// Checks the sandbox name while the parser still points at it, so a problem is reported at
+/// the name's line and column.
+struct SandboxNameVisitor;
+
+impl Visitor<'_> for SandboxNameVisitor {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a sandbox name")
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<String, E> {
+        validate_sandbox_name(value).map_err(E::custom)?;
+        Ok(value.to_string())
+    }
+}
+
 /// Loads and parses a sandbox spec from a YAML file.
 pub fn from_file(path: &Path) -> Result<SandboxSpec, SandboxSpecError> {
     if !path.exists() {
@@ -1019,8 +1072,49 @@ pub mod tests {
     }
 
     #[test]
+    fn invalid_name_returns_diagnostic() {
+        let long = "a".repeat(129);
+        let names = [
+            "\"../../x\"",
+            "\"\"",
+            "a/b",
+            "\"..\"",
+            "-dev",
+            ".dev",
+            "dév",
+            "\"x\\e]0;pwned\\a\"",
+            &long,
+        ];
+
+        for name in names {
+            let diagnostic = from_str(&format!("name: {name}\n"))
+                .unwrap_err()
+                .diagnostic()
+                .unwrap();
+
+            assert_eq!((diagnostic.line, diagnostic.column), (1, 7), "{name:?}");
+            assert!(
+                diagnostic.message.starts_with("name: invalid sandbox name"),
+                "{}",
+                diagnostic.message
+            );
+        }
+    }
+
+    #[test]
+    fn parses_names_microsandbox_accepts() {
+        let longest = "a".repeat(128);
+
+        for name in ["my-project", "My.App_2", "firebrick-8a5eda", "0", &longest] {
+            let spec = from_str(&format!("name: {name}\n")).unwrap();
+
+            assert_eq!(spec.name, name);
+        }
+    }
+
+    #[test]
     fn diagnostic_reports_position_of_syntax_error() {
-        let file = write_spec("name: dev\n  bad: indent\n");
+        let file = write_spec("image: dev\n  bad: indent\nname: dev\n");
 
         let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
 

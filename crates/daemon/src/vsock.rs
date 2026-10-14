@@ -10,6 +10,7 @@
 
 use microsandbox::sandbox::{SandboxBuilder, SandboxSpec, VsockSocketType};
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -21,11 +22,19 @@ use tokio::task::{JoinError, JoinHandle, JoinSet};
 /// The most connections fbkd accepts from one sandbox on one channel at a time.
 pub const MAX_CONNECTIONS: usize = 4;
 
-/// Returns the socket of the sandbox in the directory, or `None` when there's no directory or
-/// the path is too long for a unix socket, since microsandbox would then refuse to boot the
-/// sandbox.
+/// Returns the file `{sandbox}.{extension}` in the directory, or `None` when the sandbox name
+/// isn't a single path component and the file would end up elsewhere. fbkd checks names when a
+/// request comes in; this keeps a name that slipped through inside the directory.
+pub fn sandbox_file(dir: &Path, sandbox: &str, extension: &str) -> Option<PathBuf> {
+    (Path::new(sandbox).file_name() == Some(OsStr::new(sandbox)))
+        .then(|| dir.join(format!("{sandbox}.{extension}")))
+}
+
+/// Returns the socket of the sandbox in the directory, or `None` when there's no directory, the
+/// name isn't a single path component, or the path is too long for a unix socket, since
+/// microsandbox would then refuse to boot the sandbox.
 fn socket_path(dir: Option<&Path>, sandbox: &str) -> Option<PathBuf> {
-    let path = dir?.join(format!("{sandbox}.sock"));
+    let path = sandbox_file(dir?, sandbox, "sock")?;
 
     std::os::unix::net::SocketAddr::from_pathname(&path)
         .is_ok()
@@ -195,8 +204,8 @@ impl<S: Send + Sync + 'static> Listeners<S> {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Returns the socket of the sandbox, or `None` when there's no socket directory or the
-    /// path is too long for a unix socket.
+    /// Returns the socket of the sandbox, or `None` when there's no socket directory, the name
+    /// isn't a single path component, or the path is too long for a unix socket.
     pub fn socket_path(&self, sandbox: &str) -> Option<PathBuf> {
         socket_path(self.socket_dir.as_deref(), sandbox)
     }
@@ -385,6 +394,15 @@ mod tests {
         );
         assert!(socket_path(Some(&dir), &"a".repeat(200)).is_none());
         assert!(socket_path(None, "short").is_none());
+    }
+
+    #[test]
+    fn socket_path_is_none_for_a_name_that_leaves_the_directory() {
+        let dir = PathBuf::from("/run/user/1000/firebrick/netlog");
+
+        for name in ["../../x", "a/b", "..", ".", "", "/etc/x"] {
+            assert!(socket_path(Some(&dir), name).is_none(), "{name:?}");
+        }
     }
 
     #[tokio::test]
