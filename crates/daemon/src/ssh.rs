@@ -5,7 +5,7 @@
 //! SSH server microsandbox runs for the sandbox. No sshd, TCP port or DNS record is involved.
 
 use crate::atomic_file;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use microsandbox::sandbox::SandboxHandle;
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey};
@@ -117,10 +117,9 @@ pub fn sync_config(hostnames: &[String]) -> Result<()> {
     let dir = ssh_dir()?;
     let config_path = dir.join(CONFIG_FILE);
 
-    // Write a temporary file and rename it, so ssh never reads a half-written config.
-    let temp_path = dir.join(format!("{CONFIG_FILE}.tmp"));
-    write_file(&temp_path, &render_config(hostnames, &dir, &cli_binary()))?;
-    fs::rename(&temp_path, &config_path)?;
+    let config = render_config(hostnames, &dir, &cli_binary());
+    atomic_file::write(&config_path, &config, 0o600)
+        .with_context(|| format!("failed to write {}", config_path.display()))?;
 
     let home = std::env::var_os("HOME").context("HOME is not set")?;
     ensure_include(&PathBuf::from(home).join(".ssh/config"), &config_path)
@@ -157,18 +156,7 @@ fn render_config(hostnames: &[String], ssh_dir: &Path, cli: &Path) -> String {
 fn ensure_include(user_config: &Path, include: &Path) -> Result<()> {
     let include_line = format!("Include \"{}\"", include.display());
 
-    // A symlink to a missing file is an error, so the rename doesn't replace the link.
-    let existing = match fs::read_to_string(user_config) {
-        Ok(content) => content,
-        Err(err) if err.kind() == ErrorKind::NotFound && !user_config.is_symlink() => {
-            if let Some(dir) = user_config.parent() {
-                fs::create_dir_all(dir)?;
-                fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
-            }
-            String::new()
-        }
-        Err(err) => return Err(err.into()),
-    };
+    let existing = read_user_config(user_config)?;
 
     if existing.lines().any(|line| line.trim() == include_line) {
         return Ok(());
@@ -176,6 +164,26 @@ fn ensure_include(user_config: &Path, include: &Path) -> Result<()> {
 
     atomic_file::write(user_config, &format!("{include_line}\n\n{existing}"), 0o600)
         .with_context(|| format!("failed to update {}", user_config.display()))
+}
+
+/// Reads the user's SSH config, creating `~/.ssh` when the config doesn't exist yet. A symlink
+/// to a missing file is an error, so the rename doesn't replace the link.
+fn read_user_config(path: &Path) -> Result<String> {
+    match fs::read_to_string(path) {
+        Ok(content) => Ok(content),
+        Err(err) if err.kind() == ErrorKind::NotFound && path.is_symlink() => bail!(
+            "{} is a symlink to a missing file; create the target or remove the link",
+            path.display()
+        ),
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            if let Some(dir) = path.parent() {
+                fs::create_dir_all(dir)?;
+                fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+            }
+            Ok(String::new())
+        }
+        Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
+    }
 }
 
 /// Writes a file that only the user can read, keeping the permissions of an existing file.
@@ -310,7 +318,8 @@ mod tests {
         let result = ensure_include(&user_config, Path::new("/data/firebrick/ssh/config"));
 
         fs::set_permissions(&ssh_dir, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.starts_with("failed to update"), "{err}");
         assert_eq!(
             fs::read_to_string(&user_config).unwrap(),
             "Host github.com\n"
@@ -331,10 +340,9 @@ mod tests {
         ensure_include(&user_config, Path::new("/data/firebrick/ssh/config")).unwrap();
 
         assert!(user_config.is_symlink());
-        assert!(
-            fs::read_to_string(&dotfiles)
-                .unwrap()
-                .starts_with("Include \"/data/firebrick/ssh/config\"\n")
+        assert_eq!(
+            fs::read_to_string(&dotfiles).unwrap(),
+            "Include \"/data/firebrick/ssh/config\"\n\nHost github.com\n"
         );
     }
 
@@ -344,10 +352,16 @@ mod tests {
         let user_config = dir.path().join(".ssh/config");
 
         fs::create_dir_all(user_config.parent().unwrap()).unwrap();
-        std::os::unix::fs::symlink(dir.path().join("missing"), &user_config).unwrap();
+        let missing = dir.path().join("missing");
+        std::os::unix::fs::symlink(&missing, &user_config).unwrap();
 
-        assert!(ensure_include(&user_config, Path::new("/data/firebrick/ssh/config")).is_err());
-        assert!(user_config.is_symlink());
+        let err = ensure_include(&user_config, Path::new("/data/firebrick/ssh/config"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("is a symlink to a missing file"), "{err}");
+        assert_eq!(fs::read_link(&user_config).unwrap(), missing);
+        assert!(!missing.exists());
     }
 
     #[test]

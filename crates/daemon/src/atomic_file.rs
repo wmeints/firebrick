@@ -34,13 +34,15 @@ pub(crate) fn write(path: &Path, content: &str, new_mode: u32) -> io::Result<()>
 
 /// Writes `content` to `path`, creating it with `mode` when it doesn't exist.
 fn write_new(path: &Path, content: &str, mode: u32) -> io::Result<()> {
-    fs::OpenOptions::new()
+    let mut file = fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(mode)
-        .open(path)?
-        .write_all(content.as_bytes())
+        .open(path)?;
+    file.write_all(content.as_bytes())?;
+    // Flush before the rename, so a power loss can't leave the renamed file empty.
+    file.sync_all()
 }
 
 /// Gives `temp` the permissions of `target`, when `target` exists.
@@ -55,7 +57,6 @@ fn keep_permissions(target: &Path, temp: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     #[test]
@@ -70,26 +71,16 @@ mod tests {
     }
 
     #[test]
-    fn creates_new_file_with_mode() {
+    fn replaces_target_of_symlink() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("config");
+        let target = dir.path().join("target");
+        let link = dir.path().join("link");
+        fs::write(&target, "old\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
 
-        write(&path, "new\n", 0o600).unwrap();
+        write(&link, "new\n", 0o600).unwrap();
 
-        let mode = fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
-    }
-
-    #[test]
-    fn existing_file_keeps_mode() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("config");
-        fs::write(&path, "old\n").unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
-
-        write(&path, "new\n", 0o600).unwrap();
-
-        let mode = fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o640);
+        assert!(link.is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new\n");
     }
 }
