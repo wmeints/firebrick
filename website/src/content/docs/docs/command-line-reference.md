@@ -59,7 +59,9 @@ fbk stop
 fbk ls [--format <FORMAT>]
 ```
 
-Lists all sandboxes with their name, status and SSH host name.
+Lists all sandboxes with their name, status and SSH host name. The status is
+`unknown` for a running sandbox whose VM didn't report within 10 seconds whether
+it's paused, for example on a very busy host.
 
 | Flag                | Description                                    | Default |
 | ------------------- | ---------------------------------------------- | ------- |

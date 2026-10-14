@@ -160,8 +160,9 @@ pub struct StartSandbox<'a> {
 pub struct SandboxInfo {
     /// Name of the sandbox.
     pub name: String,
-    /// Status of the sandbox.
-    pub status: SandboxStatus,
+    /// Status of the sandbox, or `None` in a listing when its runtime didn't report whether it's
+    /// paused.
+    pub status: Option<SandboxStatus>,
     /// SSH host name of the sandbox, if it has one.
     pub hostname: Option<String>,
     /// Guest path the workspace is mounted at, e.g. `/workspaces/project`, if it has one.
@@ -178,7 +179,7 @@ pub struct SandboxInfo {
 impl SandboxInfo {
     /// Reads the sandbox's config once and reports it with the status. A config that can't be
     /// read leaves out everything it holds, and is logged.
-    fn of(handle: &SandboxHandle, status: SandboxStatus) -> Self {
+    fn of(handle: &SandboxHandle, status: Option<SandboxStatus>) -> Self {
         let spec = match handle.config() {
             Ok(config) => Some(config.spec),
             Err(err) => {
@@ -884,7 +885,7 @@ impl SandboxManager {
     pub async fn get(&self, name: &str) -> Result<SandboxInfo, SandboxError> {
         let sb = get_sandbox(name).await?;
 
-        Ok(SandboxInfo::of(&sb, current_status(&sb).await?))
+        Ok(SandboxInfo::of(&sb, Some(current_status(&sb).await?)))
     }
 
     /// Returns every sandbox.
@@ -1861,26 +1862,45 @@ pub async fn stop_or_kill(sb: &SandboxHandle, timeout: Duration) -> Result<(), M
     }
 }
 
-/// Returns the status of the sandbox. microsandbox reports a paused sandbox as running when its
-/// runtime doesn't say within 250 ms that it's paused, which happens on a busy host, so this
-/// asks the runtime of a running sandbox again and waits up to [`PAUSE_STATE_TIMEOUT`]. Fails
-/// when the runtime doesn't answer, instead of guessing.
+/// Returns the status of the sandbox, see [`observed_status`]. Fails when the runtime doesn't
+/// report whether the sandbox is paused, instead of guessing.
 async fn current_status(sb: &SandboxHandle) -> Result<SandboxStatus, SandboxError> {
-    timeout(PAUSE_STATE_TIMEOUT, ask_pause_state(sb))
-        .await
-        .unwrap_or_else(|_| {
-            Err(SandboxError::internal(format!(
-                "failed to read whether sandbox {} is paused",
-                sb.name()
-            )))
-        })
+    observed_status(sb).await?.ok_or_else(|| {
+        SandboxError::internal(format!(
+            "the runtime of sandbox {} didn't report whether it's paused; try again, or stop \
+             and start the sandbox",
+            sb.name()
+        ))
+    })
 }
 
-/// Returns the info of a listed sandbox, or `None` when it was removed after it was listed.
+/// Returns the status of the sandbox. microsandbox reports a paused sandbox as running when its
+/// runtime doesn't say within 250 ms that it's paused, which happens on a busy host, so this
+/// asks the runtime of a running sandbox again and waits up to [`PAUSE_STATE_TIMEOUT`]. Returns
+/// `None` when the runtime doesn't answer in time.
+async fn observed_status(sb: &SandboxHandle) -> Result<Option<SandboxStatus>, SandboxError> {
+    match timeout(PAUSE_STATE_TIMEOUT, ask_pause_state(sb)).await {
+        Ok(status) => status.map(Some),
+        Err(_) => {
+            tracing::error!(
+                "the runtime of sandbox {} didn't report within {PAUSE_STATE_TIMEOUT:?} whether \
+                 it's paused",
+                sb.name()
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Returns the info of a listed sandbox, without a status when its runtime doesn't report
+/// whether it's paused, or `None` when it was removed after it was listed.
 async fn listed_info(sb: &SandboxHandle) -> Result<Option<SandboxInfo>, SandboxError> {
-    match current_status(sb).await {
+    match observed_status(sb).await {
         Ok(status) => Ok(Some(SandboxInfo::of(sb, status))),
-        Err(SandboxError::NotFound(_)) => Ok(None),
+        Err(SandboxError::NotFound(_)) => {
+            tracing::info!("sandbox {} was removed while listing it", sb.name());
+            Ok(None)
+        }
         Err(err) => Err(err),
     }
 }
@@ -1913,12 +1933,19 @@ async fn try_pause_state(sb: &SandboxHandle) -> Option<SandboxStatus> {
         return Some(status);
     }
 
+    let name = sb.name();
+
     match sb.pause_state().await {
         Ok(state) if state.paused || state.recovery_required => Some(SandboxStatus::Paused),
         Ok(_) => Some(SandboxStatus::Running),
+        // A runtime without a control endpoint, such as one whose control listener failed to
+        // start, can't be paused either, because pausing goes through the same endpoint.
+        Err(err @ MicrosandboxError::Runtime(_)) => {
+            tracing::debug!("sandbox {name} runs without a pause control: {err}");
+            Some(SandboxStatus::Running)
+        }
         Err(err) => {
-            let name = sb.name();
-            tracing::warn!("failed to read the pause state of sandbox {name}: {err}");
+            tracing::debug!("failed to read the pause state of sandbox {name}: {err}");
             None
         }
     }

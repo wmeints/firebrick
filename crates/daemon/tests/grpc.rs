@@ -2779,29 +2779,107 @@ async fn paused_sandbox_with_a_slow_runtime_is_not_reported_running() {
 
     let daemon = TestDaemon::start("paused-slow").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, name).await;
-    let sb = Sandbox::get(name).await.unwrap();
-    pause(&sb).await.unwrap();
+    let (sb, pid) = start_paused_sandbox(&mut client, name).await;
 
-    let listed = while_runtime_frozen(name, sandbox_status(&mut client, name)).await;
-    let updated = while_runtime_frozen(
-        name,
-        update_network(&mut client, name, allow_policy(true, &["example.org"])),
-    )
-    .await;
-    let upgraded = while_runtime_frozen(name, upgrade(&mut client, name, UPGRADE_IMAGE)).await;
+    let listed = slowed(name, sandbox_status(&mut client, name)).await;
+    let got = slowed(name, get_status(&mut client, name)).await;
+    let policy = allow_policy(true, &["example.org"]);
+    let updated = slowed(name, update_network(&mut client, name, policy)).await;
+    let upgraded = slowed(name, upgrade(&mut client, name, UPGRADE_IMAGE)).await;
+    let kept = runtime_pid(name).await;
 
-    let resumed = resume(&sb).await;
+    resume(&sb).await.unwrap();
     daemon.stop().await;
     remove_sandbox_and_snapshots(name).await;
 
-    assert_eq!(listed, Some(SandboxStatus::Paused));
-    assert_eq!(updated.unwrap_err().code(), Code::FailedPrecondition);
-    assert_eq!(upgraded.unwrap_err().code(), Code::FailedPrecondition);
-    assert!(
-        resumed.is_ok(),
-        "the paused sandbox was replaced: {resumed:?}"
-    );
+    assert_eq!(listed.0, Some(SandboxStatus::Paused));
+    assert_eq!(got.0, Ok(SandboxStatus::Paused));
+    assert_eq!(code(updated.0), Code::FailedPrecondition);
+    assert_eq!(code(upgraded.0), Code::FailedPrecondition);
+    // Each request waited for the runtime, so it asked while the runtime was stopped.
+    for elapsed in [listed.1, got.1, updated.1, upgraded.1] {
+        assert!(elapsed >= SLOW_RUNTIME, "answered in {elapsed:?}");
+    }
+    assert_eq!(kept, pid, "the paused sandbox was replaced");
+}
+
+#[tokio::test]
+async fn paused_sandbox_with_a_hung_runtime_is_listed_as_unknown_and_not_replaced() {
+    let name: &str = &sandbox_name("paused-hung");
+    remove_sandbox_and_snapshots(name).await;
+
+    let daemon = TestDaemon::start("paused-hung").await;
+    let (mut list_client, mut get_client) = (daemon.client().await, daemon.client().await);
+    let mut client = daemon.client().await;
+    let (sb, pid) = start_paused_sandbox(&mut client, name).await;
+
+    let requests = async {
+        tokio::join!(
+            sandbox_status(&mut list_client, name),
+            get_status(&mut get_client, name),
+            update_network(&mut client, name, allow_policy(true, &["example.org"])),
+        )
+    };
+    let ((listed, got, updated), _) = frozen(name, HUNG_RUNTIME, requests).await;
+    let kept = runtime_pid(name).await;
+
+    resume(&sb).await.unwrap();
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
+
+    assert_eq!(listed, Some(SandboxStatus::Unknown));
+    assert_eq!(got, Err(Code::Internal));
+    assert_eq!(code(updated), Code::Internal);
+    assert_eq!(kept, pid, "the paused sandbox was replaced");
+}
+
+/// Starts a sandbox and pauses it, and returns it with the id of its runtime process.
+async fn start_paused_sandbox(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> (SandboxHandle, i32) {
+    start_running_sandbox(client, name).await;
+    let sb = Sandbox::get(name).await.unwrap();
+    pause(&sb).await.unwrap();
+
+    (sb, runtime_pid(name).await)
+}
+
+/// How long a test stops a sandbox's runtime to make it miss the 250 ms microsandbox gives it
+/// to report whether the sandbox is paused, as on a busy host.
+const SLOW_RUNTIME: Duration = Duration::from_secs(1);
+
+/// How long a test stops a sandbox's runtime to make it miss the 10 s the daemon gives it to
+/// report whether the sandbox is paused.
+const HUNG_RUNTIME: Duration = Duration::from_secs(12);
+
+/// Returns the status the daemon reports for the sandbox, or the code it fails with.
+async fn get_status(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> Result<SandboxStatus, Code> {
+    client
+        .get_sandbox(GetSandboxRequest {
+            name: name.to_string(),
+        })
+        .await
+        .map(|response| response.into_inner().status())
+        .map_err(|status| status.code())
+}
+
+/// Returns the code of a failed request.
+fn code<T: std::fmt::Debug>(result: Result<T, Status>) -> Code {
+    result.expect_err("the request succeeded").code()
+}
+
+/// Returns the id of the process that runs the sandbox, which changes when it's replaced.
+async fn runtime_pid(name: &str) -> i32 {
+    Sandbox::get(name)
+        .await
+        .unwrap()
+        .local()
+        .and_then(|local| local.pid)
+        .expect("sandbox has no runtime process")
 }
 
 /// How often a test sends a pause or resume that microsandbox didn't send.
@@ -2842,20 +2920,26 @@ where
     }
 }
 
-/// Runs the request while the sandbox's runtime process is stopped for a second, so it misses
-/// the 250 ms microsandbox gives it to report whether the sandbox is paused, as on a busy host.
-async fn while_runtime_frozen<T>(name: &str, request: impl Future<Output = T>) -> T {
-    let sb = Sandbox::get(name).await.unwrap();
-    let pid = sb
-        .local()
-        .and_then(|local| local.pid)
-        .expect("sandbox has no runtime process")
-        .to_string();
-    signal_process("STOP", &pid);
+/// Runs the request while the sandbox's runtime is stopped for [`SLOW_RUNTIME`], see [`frozen`].
+async fn slowed<T>(name: &str, request: impl Future<Output = T>) -> (T, Duration) {
+    frozen(name, SLOW_RUNTIME, request).await
+}
 
+/// Runs the request while the sandbox's runtime process is stopped for the time, and returns
+/// its result and how long it took.
+async fn frozen<T>(
+    name: &str,
+    freeze: Duration,
+    request: impl Future<Output = T>,
+) -> (T, Duration) {
+    let pid = runtime_pid(name).await.to_string();
+    signal_process("STOP", &pid).await;
+    let start = Instant::now();
+
+    let request = async { (request.await, start.elapsed()) };
     let thaw = async {
-        sleep(Duration::from_secs(1)).await;
-        signal_process("CONT", &pid);
+        sleep(freeze).await;
+        signal_process("CONT", &pid).await;
     };
     let (result, ()) = tokio::join!(request, thaw);
 
@@ -2863,10 +2947,11 @@ async fn while_runtime_frozen<T>(name: &str, request: impl Future<Output = T>) -
 }
 
 /// Sends the signal to the process with `kill`.
-fn signal_process(signal: &str, pid: &str) {
-    let status = std::process::Command::new("kill")
+async fn signal_process(signal: &str, pid: &str) {
+    let status = tokio::process::Command::new("kill")
         .args([format!("-{signal}").as_str(), pid])
         .status()
+        .await
         .expect("failed to run kill");
 
     assert!(status.success(), "kill -{signal} {pid} failed");
