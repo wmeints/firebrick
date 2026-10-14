@@ -85,6 +85,7 @@ export default defineConfig({
         "docs/editor-support",
         "docs/custom-images",
         "docs/command-line-reference",
+        "docs/security",
       ],
       // Fails the build on broken internal links.
       plugins: [starlightLinksValidator()],

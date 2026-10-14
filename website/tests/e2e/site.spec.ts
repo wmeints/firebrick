@@ -112,6 +112,7 @@ test("the docs sidebar lists the pages in reading order", async ({ page }) => {
     "Editor support",
     "Custom images",
     "Command-line reference",
+    "Reporting security issues",
   ]);
 });
 

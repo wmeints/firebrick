@@ -10,6 +10,11 @@ Accepted risks are described in
 [Risks and technical debt](../11-risks-and-technical-debt.md); this document
 summarizes them and links there instead of repeating them.
 
+The [security policy](../../../SECURITY.md) and the
+[security page](../../../website/src/content/docs/docs/security.md) of the docs
+summarize the scope for people who report a vulnerability; update them when the
+security goals or the out-of-scope list change.
+
 ## Security goals
 
 1. Code in a sandbox can't read or change host files outside the workspace and
