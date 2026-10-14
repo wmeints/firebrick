@@ -138,19 +138,28 @@ in the security-reviewer agent.
 
 ## Threats and mitigations
 
-Grouped by STRIDE category. "Accepted" points to a risk that the docs accept;
-the code must still do what the docs say.
+Grouped by STRIDE category. The status of each threat is one of:
+
+- **Mitigated:** the code has a guard; a change must keep it.
+- **Accepted:** the docs accept the risk, in
+  [Risks and technical debt](../11-risks-and-technical-debt.md) or a decision
+  record; the code must still do what the docs say.
+- **Check:** a guard exists, but it isn't verified or depends on microsandbox;
+  reviewers verify it on every change that touches it.
+- **Open:** a known gap that breaks an invariant, tracked in the linked issue.
+  Reviewers don't report it again, but do report a change that makes it worse.
 
 ### Elevation of privilege: guest to host
 
-| Threat                                                                                                                                            | Mitigation                                                                                                                        | Status    |
-| ------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------- |
-| A sandbox name, path or other spec value injects a directive into `~/.ssh/config` (`ProxyCommand` through a newline) or into editor settings JSON | SSH host names come from `firebrick_utils::sanitize_label` or host-side labels; settings written with `jsonc-parser`, not by hand | Mitigated |
-| The sandbox `name` from the spec reaches host paths, such as the vsock sockets and network records, before microsandbox validates it              | None yet: `firebrick-spec` and `fbkd` don't validate `name`                                                                       | Check     |
-| `fbk` or `fbkd` follows a symlink the agent planted in the workspace and reads or writes outside it                                               | Host code only reads and writes `.firebrick.yml` in the workspace, and must not follow a symlink there                            | Check     |
-| `fbkd` runs a host program with arguments the guest controls                                                                                      | `xdg-open`/`open` get one validated URL; clipboard tools get fixed arguments                                                      | Mitigated |
-| A guest escape sequence in `fbk run` or `ssh` output reaches the terminal, such as OSC 52 or a terminal-specific exploit                          | None by design                                                                                                                    | Accepted  |
-| Planted git hooks, `core.fsmonitor`, `.vscode/tasks.json`, `.envrc` or mise configs run when the user works in the workspace on the host          | User documentation warns                                                                                                          | Accepted  |
+| Threat                                                                                                                                            | Mitigation                                                                                                                        | Status                                                        |
+| ------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| A sandbox name, path or other spec value injects a directive into `~/.ssh/config` (`ProxyCommand` through a newline) or into editor settings JSON | SSH host names come from `firebrick_utils::sanitize_label` or host-side labels; settings written with `jsonc-parser`, not by hand | Mitigated                                                     |
+| The sandbox `name` from the spec reaches host paths, such as the vsock sockets and network records, before microsandbox validates it              | None yet: `firebrick-spec` and `fbkd` don't validate `name`                                                                       | Open, [#197](https://github.com/wmeints/firebrick/issues/197) |
+| `fbk` or `fbkd` follows a symlink the agent planted in the workspace and reads or writes outside it                                               | None yet: `fbk init --force`, `fbk network` and `fbk port` write through a symlinked `.firebrick.yml`                             | Open, [#196](https://github.com/wmeints/firebrick/issues/196) |
+| `fbkd` runs a host program with arguments the guest controls                                                                                      | `xdg-open`/`open` get one validated URL; clipboard tools get fixed arguments                                                      | Mitigated                                                     |
+| A guest escape sequence in `fbk run` or `ssh` output reaches the terminal, such as OSC 52 or a terminal-specific exploit                          | None by design                                                                                                                    | Accepted                                                      |
+| Spec text, such as a YAML error that quotes a key or the `image` reference, writes escape sequences to the terminal or `fbkd.log`                 | None yet: spec text isn't stripped                                                                                                | Open, [#200](https://github.com/wmeints/firebrick/issues/200) |
+| Planted git hooks, `core.fsmonitor`, `.vscode/tasks.json`, `.envrc` or mise configs run when the user works in the workspace on the host          | User documentation warns                                                                                                          | Accepted                                                      |
 
 ### Tampering: the spec
 
@@ -185,23 +194,24 @@ the code must still do what the docs say.
 
 ### Spoofing and denial of service
 
-| Threat                                                                                              | Mitigation                                                   | Status    |
-| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | --------- |
-| Another local user binds `fbkd.sock` in the temp dir first and receives `fbk secret set` values     | The CLI checks the peer's UID                                | Mitigated |
-| Another local user connects to the daemon socket                                                    | `0600` and `SO_PEERCRED`                                     | Mitigated |
-| Another local user plants a data or log directory in the temp dir                                   | Data and logs never fall back to the temp dir                | Mitigated |
-| A sandbox claims a loopback port before a host service, or receives an OAuth code meant for another | Rate limit, idle limit                                       | Accepted  |
-| The guest floods `fbkd` with log events, clipboard requests, URLs or huge lines and exhausts memory | Bounded records, line limits, connection limits, rate limits | Check     |
+| Threat                                                                                              | Mitigation                                                   | Status                                                        |
+| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------- |
+| Another local user binds `fbkd.sock` in the temp dir first and receives `fbk secret set` values     | The CLI checks the peer's UID                                | Mitigated                                                     |
+| Another local user connects to the daemon socket                                                    | `0600` and `SO_PEERCRED`                                     | Mitigated                                                     |
+| Another local user plants a data or log directory in the temp dir                                   | Data and logs never fall back to the temp dir                | Mitigated                                                     |
+| A sandbox claims a loopback port before a host service, or receives an OAuth code meant for another | Rate limit, idle limit                                       | Accepted                                                      |
+| The guest floods `fbkd` with log events, clipboard requests, URLs or huge lines and exhausts memory | Bounded records, line limits, connection limits, rate limits | Check                                                         |
+| An interrupted write leaves the user's `~/.ssh/config` empty                                        | None yet: `fbkd` truncates and rewrites it in place          | Open, [#198](https://github.com/wmeints/firebrick/issues/198) |
 
 ### Supply chain
 
-| Threat                                                                                    | Mitigation                                                            | Status    |
-| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | --------- |
-| A moved or hijacked action tag runs in CI or a release                                    | Actions pinned to commit SHAs, enforced by the repository             | Mitigated |
-| A tool download in CI is swapped                                                          | `mise.lock` checksums with `--locked`                                 | Mitigated |
-| A crate with a known vulnerability                                                        | Daily `cargo audit`                                                   | Mitigated |
-| A release published without review                                                        | `release` environment with a required reviewer                        | Mitigated |
-| An unpinned download or apt key in the `Dockerfile`, or the image pulled by a mutable tag | HTTPS and signed apt repositories; the default image is pulled by tag | Check     |
+| Threat                                                                                                       | Mitigation                                                                               | Status                                                        |
+| ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| A moved or hijacked action tag runs in CI or a release                                                       | Actions pinned to commit SHAs, enforced by the repository                                | Mitigated                                                     |
+| A tool download in CI is swapped                                                                             | `mise.lock` checksums with `--locked`                                                    | Mitigated                                                     |
+| A crate with a known vulnerability                                                                           | Daily `cargo audit`                                                                      | Mitigated                                                     |
+| A release published without review                                                                           | `release` environment with a required reviewer                                           | Mitigated                                                     |
+| An unpinned apt key in the `Dockerfile`, a retagged base image, or the default image pulled by a mutable tag | HTTPS and signed apt repositories; key fingerprints and the base image aren't pinned yet | Open, [#199](https://github.com/wmeints/firebrick/issues/199) |
 
 ## Invariants
 

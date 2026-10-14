@@ -15,6 +15,10 @@ and trust boundaries these risks belong to.
   `secrets.yml` and in microsandbox's database, readable by every process that
   runs as the user. When the host may be compromised, rotate the secrets at
   their issuers ([ADR 0004](decisions/0004-store-secrets-in-a-private-file.md)).
+- **Secret values on the command line:** `fbk secret set NAME VALUE` takes the
+  value as an argument, so it shows in process listings and the shell history.
+  The help text recommends `--from-stdin`, which reads the value from stdin
+  instead.
 - **Secrets only work in HTTP headers:** Firebrick keeps microsandbox's default
   substitution scope, which replaces secret placeholders in headers, including
   decoded Basic auth credentials, but not in URLs or request bodies. Tools that
