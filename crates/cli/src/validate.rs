@@ -1,55 +1,53 @@
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use firebrick_spec::{SandboxSpec, SandboxSpecError};
 use std::path::Path;
 
 use crate::manage::SPEC_FILE_NAME;
 
 /// Validates the spec file in the working directory and reports any problem with its
-/// line and column. Returns whether the spec is valid.
+/// line and column. Returns whether the spec is valid. Fails when there is no spec file, it
+/// can't be read, or it is a symlink.
 pub fn validate_spec(working_dir: &Path) -> Result<bool> {
     let spec_path = working_dir.join(SPEC_FILE_NAME);
 
-    if !spec_path.is_file() {
-        bail!("can't find {SPEC_FILE_NAME} in {}", working_dir.display());
-    }
-
-    match check_spec(&spec_path) {
-        Ok(()) => {
+    match firebrick_spec::from_file(&spec_path) {
+        Ok(Some(_)) => {
             println!("{SPEC_FILE_NAME} is valid");
             Ok(true)
         }
-        Err(report) => {
-            eprintln!("{report}");
+        Ok(None) => bail!("can't find {SPEC_FILE_NAME} in {}", working_dir.display()),
+        Err(err) if err.diagnostic().is_some() => {
+            eprintln!("{}", spec_error(err));
             Ok(false)
         }
+        Err(err) => Err(err.into()),
     }
 }
 
-/// Loads the spec, formatting a parse problem as `file:line:column: error: message`.
-fn check_spec(spec_path: &Path) -> Result<(), String> {
-    load_spec(spec_path).map(|_| ())
+/// Loads the spec, or returns `None` when there is no spec file. Reports a problem like
+/// [`spec_error`].
+pub(crate) fn load_spec(spec_path: &Path) -> Result<Option<SandboxSpec>> {
+    firebrick_spec::from_file(spec_path).map_err(spec_error)
 }
 
-/// Loads the spec, formatting a problem the way `fbk validate` reports it:
-/// `file:line:column: error: message`.
-pub(crate) fn load_spec(spec_path: &Path) -> Result<SandboxSpec, String> {
-    firebrick_spec::from_file(spec_path).map_err(|err| report(&err))
-}
-
-/// Formats a problem with the spec file, with its position when it has one.
-pub(crate) fn report(err: &SandboxSpecError) -> String {
+/// Turns a problem with the spec file into an error. Invalid content reads the way `fbk
+/// validate` reports it, `file:line:column: error: message`; other errors keep their cause.
+pub(crate) fn spec_error(err: SandboxSpecError) -> anyhow::Error {
     match err.diagnostic() {
-        Some(diagnostic) => format!(
+        Some(diagnostic) => anyhow!(
             "{SPEC_FILE_NAME}:{}:{}: error: {}",
-            diagnostic.line, diagnostic.column, diagnostic.message
+            diagnostic.line,
+            diagnostic.column,
+            diagnostic.message
         ),
-        None => format!("{SPEC_FILE_NAME}: error: {err}"),
+        None => err.into(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::symlinked_spec;
     use std::fs;
     use tempfile::TempDir;
 
@@ -84,11 +82,22 @@ mod tests {
     fn report_includes_line_and_column() {
         let dir = write_spec("name: dev\nresources:\n  cpu: 2\n  memroy: 4Gi\n");
 
-        let report = check_spec(&dir.path().join(SPEC_FILE_NAME)).unwrap_err();
+        let err = load_spec(&dir.path().join(SPEC_FILE_NAME)).unwrap_err();
 
         assert_eq!(
-            report,
+            err.to_string(),
             ".firebrick.yml:4:3: error: resources: unknown field `memroy`, expected `cpu` or `memory`"
         );
+    }
+
+    #[test]
+    fn symlinked_spec_returns_error() {
+        for content in [Some("name: dev\n"), None] {
+            let (dir, _target) = symlinked_spec::workspace(content);
+
+            let err = validate_spec(dir.path()).unwrap_err();
+
+            assert_eq!(err.to_string(), symlinked_spec::SYMLINK_ERROR);
+        }
     }
 }

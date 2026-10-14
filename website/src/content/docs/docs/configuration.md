@@ -67,6 +67,20 @@ $ fbk validate
 
 `fbk start` and `fbk run` refuse to use an invalid file.
 
+`.firebrick.yml` must be a regular file. The agent in the sandbox can replace
+it, so a symlink could make `fbk` read or overwrite a file outside the
+workspace. Every command refuses a symlinked spec, even one that points into the
+workspace:
+
+```sh
+$ fbk start
+Error: .firebrick.yml is a symlink; firebrick only uses a regular file in the workspace
+```
+
+A directory, a named pipe or another special file in its place fails the same
+way. If you keep the spec in a dotfiles repository, copy it into the workspace
+instead of linking it.
+
 ## Without a `.firebrick.yml`
 
 Without the file, Firebrick uses the defaults and names the sandbox `firebrick-`

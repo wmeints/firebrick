@@ -1,28 +1,24 @@
 use anyhow::{Context, Result, bail};
-use std::fs::OpenOptions;
-use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use crate::manage::SPEC_FILE_NAME;
 
 /// Writes the default spec, named after the working directory, to `.firebrick.yml` in the
 /// working directory and returns its path. Refuses to replace an existing file unless `force`
-/// is set.
+/// is set, and refuses a symlink either way.
 pub fn init_spec(working_dir: &Path, force: bool) -> Result<PathBuf> {
     let spec_path = working_dir.join(SPEC_FILE_NAME);
     let spec = firebrick_spec::default_spec(spec_name(working_dir));
     let content = serde_yaml::to_string(&spec).context("can't serialize the default spec")?;
 
-    let mut file = match open_spec_file(&spec_path, force) {
-        Err(err) if err.kind() == ErrorKind::AlreadyExists => bail!(
+    if !force && firebrick_spec::exists(&spec_path)? {
+        bail!(
             "{SPEC_FILE_NAME} already exists in {}; use fbk init --force to overwrite it",
             working_dir.display()
-        ),
-        result => result.with_context(|| format!("can't create {}", spec_path.display()))?,
-    };
+        );
+    }
 
-    file.write_all(content.as_bytes())
-        .with_context(|| format!("can't write {}", spec_path.display()))?;
+    firebrick_spec::write_text(&spec_path, &content)?;
 
     Ok(spec_path)
 }
@@ -38,20 +34,10 @@ fn spec_name(working_dir: &Path) -> String {
     name.trim_end_matches('-').to_string()
 }
 
-/// Opens the spec file for writing, failing with `AlreadyExists` when it exists and `force`
-/// isn't set, so a file created in the meantime is never overwritten.
-fn open_spec_file(spec_path: &Path, force: bool) -> std::io::Result<std::fs::File> {
-    OpenOptions::new()
-        .write(true)
-        .create_new(!force)
-        .create(force)
-        .truncate(force)
-        .open(spec_path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::symlinked_spec;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
@@ -67,7 +53,9 @@ mod tests {
     fn cuts_a_long_directory_name_to_a_valid_sandbox_name() {
         let (_root, dir) = project_dir(&format!("{}_yz", "x".repeat(127)));
 
-        let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap()).unwrap();
+        let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap())
+            .unwrap()
+            .unwrap();
 
         assert_eq!(spec.name, "x".repeat(127));
     }
@@ -77,7 +65,7 @@ mod tests {
         let (_root, dir) = project_dir("project");
 
         let spec_path = init_spec(&dir, false).unwrap();
-        let spec = firebrick_spec::from_file(&spec_path).unwrap();
+        let spec = firebrick_spec::from_file(&spec_path).unwrap().unwrap();
         let resources = spec.resources.unwrap();
 
         assert_eq!(spec_path, dir.join(SPEC_FILE_NAME));
@@ -106,7 +94,9 @@ mod tests {
         for (leaf, name) in [("My.App", "my-app"), ("my project_", "my-project")] {
             let (_root, dir) = project_dir(leaf);
 
-            let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap()).unwrap();
+            let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap())
+                .unwrap()
+                .unwrap();
 
             assert_eq!(spec.name, name);
         }
@@ -116,7 +106,9 @@ mod tests {
     fn name_falls_back_to_sandbox() {
         let (_root, dir) = project_dir("__");
 
-        let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap()).unwrap();
+        let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap())
+            .unwrap()
+            .unwrap();
 
         assert_eq!(spec.name, "sandbox");
     }
@@ -150,10 +142,27 @@ mod tests {
         .unwrap();
 
         init_spec(&dir, true).unwrap();
-        let spec = firebrick_spec::from_file(&spec_path).unwrap();
+        let spec = firebrick_spec::from_file(&spec_path).unwrap().unwrap();
 
         assert_eq!(spec.name, "project");
         assert_eq!(spec.image, None);
+    }
+
+    #[test]
+    fn refuses_a_symlinked_spec_and_leaves_its_target_alone() {
+        for (content, force) in [
+            (Some("notes\n"), false),
+            (Some("notes\n"), true),
+            (None, false),
+            (None, true),
+        ] {
+            let (dir, target) = symlinked_spec::workspace(content);
+
+            let err = init_spec(dir.path(), force).unwrap_err();
+
+            assert_eq!(err.to_string(), symlinked_spec::SYMLINK_ERROR);
+            assert_eq!(symlinked_spec::target_content(&target).as_deref(), content);
+        }
     }
 
     #[test]
