@@ -187,6 +187,31 @@ takes over the terminal. A failed lookup skips the warning, which never changes
 the exit code. Commands that don't boot or change the sandbox, and `fbk
 ssh-proxy`, whose stderr would end up in the SSH session, don't print it.
 
+## Validating sandbox names
+
+`fbkd` names files after sandboxes: the network log and clipboard sockets
+(`<name>.sock`) and the network records (`<name>.json`). The name comes from
+`.firebrick.yml`, which the agent in the sandbox can edit, and microsandbox only
+checks it when it creates a sandbox, after `fbkd` has bound the sockets and
+loaded the record. A name like `../../x` would make `fbkd` delete, create and
+read files outside its directories, so the name is checked in three places, all
+with microsandbox's own rule: 1 to 128 bytes, an ASCII letter or digit first,
+then only ASCII letters, digits, `.`, `-` and `_`.
+
+- `firebrick_spec` checks `name` while it parses the spec, so `fbk validate` and
+  every other command report an invalid name at its line and column and never
+  send it to the daemon. The rule lives in
+  `firebrick_spec::validate_sandbox_name`, which the CLI and the daemon share.
+- `server` checks the name at the top of every RPC that takes one, including the
+  scope of a secret, and fails with `INVALID_ARGUMENT` before it touches the
+  file system or microsandbox.
+- `vsock::sandbox_file` returns no path for a name that isn't a single path
+  component, so a name that slips past the other checks can't leave the socket
+  or record directory.
+
+Every name microsandbox accepts passes, so existing specs and sandboxes keep
+working.
+
 ## Securing the daemon socket
 
 Any process that can use the daemon socket can start sandboxes, read workspace
