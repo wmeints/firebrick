@@ -1113,6 +1113,25 @@ pub mod tests {
     }
 
     #[test]
+    fn misindented_line_after_name_is_folded_into_the_name() {
+        // YAML folds a more-indented line into the plain scalar before it, so the name becomes
+        // `dev bad`, and the name check rejects it before the parser reaches the `:`.
+        let diagnostic = from_str("name: dev\n  bad: indent\n")
+            .unwrap_err()
+            .diagnostic()
+            .unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (1, 7));
+        assert!(
+            diagnostic
+                .message
+                .starts_with("name: invalid sandbox name \"dev bad\""),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
     fn diagnostic_reports_position_of_syntax_error() {
         let file = write_spec("image: dev\n  bad: indent\nname: dev\n");
 

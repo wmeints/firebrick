@@ -1516,6 +1516,39 @@ mod tests {
         assert_eq!(SecretStore::new(&path).load().unwrap().len(), 1);
     }
 
+    #[test]
+    fn sandbox_name_rule_matches_microsandbox() {
+        let long = "a".repeat(129);
+        let longest = "a".repeat(128);
+        let names = [
+            "dev",
+            "My.App_2",
+            "firebrick-8a5eda",
+            "0",
+            "a..",
+            &longest,
+            "",
+            "..",
+            ".dev",
+            "-dev",
+            "_dev",
+            "a/b",
+            "../../x",
+            "dév",
+            "a b",
+            "x\u{1b}]0;x\u{7}",
+            &long,
+        ];
+
+        for name in names {
+            assert_eq!(
+                firebrick_spec::validate_sandbox_name(name).is_ok(),
+                microsandbox::sandbox::validate_sandbox_name(name).is_ok(),
+                "{name:?}"
+            );
+        }
+    }
+
     /// Names that would escape fbkd's socket and record directories.
     const ESCAPING_NAMES: [&str; 3] = ["../../x", "a/b", ".."];
 
@@ -1621,7 +1654,8 @@ mod tests {
         ]
     }
 
-    /// Calls every RPC that takes a sandbox name with each of the escaping names.
+    /// Calls every unary and server-streaming RPC that takes a sandbox name with each of the
+    /// escaping names. `Attach` reads the name from its client stream, so it isn't called here.
     async fn call_with_escaping_names(
         server: &FirebrickServer,
     ) -> Vec<(&'static str, Vec<Result<(), Status>>)> {

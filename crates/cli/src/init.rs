@@ -10,7 +10,7 @@ use crate::manage::SPEC_FILE_NAME;
 /// is set.
 pub fn init_spec(working_dir: &Path, force: bool) -> Result<PathBuf> {
     let spec_path = working_dir.join(SPEC_FILE_NAME);
-    let spec = firebrick_spec::default_spec(firebrick_utils::sanitize_label(working_dir));
+    let spec = firebrick_spec::default_spec(spec_name(working_dir));
     let content = serde_yaml::to_string(&spec).context("can't serialize the default spec")?;
 
     let mut file = match open_spec_file(&spec_path, force) {
@@ -25,6 +25,17 @@ pub fn init_spec(working_dir: &Path, force: bool) -> Result<PathBuf> {
         .with_context(|| format!("can't write {}", spec_path.display()))?;
 
     Ok(spec_path)
+}
+
+/// Names the sandbox after the working directory's leaf, cut to the longest name microsandbox
+/// accepts. The label is ASCII, so each char is one byte.
+fn spec_name(working_dir: &Path) -> String {
+    let name: String = firebrick_utils::sanitize_label(working_dir)
+        .chars()
+        .take(firebrick_spec::MAX_SANDBOX_NAME_BYTES)
+        .collect();
+
+    name.trim_end_matches('-').to_string()
 }
 
 /// Opens the spec file for writing, failing with `AlreadyExists` when it exists and `force`
@@ -50,6 +61,15 @@ mod tests {
         let dir = root.path().join(name);
         fs::create_dir(&dir).unwrap();
         (root, dir)
+    }
+
+    #[test]
+    fn cuts_a_long_directory_name_to_a_valid_sandbox_name() {
+        let (_root, dir) = project_dir(&format!("{}_yz", "x".repeat(127)));
+
+        let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap()).unwrap();
+
+        assert_eq!(spec.name, "x".repeat(127));
     }
 
     #[test]

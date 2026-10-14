@@ -26,8 +26,12 @@ pub const MAX_CONNECTIONS: usize = 4;
 /// isn't a single path component and the file would end up elsewhere. fbkd checks names when a
 /// request comes in; this keeps a name that slipped through inside the directory.
 pub fn sandbox_file(dir: &Path, sandbox: &str, extension: &str) -> Option<PathBuf> {
-    (Path::new(sandbox).file_name() == Some(OsStr::new(sandbox)))
-        .then(|| dir.join(format!("{sandbox}.{extension}")))
+    if Path::new(sandbox).file_name() != Some(OsStr::new(sandbox)) {
+        tracing::error!("refusing to name a file after the invalid sandbox name {sandbox:?}");
+        return None;
+    }
+
+    Some(dir.join(format!("{sandbox}.{extension}")))
 }
 
 /// Returns the socket of the sandbox in the directory, or `None` when there's no directory, the

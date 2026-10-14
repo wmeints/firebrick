@@ -199,7 +199,8 @@ C4Component
 - `init` - Writes `firebrick_spec::default_spec` as YAML to `.firebrick.yml` in
   the working directory, named after the working directory's leaf with
   `firebrick_utils::sanitize_label`, the rule that also makes the SSH host
-  names. It refuses to replace an existing file unless `--force` is passed.
+  names, and cut to the 128 bytes a sandbox name may have. It refuses to replace
+  an existing file unless `--force` is passed.
 
 ## Level 2 - Daemon
 

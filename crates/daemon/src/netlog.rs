@@ -1178,30 +1178,37 @@ mod tests {
         assert_eq!(logs.record("sb").await.unwrap(), Record::default());
     }
 
-    /// Listens for the sandbox, reads its record and removes it, returning the record.
-    async fn listen_and_remove(logs: &NetLogs, sandbox: &str) -> Record {
-        logs.listen(sandbox).await;
-        let record = logs.record(sandbox).await.unwrap();
-        logs.remove(sandbox).await;
+    /// Writes a record with one connection to `outside.json` in the directory, outside the
+    /// record directory, and returns its content.
+    async fn write_outside_record(dir: &Path) -> Vec<u8> {
+        let logs = netlogs(dir);
+        logs.listen("sb").await;
+        let mut stream = connect_logger(&logs, "sb").await.unwrap();
+        write_lines(&mut stream, &[CONNECT_LINE]).await;
+        wait_for_destinations(&logs, "sb", 1).await;
+        logs.close().await;
 
-        record
+        let outside = dir.join("outside.json");
+        std::fs::rename(dir.join("network/sb.json"), &outside).unwrap();
+        std::fs::read(outside).unwrap()
     }
 
     #[tokio::test]
-    async fn names_that_leave_the_record_directory_touch_no_files() {
+    async fn a_name_that_leaves_the_directories_touches_no_files() {
         let dir = tempfile::tempdir().unwrap();
-        let outside = dir.path().join("outside.json");
-        std::fs::write(&outside, "not a record").unwrap();
-        std::fs::create_dir(dir.path().join("netlog")).unwrap();
-        std::fs::create_dir(dir.path().join("network")).unwrap();
+        let content = write_outside_record(dir.path()).await;
         let logs = netlogs(dir.path());
 
-        let first = listen_and_remove(&logs, "../outside").await;
-        let second = listen_and_remove(&logs, "../netlog/outside").await;
+        logs.listen("../outside").await;
+        let socket_created = dir.path().join("outside.sock").exists();
+        let record = logs.record("../outside").await.unwrap();
+        logs.remove("../outside").await;
 
-        assert_eq!((first, second), (Record::default(), Record::default()));
-
-        assert!(outside.exists());
-        assert!(!dir.path().join("outside.sock").exists());
+        assert!(!socket_created);
+        assert_eq!(record, Record::default());
+        assert_eq!(
+            std::fs::read(dir.path().join("outside.json")).unwrap(),
+            content
+        );
     }
 }
