@@ -7,8 +7,8 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 # Fingerprints of the apt signing keys, as published in mise's installation docs and Docker's
 # Engine install docs. The build fails when a downloaded key has another one (ADR 0049).
-ARG MISE_KEY_FINGERPRINT=24853EC9F655CE80B48E6C3A8B81C9D17413A06D
-ARG DOCKER_KEY_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+ARG MISE_SIGNER_FINGERPRINT=24853EC9F655CE80B48E6C3A8B81C9D17413A06D
+ARG DOCKER_SIGNER_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 
 # Base tooling, a native build toolchain, ICU for .NET globalization (such as the Aspire CLI),
 # sudo, procps (sysctl), tini, python3 and tcpdump for the network logger, the mise apt
@@ -36,12 +36,12 @@ RUN verify_key() { \
     && install -dm 755 /etc/apt/keyrings \
     && export GNUPGHOME="$(mktemp -d)" \
     && curl -fsSL https://mise.jdx.dev/gpg-key.pub -o /tmp/mise.pub \
-    && verify_key /tmp/mise.pub mise "$MISE_KEY_FINGERPRINT" \
+    && verify_key /tmp/mise.pub mise "$MISE_SIGNER_FINGERPRINT" \
     && gpg --dearmor -o /etc/apt/keyrings/mise-archive-keyring.gpg /tmp/mise.pub \
     && echo "deb [signed-by=/etc/apt/keyrings/mise-archive-keyring.gpg arch=$(dpkg --print-architecture)] https://mise.jdx.dev/deb stable main" \
         > /etc/apt/sources.list.d/mise.list \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
-    && verify_key /etc/apt/keyrings/docker.asc Docker "$DOCKER_KEY_FINGERPRINT" \
+    && verify_key /etc/apt/keyrings/docker.asc Docker "$DOCKER_SIGNER_FINGERPRINT" \
     && rm -rf "$GNUPGHOME" /tmp/mise.pub \
     && chmod a+r /etc/apt/keyrings/docker.asc \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
