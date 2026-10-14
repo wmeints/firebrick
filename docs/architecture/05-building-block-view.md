@@ -754,7 +754,12 @@ a fresh root filesystem and Docker disk.
 ## Base image
 
 The `Dockerfile` in the repository root describes a base image for sandbox
-images. It builds on `ubuntu:26.04` and adds:
+images. It builds on `ubuntu:26.04`, pinned to the digest of the tag's
+multi-platform index, and checks the fingerprints of the mise and Docker apt
+signing keys before it trusts them; a key with another fingerprint fails the
+build. Dependabot proposes new digests. See
+[ADR 0049](decisions/0049-pin-the-base-image-digest-and-apt-signing-keys.md). It
+adds:
 
 - Base tooling - `build-essential`, `ca-certificates`, `curl`, `git`, `gpg`,
   `libicu78`, `libssl-dev`, `pkg-config`, `procps`, `python3`, `sudo`, `tcpdump`

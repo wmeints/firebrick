@@ -203,6 +203,14 @@ installs the tools with `--locked`, so each download must match the checksum in
 release jobs install only `rust` and `protoc`. See
 [ADR 0043](decisions/0043-pin-github-actions-and-ci-tools-to-checksums.md).
 
+The `Dockerfile` pins `ubuntu:26.04` to the digest of its multi-platform index,
+and Dependabot proposes a new digest weekly, seven days after a new image at the
+earliest. Before it adds the mise and Docker apt repositories, the build checks
+that each downloaded signing key has the fingerprint the project publishes in
+its documentation, and fails with the repository and the expected fingerprint
+otherwise. See
+[ADR 0049](decisions/0049-pin-the-base-image-digest-and-apt-signing-keys.md).
+
 `.github/workflows/audit.yaml` runs `cargo audit` against `Cargo.lock` with the
 latest RustSec advisory database every day, on manual runs, and on pull requests
 and pushes to `main` that change the workflow. A vulnerability advisory fails
