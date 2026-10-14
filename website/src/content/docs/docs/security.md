@@ -15,7 +15,7 @@ request or discussion, and don't post details anywhere else before a fix is
 released.
 
 Email your report to
-[willem.meints@gmail.com](mailto:willem.meints@gmail.com?subject=%5Bfirebrick%20security%5D)
+[willemm@infosupport.com](mailto:willemm@infosupport.com?subject=%5Bfirebrick%20security%5D)
 with `[firebrick security]` in the subject. Include as much of this as you can:
 
 - The firebrick version (`fbk --version`) and your host operating system.
