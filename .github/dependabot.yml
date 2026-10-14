@@ -23,5 +23,12 @@ updates:
     # before it reaches a pull request.
     cooldown:
       default-days: 7
+    # Propose new digests of ubuntu:26.04 only; moving to another Ubuntu
+    # release is a deliberate upgrade.
+    ignore:
+      - dependency-name: ubuntu
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
     commit-message:
       prefix: chore

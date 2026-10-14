@@ -29,7 +29,8 @@ without a change in the repository.
 - Dependabot (`.github/dependabot.yml`) proposes digest updates for the
   `Dockerfile` weekly, seven days after a new image at the earliest, like the
   action updates of
-  [ADR 0043](0043-pin-github-actions-and-ci-tools-to-checksums.md).
+  [ADR 0043](0043-pin-github-actions-and-ci-tools-to-checksums.md). It ignores
+  newer Ubuntu releases, so moving off `26.04` stays a deliberate change.
 
 ## Consequences
 

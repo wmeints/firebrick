@@ -185,6 +185,9 @@ These checks enforce the rules above, so don't try to bypass them:
 - Workflows pin every action to a full commit SHA with the version in a comment
   (`actions/checkout@<sha> # v7.0.1`), never a tag; Dependabot updates the pins
   (ADR 0043).
+- The `Dockerfile` pins `ubuntu:26.04` to the digest of its multi-platform index
+  and fails the build when the mise or Docker apt signing key doesn't have the
+  fingerprint in its `ARG`; Dependabot proposes new digests (ADR 0049).
 - `.cargo/config.toml` sets `MSB_HOME=/tmp/firebrick-msb` for every cargo
   command, so builds and the `vm-tests` use their own microsandbox runtime,
   database and images instead of `~/.microsandbox`. A `msb` that migrated the
