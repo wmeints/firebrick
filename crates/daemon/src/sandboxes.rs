@@ -30,10 +30,16 @@ use std::sync::{Arc, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::sync::OwnedMutexGuard;
-use tokio::time::{Instant, sleep};
+use tokio::time::{Instant, sleep, timeout};
 
 /// How long a sandbox gets to shut down gracefully before it is killed.
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the runtime of a running sandbox gets to report whether the sandbox is paused.
+const PAUSE_STATE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long to wait before asking the runtime of a sandbox again whether it's paused.
+const PAUSE_STATE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 /// How long deleting a snapshot waits for the operations that still read it.
 const SNAPSHOT_IN_USE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -170,9 +176,9 @@ pub struct SandboxInfo {
 }
 
 impl SandboxInfo {
-    /// Reads the sandbox's config once. A config that can't be read leaves out everything it
-    /// holds, and is logged.
-    fn of(handle: &SandboxHandle) -> Self {
+    /// Reads the sandbox's config once and reports it with the status. A config that can't be
+    /// read leaves out everything it holds, and is logged.
+    fn of(handle: &SandboxHandle, status: SandboxStatus) -> Self {
         let spec = match handle.config() {
             Ok(config) => Some(config.spec),
             Err(err) => {
@@ -188,7 +194,7 @@ impl SandboxInfo {
 
         Self {
             name: handle.name().to_string(),
-            status: handle.status_snapshot(),
+            status,
             hostname: spec.and_then(|spec| spec.labels.get(ssh::HOSTNAME_LABEL).cloned()),
             workspace_path: spec.and_then(|spec| spec.runtime.workdir.clone()),
             workspace_host_path: spec.and_then(workspace_host_path_in),
@@ -876,16 +882,20 @@ impl SandboxManager {
 
     /// Returns the sandbox with the name.
     pub async fn get(&self, name: &str) -> Result<SandboxInfo, SandboxError> {
-        Ok(SandboxInfo::of(&get_sandbox(name).await?))
+        let sb = get_sandbox(name).await?;
+
+        Ok(SandboxInfo::of(&sb, current_status(&sb).await?))
     }
 
     /// Returns every sandbox.
     pub async fn list(&self) -> Result<Vec<SandboxInfo>, SandboxError> {
-        Ok(list_all_sandboxes()
-            .await?
-            .iter()
-            .map(SandboxInfo::of)
-            .collect())
+        let mut sandboxes = vec![];
+
+        for sb in list_all_sandboxes().await? {
+            sandboxes.extend(listed_info(&sb).await?);
+        }
+
+        Ok(sandboxes)
     }
 
     /// Connects to the running sandbox with the name and starts its URL relay.
@@ -945,7 +955,7 @@ impl SandboxManager {
             return Ok(false);
         }
 
-        if sb.status_snapshot() == SandboxStatus::Paused {
+        if current_status(&sb).await? == SandboxStatus::Paused {
             return Err(SandboxError::failed_precondition(format!(
                 "sandbox {name} is paused; resume it before updating its network rules"
             )));
@@ -976,7 +986,7 @@ impl SandboxManager {
     ) -> Result<Upgrade, SandboxError> {
         let _recreation = self.recreations.read().await;
         let image = sandbox_image(image);
-        refuse_paused(&get_sandbox(name).await?)?;
+        refuse_paused(&get_sandbox(name).await?).await?;
 
         // The pull can take minutes, so it runs before the sandbox is locked.
         let digest = pull_image(name, image, on_pull).await?;
@@ -984,7 +994,7 @@ impl SandboxManager {
         let _guard = self.lock_sandbox(name).await;
         // Get the sandbox again, because it may have changed while the image was pulled.
         let sb = get_sandbox(name).await?;
-        refuse_paused(&sb)?;
+        refuse_paused(&sb).await?;
         let config = sb
             .config()
             .map_err(|err| change_failed(name, Change::Image(image), &err))?;
@@ -1707,8 +1717,8 @@ async fn remove_leftover(name: &str, what: &str) {
 
 /// Fails with `FailedPrecondition` when the sandbox is paused, because an upgrade can't pause
 /// it again.
-fn refuse_paused(sb: &SandboxHandle) -> Result<(), SandboxError> {
-    if sb.status_snapshot() != SandboxStatus::Paused {
+async fn refuse_paused(sb: &SandboxHandle) -> Result<(), SandboxError> {
+    if current_status(sb).await? != SandboxStatus::Paused {
         return Ok(());
     }
 
@@ -1848,6 +1858,69 @@ pub async fn stop_or_kill(sb: &SandboxHandle, timeout: Duration) -> Result<(), M
             sb.kill().await
         }
         result => result,
+    }
+}
+
+/// Returns the status of the sandbox. microsandbox reports a paused sandbox as running when its
+/// runtime doesn't say within 250 ms that it's paused, which happens on a busy host, so this
+/// asks the runtime of a running sandbox again and waits up to [`PAUSE_STATE_TIMEOUT`]. Fails
+/// when the runtime doesn't answer, instead of guessing.
+async fn current_status(sb: &SandboxHandle) -> Result<SandboxStatus, SandboxError> {
+    timeout(PAUSE_STATE_TIMEOUT, ask_pause_state(sb))
+        .await
+        .unwrap_or_else(|_| {
+            Err(SandboxError::internal(format!(
+                "failed to read whether sandbox {} is paused",
+                sb.name()
+            )))
+        })
+}
+
+/// Returns the info of a listed sandbox, or `None` when it was removed after it was listed.
+async fn listed_info(sb: &SandboxHandle) -> Result<Option<SandboxInfo>, SandboxError> {
+    match current_status(sb).await {
+        Ok(status) => Ok(Some(SandboxInfo::of(sb, status))),
+        Err(SandboxError::NotFound(_)) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+/// Asks the runtime of a running sandbox whether it's paused until it answers or the sandbox
+/// stops. microsandbox closes its connection to the runtime when a request fails, and only
+/// the next request opens a new one, so a failed request is retried. Each retry gets the
+/// sandbox again, because it may have stopped, been removed or been replaced in the meantime,
+/// and microsandbox refuses requests through the handle of a replaced sandbox.
+async fn ask_pause_state(sb: &SandboxHandle) -> Result<SandboxStatus, SandboxError> {
+    if let Some(status) = try_pause_state(sb).await {
+        return Ok(status);
+    }
+
+    loop {
+        sleep(PAUSE_STATE_RETRY_INTERVAL).await;
+
+        if let Some(status) = try_pause_state(&get_sandbox(sb.name()).await?).await {
+            return Ok(status);
+        }
+    }
+}
+
+/// Returns the status of the sandbox, asking its runtime once whether it's paused when
+/// microsandbox reports it as running. Returns `None` when that request fails.
+async fn try_pause_state(sb: &SandboxHandle) -> Option<SandboxStatus> {
+    let status = sb.status_snapshot();
+
+    if status != SandboxStatus::Running {
+        return Some(status);
+    }
+
+    match sb.pause_state().await {
+        Ok(state) if state.paused || state.recovery_required => Some(SandboxStatus::Paused),
+        Ok(_) => Some(SandboxStatus::Running),
+        Err(err) => {
+            let name = sb.name();
+            tracing::warn!("failed to read the pause state of sandbox {name}: {err}");
+            None
+        }
     }
 }
 

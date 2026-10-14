@@ -371,45 +371,52 @@ C4Component
   [ADR 0041](decisions/0041-upgrade-sandboxes-to-a-fresh-root-filesystem-and-docker-disk.md)).
   It skips a sandbox whose `firebrick.network` label already records the
   settings (`disabled` for a sandbox without a network device, whatever its
-  rules) and refuses a paused one. It closes the forwards while it stops the
-  sandbox and reopens them when the sandbox runs afterwards. The recreated
-  sandbox keeps its extra mounts and its labels, including `firebrick.ports`.
-  Creating and recreating a sandbox share one builder chain, which also sets the
-  `firebrick.network` label. A new sandbox records the image reference it was
-  created from in the `firebrick.image` label, and `UpgradeSandbox` sets it to
-  the new image. `GetSandbox` returns that image and, for an outdated
-  `firebrick-base` image, the daemon's default image as `upgrade_image`. A lock
-  per sandbox name, held by start, stop, remove, connect, `ForwardPort`,
-  `RemovePort`, `UpdateNetwork` and `UpgradeSandbox`, keeps those operations
-  from interleaving with a recreate; a lock is dropped when no task holds or
-  waits for it. `ForwardPort` adds one mapping to the stored ports, replacing
-  the one with the same host port, and `RemovePort` removes the mapping of a
-  host port, or returns `NOT_FOUND` when it isn't stored. For a running sandbox,
-  both first reconcile its forwards with the new list; when the requested
-  forward can't be opened, also when it was stored already, they reopen the old
-  forwards and return `FAILED_PRECONDITION` with the reason, without changing
-  the label. For a stopped sandbox they only update the label, and the forward
-  opens on the next start. Both return whether the sandbox runs. They hold the
-  sandbox's lock, so they can't interleave with a recreate by `UpdateNetwork`,
-  and the ports lock while they read, reconcile and store the ports.
-  `StartSandbox`, `Attach`, `SshTunnel` and an `UpdateNetwork` of a running
-  sandbox make sure the sandbox's URL relay runs, through `open`; `StopSandbox`,
-  `RemoveSandbox` and recreating the sandbox forget it. The shared builder chain
-  also adds the vsock route of the sandbox's network log through `netlog`, so
-  created and recreated sandboxes get it, also when the original had none.
-  Before it creates a sandbox, starts one that has the route (also through
-  `SshTunnel`) or recreates one, it makes `netlog` listen on the sandbox's
-  socket; `fbkd` does the same for every sandbox with the route when it starts.
-  `RemoveSandbox` deletes the socket and the record. A `StartSandbox` that
-  creates a sandbox with `clipboard` set listens for its clipboard first, and
-  fails with `FAILED_PRECONDITION` naming `XDG_RUNTIME_DIR` when it can't, so an
-  approved setting never silently does nothing. It gives the sandbox the
-  `firebrick.clipboard=true` label, and the `firebrick.clipboard.copy=true`
-  label that lets it copy, and the shared builder chain adds the vsock route and
-  marker of `clipboard` to every sandbox with the first label, so the setting
-  survives `UpdateNetwork` and `UpgradeSandbox`. A sandbox without the label
-  gets neither. `sandboxes` makes `clipboard` listen for such a sandbox the same
-  way as for its network log, and `RemoveSandbox` deletes its clipboard socket.
+  rules) and refuses a paused one. microsandbox doesn't store the pause state:
+  it asks the sandbox's runtime and reports `Running` when the runtime doesn't
+  answer within 250 ms, as on a busy host. So for a sandbox microsandbox reports
+  as running, `ListSandboxes`, `GetSandbox`, `UpdateNetwork` and
+  `UpgradeSandbox` ask the runtime again through `SandboxHandle::pause_state`,
+  retrying failed requests for up to 10 seconds, and fail with `INTERNAL`
+  instead of guessing when it still doesn't answer. A recreate closes the
+  forwards while it stops the sandbox and reopens them when the sandbox runs
+  afterwards. The recreated sandbox keeps its extra mounts and its labels,
+  including `firebrick.ports`. Creating and recreating a sandbox share one
+  builder chain, which also sets the `firebrick.network` label. A new sandbox
+  records the image reference it was created from in the `firebrick.image`
+  label, and `UpgradeSandbox` sets it to the new image. `GetSandbox` returns
+  that image and, for an outdated `firebrick-base` image, the daemon's default
+  image as `upgrade_image`. A lock per sandbox name, held by start, stop,
+  remove, connect, `ForwardPort`, `RemovePort`, `UpdateNetwork` and
+  `UpgradeSandbox`, keeps those operations from interleaving with a recreate; a
+  lock is dropped when no task holds or waits for it. `ForwardPort` adds one
+  mapping to the stored ports, replacing the one with the same host port, and
+  `RemovePort` removes the mapping of a host port, or returns `NOT_FOUND` when
+  it isn't stored. For a running sandbox, both first reconcile its forwards with
+  the new list; when the requested forward can't be opened, also when it was
+  stored already, they reopen the old forwards and return `FAILED_PRECONDITION`
+  with the reason, without changing the label. For a stopped sandbox they only
+  update the label, and the forward opens on the next start. Both return whether
+  the sandbox runs. They hold the sandbox's lock, so they can't interleave with
+  a recreate by `UpdateNetwork`, and the ports lock while they read, reconcile
+  and store the ports. `StartSandbox`, `Attach`, `SshTunnel` and an
+  `UpdateNetwork` of a running sandbox make sure the sandbox's URL relay runs,
+  through `open`; `StopSandbox`, `RemoveSandbox` and recreating the sandbox
+  forget it. The shared builder chain also adds the vsock route of the sandbox's
+  network log through `netlog`, so created and recreated sandboxes get it, also
+  when the original had none. Before it creates a sandbox, starts one that has
+  the route (also through `SshTunnel`) or recreates one, it makes `netlog`
+  listen on the sandbox's socket; `fbkd` does the same for every sandbox with
+  the route when it starts. `RemoveSandbox` deletes the socket and the record. A
+  `StartSandbox` that creates a sandbox with `clipboard` set listens for its
+  clipboard first, and fails with `FAILED_PRECONDITION` naming `XDG_RUNTIME_DIR`
+  when it can't, so an approved setting never silently does nothing. It gives
+  the sandbox the `firebrick.clipboard=true` label, and the
+  `firebrick.clipboard.copy=true` label that lets it copy, and the shared
+  builder chain adds the vsock route and marker of `clipboard` to every sandbox
+  with the first label, so the setting survives `UpdateNetwork` and
+  `UpgradeSandbox`. A sandbox without the label gets neither. `sandboxes` makes
+  `clipboard` listen for such a sandbox the same way as for its network log, and
+  `RemoveSandbox` deletes its clipboard socket.
   `SandboxManager::network_activity` returns a sandbox's record from `netlog`
   with its rules from the `firebrick.network` label (`network::rules_of`),
   `FAILED_PRECONDITION` when the sandbox has no network log route, or `INTERNAL`
