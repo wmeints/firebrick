@@ -1,12 +1,24 @@
 # syntax=docker/dockerfile:1
-FROM ubuntu:26.04
+# The digest pins the multi-platform index of the tag, so a retagged image shows up as a
+# Dependabot pull request instead of in the next build (ADR 0049).
+FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
 
 ARG DEBIAN_FRONTEND=noninteractive
 
+# Fingerprints of the apt signing keys, as published in mise's installation docs and Docker's
+# Engine install docs. The build fails when a downloaded key has another one (ADR 0049).
+ARG MISE_KEY_FINGERPRINT=24853EC9F655CE80B48E6C3A8B81C9D17413A06D
+ARG DOCKER_KEY_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+
 # Base tooling, a native build toolchain, ICU for .NET globalization (such as the Aspire CLI),
 # sudo, procps (sysctl), tini, python3 and tcpdump for the network logger, the mise apt
-# repository and the Docker engine from Docker's apt repository.
-RUN apt-get update \
+# repository and the Docker engine from Docker's apt repository. verify_key fails unless the file
+# holds exactly one key, with the expected fingerprint.
+RUN verify_key() { \
+        actual=$(gpg --show-keys --with-colons "$1" | awk -F: '$1 == "pub" { getline; print $10 }'); \
+        [ "$actual" = "$3" ] || { echo "The signing key of the $2 apt repository doesn't have the expected fingerprint $3" >&2; exit 1; }; \
+    } \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
@@ -22,10 +34,15 @@ RUN apt-get update \
         tcpdump \
         tini \
     && install -dm 755 /etc/apt/keyrings \
-    && curl -fsSL https://mise.jdx.dev/gpg-key.pub | gpg --dearmor -o /etc/apt/keyrings/mise-archive-keyring.gpg \
+    && export GNUPGHOME="$(mktemp -d)" \
+    && curl -fsSL https://mise.jdx.dev/gpg-key.pub -o /tmp/mise.pub \
+    && verify_key /tmp/mise.pub mise "$MISE_KEY_FINGERPRINT" \
+    && gpg --dearmor -o /etc/apt/keyrings/mise-archive-keyring.gpg /tmp/mise.pub \
     && echo "deb [signed-by=/etc/apt/keyrings/mise-archive-keyring.gpg arch=$(dpkg --print-architecture)] https://mise.jdx.dev/deb stable main" \
         > /etc/apt/sources.list.d/mise.list \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
+    && verify_key /etc/apt/keyrings/docker.asc Docker "$DOCKER_KEY_FINGERPRINT" \
+    && rm -rf "$GNUPGHOME" /tmp/mise.pub \
     && chmod a+r /etc/apt/keyrings/docker.asc \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
         > /etc/apt/sources.list.d/docker.list \

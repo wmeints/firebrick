@@ -1,4 +1,5 @@
-# Keeps the commit SHAs the workflows pin their actions to up to date.
+# Keeps the commit SHAs the workflows pin their actions to, and the digest the
+# Dockerfile pins its base image to, up to date.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -12,5 +13,15 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    commit-message:
+      prefix: chore
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    # Same wait as for the actions: a retagged base image is likely caught
+    # before it reaches a pull request.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: chore
