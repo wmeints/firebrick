@@ -1,10 +1,11 @@
 use std::collections::HashSet;
 use std::fmt;
+use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::IpAddr;
 use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::{fs, path::Path};
 
 use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -14,20 +15,30 @@ use thiserror::Error;
 /// Errors that can occur while loading a sandbox spec.
 #[derive(Error, Debug)]
 pub enum SandboxSpecError {
-    #[error("can't find the source file")]
-    FileNotFound,
-    #[error("can't read contents of the input file")]
-    CantReadInputFile(#[from] std::io::Error),
+    #[error("can't read {}", .path.display())]
+    CantRead {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("can't parse input yaml: {0}")]
     InvalidSpec(#[from] serde_yaml::Error),
     #[error("can't serialize the spec")]
     CantSerialize(#[source] serde_yaml::Error),
-    #[error("can't write the spec file")]
-    CantWriteFile(#[source] std::io::Error),
+    #[error("can't write {}", .path.display())]
+    CantWrite {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     /// The spec file is a symlink, which could make firebrick read or write a file outside the
     /// workspace. Holds the file name.
     #[error("{0} is a symlink; firebrick only uses a regular file in the workspace")]
     Symlink(String),
+    /// The spec file is a directory, a FIFO or another file that isn't a regular file, which
+    /// could make firebrick fail or hang. Holds the file name.
+    #[error("{0} isn't a regular file; firebrick only uses a regular file in the workspace")]
+    NotRegularFile(String),
 }
 
 /// Errors that can occur while parsing a memory or disk size.
@@ -651,33 +662,27 @@ pub fn guest_mount_path(guest: &str) -> Result<String, InvalidGuestPath> {
     Ok(format!("/{}", parts.join("/")))
 }
 
-/// Loads and parses a sandbox spec from a YAML file. Refuses a symlink, like [`read_text`].
-pub fn from_file(path: &Path) -> Result<SandboxSpec, SandboxSpecError> {
-    let file_content = read_text(path)?.ok_or(SandboxSpecError::FileNotFound)?;
-
-    from_str(&file_content)
+/// Loads and parses a sandbox spec from a YAML file, or returns `None` when it doesn't exist.
+/// Refuses a symlink and other files that aren't regular files, like [`read_text`].
+pub fn from_file(path: &Path) -> Result<Option<SandboxSpec>, SandboxSpecError> {
+    read_text(path)?.map(|text| from_str(&text)).transpose()
 }
 
 /// Reads the text of a spec file, or returns `None` when it doesn't exist. Fails with
 /// [`SandboxSpecError::Symlink`] when the path is a symlink, dangling or not, because the agent
-/// in the sandbox controls the workspace and could point the spec at any file of the user.
+/// in the sandbox controls the workspace and could point the spec at any file of the user. Fails
+/// with [`SandboxSpecError::NotRegularFile`] for a directory or a FIFO, which would hang the read.
 pub fn read_text(path: &Path) -> Result<Option<String>, SandboxSpecError> {
-    let Some(metadata) = regular_file_metadata(path)? else {
+    let Some(checked) = regular_file_metadata(path)? else {
         return Ok(None);
     };
 
-    let mut file = fs::File::open(path)?;
+    read_checked(path, &checked).map(Some)
+}
 
-    // A symlink swapped in after the check opens another file than the one checked.
-    let opened = file.metadata()?;
-    if (opened.dev(), opened.ino()) != (metadata.dev(), metadata.ino()) {
-        return Err(symlink_error(path));
-    }
-
-    let mut text = String::new();
-    file.read_to_string(&mut text)?;
-
-    Ok(Some(text))
+/// Returns whether the spec file exists. Fails when it is a symlink or isn't a regular file.
+pub fn exists(path: &Path) -> Result<bool, SandboxSpecError> {
+    Ok(regular_file_metadata(path)?.is_some())
 }
 
 /// Replaces the spec file with `text`. Fails with [`SandboxSpecError::Symlink`] when the path is
@@ -692,40 +697,74 @@ pub fn write_text(path: &Path, text: &str) -> Result<(), SandboxSpecError> {
     let result = write_new(&temp, text).and_then(|()| fs::rename(&temp, path));
 
     if result.is_err() {
+        // The write already failed; a temp file that can't be removed changes nothing about it.
         let _ = fs::remove_file(&temp);
     }
 
-    result.map_err(SandboxSpecError::CantWriteFile)
+    result.map_err(|source| SandboxSpecError::CantWrite {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Reads the file at `path`, failing when it isn't the `checked` regular file, because a symlink
+/// was swapped in after the check.
+fn read_checked(path: &Path, checked: &fs::Metadata) -> Result<String, SandboxSpecError> {
+    let cant_read = |source| SandboxSpecError::CantRead {
+        path: path.to_path_buf(),
+        source,
+    };
+    let mut file = fs::File::open(path).map_err(cant_read)?;
+    let opened = file.metadata().map_err(cant_read)?;
+
+    if (opened.dev(), opened.ino()) != (checked.dev(), checked.ino()) {
+        return Err(symlink_error(path));
+    }
+
+    let mut text = String::new();
+    file.read_to_string(&mut text).map_err(cant_read)?;
+
+    Ok(text)
 }
 
 /// Returns the metadata of the file at `path` without following a symlink, or `None` when it
-/// doesn't exist. Fails when it is a symlink.
+/// doesn't exist. Fails when it is a symlink or isn't a regular file.
 fn regular_file_metadata(path: &Path) -> Result<Option<fs::Metadata>, SandboxSpecError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_symlink() => Err(symlink_error(path)),
+        Ok(metadata) if !metadata.is_file() => {
+            Err(SandboxSpecError::NotRegularFile(file_name(path)))
+        }
         Ok(metadata) => Ok(Some(metadata)),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(SandboxSpecError::CantReadInputFile(err)),
+        Err(source) => Err(SandboxSpecError::CantRead {
+            path: path.to_path_buf(),
+            source,
+        }),
     }
 }
 
 /// Writes `text` to a file that doesn't exist yet. Creating it exclusively never follows a
 /// symlink at the path.
 fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
-    let mut file = fs::OpenOptions::new()
+    fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(path)?;
-
-    file.write_all(text.as_bytes())?;
-    file.sync_all()
+        .open(path)?
+        .write_all(text.as_bytes())
 }
 
 /// Returns the error for a spec file at `path` that is a symlink.
 fn symlink_error(path: &Path) -> SandboxSpecError {
-    let file_name = path.file_name().unwrap_or(path.as_os_str());
+    SandboxSpecError::Symlink(file_name(path))
+}
 
-    SandboxSpecError::Symlink(file_name.to_string_lossy().into_owned())
+/// Returns the file name of `path` for an error message.
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Parses a sandbox spec from the YAML text of a spec file.
@@ -992,7 +1031,7 @@ pub mod tests {
         let file =
             write_spec("name: dev\nresources:\n  cpu: 4\n  memory: 8Gi\nimage: ubuntu:24.04\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
         let resources = spec.resources.unwrap();
 
         assert_eq!(spec.name, "dev");
@@ -1005,38 +1044,83 @@ pub mod tests {
     fn image_is_optional() {
         let file = write_spec("name: dev\nresources:\n  cpu: 2\n  memory: 4Gi\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert!(spec.image.is_none());
     }
 
     #[test]
-    fn missing_file_returns_file_not_found() {
+    fn missing_file_returns_none() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("does-not-exist.yaml");
 
-        let result = from_file(&path);
+        let spec = from_file(&path).unwrap();
 
-        assert!(matches!(result, Err(SandboxSpecError::FileNotFound)));
+        assert!(spec.is_none());
     }
 
     #[test]
-    fn directory_returns_cant_read_input_file() {
+    fn directory_is_not_a_regular_file() {
         let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".firebrick.yml");
+        fs::create_dir(&path).unwrap();
 
-        let result = from_file(dir.path());
+        let err = from_file(&path).unwrap_err();
 
-        assert!(matches!(
-            result,
-            Err(SandboxSpecError::CantReadInputFile(_))
-        ));
+        assert_eq!(
+            err.to_string(),
+            ".firebrick.yml isn't a regular file; firebrick only uses a regular file in the \
+             workspace"
+        );
+    }
+
+    #[test]
+    fn read_text_refuses_a_fifo_instead_of_hanging() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".firebrick.yml");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let result = read_text(&path);
+
+        assert!(matches!(result, Err(SandboxSpecError::NotRegularFile(_))));
+    }
+
+    #[test]
+    fn exists_reports_a_regular_file_and_refuses_a_symlink() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".firebrick.yml");
+        assert!(!exists(&path).unwrap());
+
+        fs::write(&path, "name: dev\n").unwrap();
+        assert!(exists(&path).unwrap());
+
+        let (_link_dir, link, _target) = symlinked_spec("missing.yml");
+        assert!(matches!(exists(&link), Err(SandboxSpecError::Symlink(_))));
+    }
+
+    #[test]
+    fn read_failure_names_the_path_and_keeps_the_cause() {
+        let file = write_spec("name: dev\n");
+        fs::write(file.path(), [0xff, 0xfe]).unwrap();
+
+        let err = read_text(file.path()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("can't read {}", file.path().display())
+        );
+        assert!(std::error::Error::source(&err).is_some());
     }
 
     #[test]
     fn resources_are_optional() {
         let file = write_spec("name: dev\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert!(spec.resources.is_none());
     }
@@ -1152,7 +1236,7 @@ pub mod tests {
     fn volumes_are_optional() {
         let file = write_spec("name: dev\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert_eq!(spec.volumes, VolumesSpec::default());
         assert_eq!(spec.volumes.docker, "20 GiB");
@@ -1162,7 +1246,7 @@ pub mod tests {
     fn docker_volume_is_optional() {
         let file = write_spec("name: dev\nvolumes: {}\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert_eq!(spec.volumes.docker, "20 GiB");
     }
@@ -1173,7 +1257,7 @@ pub mod tests {
             "name: dev\nresources:\n  cpu: 1\n  memory: 2GiB\nvolumes:\n  docker: 40GiB\n",
         );
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert_eq!(spec.volumes.docker, "40GiB");
     }
@@ -1225,7 +1309,7 @@ pub mod tests {
     fn init_is_optional() {
         let file = write_spec("name: dev\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert!(spec.init.is_none());
     }
@@ -1234,7 +1318,7 @@ pub mod tests {
     fn parses_init() {
         let file = write_spec("name: dev\nimage: alpine:3.22\ninit: false\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert_eq!(spec.init, Some(false));
     }
@@ -1257,7 +1341,7 @@ pub mod tests {
     fn mise_is_optional() {
         let file = write_spec("name: dev\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert!(spec.mise.is_none());
     }
@@ -1266,7 +1350,7 @@ pub mod tests {
     fn parses_mise() {
         let file = write_spec("name: dev\nmise: false\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert_eq!(spec.mise, Some(false));
     }
@@ -1289,7 +1373,7 @@ pub mod tests {
     fn clipboard_is_optional() {
         let file = write_spec("name: dev\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert!(spec.clipboard.is_none());
     }
@@ -1298,7 +1382,7 @@ pub mod tests {
     fn parses_clipboard() {
         let file = write_spec("name: dev\nclipboard: true\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert_eq!(spec.clipboard, Some(true));
     }
@@ -1321,7 +1405,7 @@ pub mod tests {
     fn network_is_optional() {
         let file = write_spec("name: dev\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert!(spec.network.is_none());
     }
@@ -1330,7 +1414,7 @@ pub mod tests {
     fn network_fields_have_defaults() {
         let file = write_spec("name: dev\nnetwork: {}\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert_eq!(spec.network, Some(NetworkSpec::default()));
         assert!(!NetworkSpec::default().enforce);
@@ -1342,7 +1426,7 @@ pub mod tests {
         for (value, expected) in [("false", false), ("true", true)] {
             let file = write_spec(&format!("name: dev\nnetwork:\n  enabled: {value}\n"));
 
-            let network = from_file(file.path()).unwrap().network.unwrap();
+            let network = from_file(file.path()).unwrap().unwrap().network.unwrap();
 
             assert_eq!(network.enabled, Some(expected));
             assert_eq!(network.is_enabled(), expected);
@@ -1376,7 +1460,7 @@ pub mod tests {
             "    - gist.github.com\n",
         ));
 
-        let network = from_file(file.path()).unwrap().network.unwrap();
+        let network = from_file(file.path()).unwrap().unwrap().network.unwrap();
 
         assert!(network.enforce);
         assert_eq!(
@@ -1493,7 +1577,7 @@ pub mod tests {
     fn ports_are_optional() {
         let file = write_spec("name: dev\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert!(spec.ports.is_empty());
     }
@@ -1641,7 +1725,7 @@ pub mod tests {
     fn parses_ports() {
         let file = write_spec("name: dev\nports:\n  - 3000\n  - \"8080:5173\"\n");
 
-        let spec = from_file(file.path()).unwrap();
+        let spec = from_file(file.path()).unwrap().unwrap();
 
         assert_eq!(
             spec.ports,
@@ -1730,7 +1814,7 @@ pub mod tests {
         for content in ["name: dev\n", "name: dev\nmounts: null\n"] {
             let file = write_spec(content);
 
-            let spec = from_file(file.path()).unwrap();
+            let spec = from_file(file.path()).unwrap().unwrap();
 
             assert!(spec.mounts.is_none(), "{content:?}");
         }
@@ -1748,7 +1832,7 @@ pub mod tests {
             "    readonly: true\n",
         ));
 
-        let mounts = from_file(file.path()).unwrap().mounts.unwrap();
+        let mounts = from_file(file.path()).unwrap().unwrap().mounts.unwrap();
 
         assert_eq!(
             mounts,
@@ -1897,10 +1981,10 @@ pub mod tests {
     }
 
     #[test]
-    fn missing_file_has_no_diagnostic() {
+    fn unreadable_file_has_no_diagnostic() {
         let dir = TempDir::new().unwrap();
 
-        let result = from_file(&dir.path().join("does-not-exist.yaml"));
+        let result = from_file(dir.path());
 
         assert!(result.unwrap_err().diagnostic().is_none());
     }
@@ -1975,7 +2059,7 @@ pub mod tests {
         });
 
         to_file(&spec, &path).unwrap();
-        let loaded = from_file(&path).unwrap();
+        let loaded = from_file(&path).unwrap().unwrap();
 
         assert_eq!(loaded.name, "dev");
         assert_eq!(loaded.image, spec.image);
@@ -1989,7 +2073,9 @@ pub mod tests {
     fn to_file_leaves_out_unset_fields() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(".firebrick.yml");
-        let spec = from_file(write_spec("name: dev\n").path()).unwrap();
+        let spec = from_file(write_spec("name: dev\n").path())
+            .unwrap()
+            .unwrap();
 
         to_file(&spec, &path).unwrap();
         let content = fs::read_to_string(&path).unwrap();
@@ -2000,11 +2086,17 @@ pub mod tests {
 
     #[test]
     fn to_file_reports_write_failure() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".firebrick.yml");
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
 
-        let result = to_file(&default_spec("dev".to_string()), dir.path());
+        let result = to_file(&default_spec("dev".to_string()), &path);
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
 
-        assert!(matches!(result, Err(SandboxSpecError::CantWriteFile(_))));
+        let err = result.unwrap_err();
+        assert_eq!(err.to_string(), format!("can't write {}", path.display()));
+        assert!(matches!(err, SandboxSpecError::CantWrite { .. }));
     }
 
     /// Creates `.firebrick.yml` in a new directory as a symlink to `target` in that directory.

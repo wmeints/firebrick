@@ -934,11 +934,9 @@ fn default_name(working_dir: &Path, legacy_exists: bool) -> String {
 /// Loads the spec file from the working directory, or returns `None` when there isn't one.
 /// Fails when it is a symlink.
 fn read_spec_file(working_dir: &Path) -> Result<Option<SandboxSpec>> {
-    let Some(text) = firebrick_spec::read_text(&working_dir.join(SPEC_FILE_NAME))? else {
-        return Ok(None);
-    };
-
-    Ok(Some(firebrick_spec::from_str(&text)?))
+    Ok(firebrick_spec::from_file(
+        &working_dir.join(SPEC_FILE_NAME),
+    )?)
 }
 
 /// Names the sandbox `firebrick-` followed by the first 6 hex digits of the SHA-256 hash of

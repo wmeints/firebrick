@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, bail};
-use firebrick_spec::SandboxSpecError;
 use std::path::{Path, PathBuf};
 
 use crate::manage::SPEC_FILE_NAME;
@@ -12,28 +11,16 @@ pub fn init_spec(working_dir: &Path, force: bool) -> Result<PathBuf> {
     let spec = firebrick_spec::default_spec(firebrick_utils::sanitize_label(working_dir));
     let content = serde_yaml::to_string(&spec).context("can't serialize the default spec")?;
 
-    if firebrick_spec::read_text(&spec_path)
-        .map_err(|err| spec_error(err, &spec_path))?
-        .is_some()
-        && !force
-    {
+    if !force && firebrick_spec::exists(&spec_path)? {
         bail!(
             "{SPEC_FILE_NAME} already exists in {}; use fbk init --force to overwrite it",
             working_dir.display()
         );
     }
 
-    firebrick_spec::write_text(&spec_path, &content).map_err(|err| spec_error(err, &spec_path))?;
+    firebrick_spec::write_text(&spec_path, &content)?;
 
     Ok(spec_path)
-}
-
-/// Reports a symlinked spec as is, and names the path for other failures.
-fn spec_error(err: SandboxSpecError, spec_path: &Path) -> anyhow::Error {
-    match err {
-        SandboxSpecError::Symlink(_) => err.into(),
-        err => anyhow::Error::new(err).context(format!("can't create {}", spec_path.display())),
-    }
 }
 
 #[cfg(test)]
@@ -56,7 +43,7 @@ mod tests {
         let (_root, dir) = project_dir("project");
 
         let spec_path = init_spec(&dir, false).unwrap();
-        let spec = firebrick_spec::from_file(&spec_path).unwrap();
+        let spec = firebrick_spec::from_file(&spec_path).unwrap().unwrap();
         let resources = spec.resources.unwrap();
 
         assert_eq!(spec_path, dir.join(SPEC_FILE_NAME));
@@ -85,7 +72,9 @@ mod tests {
         for (leaf, name) in [("My.App", "my-app"), ("my project_", "my-project")] {
             let (_root, dir) = project_dir(leaf);
 
-            let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap()).unwrap();
+            let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap())
+                .unwrap()
+                .unwrap();
 
             assert_eq!(spec.name, name);
         }
@@ -95,7 +84,9 @@ mod tests {
     fn name_falls_back_to_sandbox() {
         let (_root, dir) = project_dir("__");
 
-        let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap()).unwrap();
+        let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap())
+            .unwrap()
+            .unwrap();
 
         assert_eq!(spec.name, "sandbox");
     }
@@ -129,7 +120,7 @@ mod tests {
         .unwrap();
 
         init_spec(&dir, true).unwrap();
-        let spec = firebrick_spec::from_file(&spec_path).unwrap();
+        let spec = firebrick_spec::from_file(&spec_path).unwrap().unwrap();
 
         assert_eq!(spec.name, "project");
         assert_eq!(spec.image, None);

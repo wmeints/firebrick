@@ -77,7 +77,7 @@ async fn update_with(
     approver: Approver,
 ) -> Result<()> {
     let spec_path = working_dir.join(SPEC_FILE_NAME);
-    let (spec, created) = match read_spec(&spec_path)? {
+    let (spec, created) = match validate::load_spec(&spec_path)? {
         Some(spec) => (spec, false),
         None => {
             let mut connected = client.with_context(|| {
@@ -104,12 +104,6 @@ async fn update_with(
     result
 }
 
-/// Loads the spec file, or returns `None` when it doesn't exist. An invalid file is reported
-/// like `fbk validate` reports it, and a symlink is refused.
-fn read_spec(spec_path: &Path) -> Result<Option<SandboxSpec>> {
-    validate::load_spec(spec_path)
-}
-
 /// Fails when the spec's sandbox belongs to another directory. Without a connection to the
 /// daemon, nothing can reach the sandbox, so the file may still change.
 async fn check_owner(
@@ -134,8 +128,7 @@ fn edit_spec(
     let changed = apply(change, &mut spec.network) || new;
 
     if changed {
-        firebrick_spec::to_file(&spec, spec_path)
-            .with_context(|| format!("failed to write {}", spec_path.display()))?;
+        firebrick_spec::to_file(&spec, spec_path)?;
     }
 
     Ok((spec, changed))
@@ -474,7 +467,9 @@ mod tests {
             .await
             .unwrap_err();
 
-        let spec = firebrick_spec::from_file(&dir.path().join(SPEC_FILE_NAME)).unwrap();
+        let spec = firebrick_spec::from_file(&dir.path().join(SPEC_FILE_NAME))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             error.to_string(),
             fake_daemon::refusal("update_network", &spec.name)
@@ -509,7 +504,9 @@ mod tests {
 
     async fn assert_update_refuses_symlink(content: Option<&str>) {
         let (dir, target) = symlinked_spec::workspace(content);
-        let client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
+        // The sandbox belongs to this directory, so only the symlink check stops the write.
+        let workspace = fs::canonicalize(dir.path()).unwrap();
+        let client = fake_daemon::serve("dev", workspace.to_str().unwrap()).await;
 
         let error = update_with(rules_change(), dir.path(), Ok(client), approve_all(&dir))
             .await
@@ -611,7 +608,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(SPEC_FILE_NAME);
         fs::write(&path, "name: my-project\nimage: ubuntu:24.04\n").unwrap();
-        let spec = firebrick_spec::from_file(&path).unwrap();
+        let spec = firebrick_spec::from_file(&path).unwrap().unwrap();
 
         let (_, changed) = edit_spec(
             &path,
@@ -620,7 +617,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let written = firebrick_spec::from_file(&path).unwrap();
+        let written = firebrick_spec::from_file(&path).unwrap().unwrap();
 
         assert!(changed);
         assert_eq!(written.image.as_deref(), Some("ubuntu:24.04"));
@@ -639,7 +636,7 @@ mod tests {
         let path = dir.path().join(SPEC_FILE_NAME);
         let content = "# my rules\nname: my-project\nnetwork:\n  allow: [example.org]\n";
         fs::write(&path, content).unwrap();
-        let spec = firebrick_spec::from_file(&path).unwrap();
+        let spec = firebrick_spec::from_file(&path).unwrap().unwrap();
 
         let (_, changed) = edit_spec(
             &path,
@@ -666,7 +663,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let written = firebrick_spec::from_file(&path).unwrap();
+        let written = firebrick_spec::from_file(&path).unwrap().unwrap();
 
         assert!(changed);
         assert_eq!(written.name, "firebrick-abc123");
@@ -704,7 +701,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = read_spec(&path).unwrap_err();
+        let err = validate::load_spec(&path).unwrap_err();
 
         assert!(err.to_string().starts_with(".firebrick.yml:3:"), "{err}");
         assert!(err.to_string().contains("github.com:443"), "{err}");
@@ -715,7 +712,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
 
         assert!(
-            read_spec(&dir.path().join(SPEC_FILE_NAME))
+            validate::load_spec(&dir.path().join(SPEC_FILE_NAME))
                 .unwrap()
                 .is_none()
         );
@@ -812,10 +809,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(SPEC_FILE_NAME);
         fs::write(&path, "name: my-project\n").unwrap();
-        let spec = firebrick_spec::from_file(&path).unwrap();
+        let spec = firebrick_spec::from_file(&path).unwrap().unwrap();
 
         let (_, changed) = edit_spec(&path, spec, &NetworkChange::Enable(false), false).unwrap();
-        let written = firebrick_spec::from_file(&path).unwrap();
+        let written = firebrick_spec::from_file(&path).unwrap().unwrap();
 
         assert!(changed);
         assert_eq!(written.network.unwrap().enabled, Some(false));

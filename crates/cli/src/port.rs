@@ -1,7 +1,7 @@
 //! Port forwards of the working directory's sandbox: `fbk port forward` and `fbk port rm` change
 //! them in the daemon right away and record them in `.firebrick.yml`.
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use firebrick_spec::PortMapping;
 use std::path::Path;
 use tonic::Code;
@@ -21,7 +21,7 @@ pub async fn forward(
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
     let spec = SpecFile::read(working_dir, client).await?;
-    let edited = firebrick_spec::add_port(&spec.text, port).map_err(spec_error)?;
+    let edited = firebrick_spec::add_port(&spec.text, port).map_err(validate::spec_error)?;
 
     let running = match manage::sandbox_status(client, &spec.name).await? {
         Some(_) => Some(send_forward(&spec.name, port, client).await?),
@@ -48,7 +48,7 @@ pub async fn remove(
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
     let spec = SpecFile::read(working_dir, client).await?;
-    let edited = firebrick_spec::remove_port(&spec.text, host).map_err(spec_error)?;
+    let edited = firebrick_spec::remove_port(&spec.text, host).map_err(validate::spec_error)?;
 
     let running = match manage::sandbox_status(client, &spec.name).await? {
         Some(_) => Some(send_remove(&spec.name, host, client).await?),
@@ -125,11 +125,6 @@ fn print_outcome(name: &str, running: Option<bool>, applied: impl FnOnce() -> St
     }
 }
 
-/// Turns an invalid spec into the diagnostic `fbk validate` prints.
-fn spec_error(err: firebrick_spec::SandboxSpecError) -> anyhow::Error {
-    anyhow!(validate::report(&err))
-}
-
 /// The spec file of the working directory and the name of its sandbox. Without a spec file,
 /// its text is a spec with only the name, so a new file is created on write.
 struct SpecFile<'a> {
@@ -148,9 +143,11 @@ impl<'a> SpecFile<'a> {
     ) -> Result<Self> {
         let path = working_dir.join(SPEC_FILE_NAME);
 
-        let (name, text) = match validate::read_spec_text(&path)? {
+        let (name, text) = match firebrick_spec::read_text(&path).map_err(validate::spec_error)? {
             Some(text) => (
-                firebrick_spec::from_str(&text).map_err(spec_error)?.name,
+                firebrick_spec::from_str(&text)
+                    .map_err(validate::spec_error)?
+                    .name,
                 text,
             ),
             None => {
@@ -172,9 +169,7 @@ impl<'a> SpecFile<'a> {
     fn write(&self, text: &str) -> Result<()> {
         let path = self.working_dir.join(SPEC_FILE_NAME);
 
-        firebrick_spec::write_text(&path, text)
-            .map_err(spec_error)
-            .with_context(|| format!("can't write {}", path.display()))
+        Ok(firebrick_spec::write_text(&path, text)?)
     }
 }
 
@@ -228,7 +223,9 @@ mod tests {
 
     async fn assert_forward_and_remove_refuse_symlink(content: Option<&str>) {
         let (dir, target) = symlinked_spec::workspace(content);
-        let mut client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
+        // The sandbox belongs to this directory, so only the symlink check stops the write.
+        let workspace = fs::canonicalize(dir.path()).unwrap();
+        let mut client = fake_daemon::serve("dev", workspace.to_str().unwrap()).await;
         let port = PortMapping {
             host: 3000,
             guest: 3000,

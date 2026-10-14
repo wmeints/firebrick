@@ -5,60 +5,42 @@ use std::path::Path;
 use crate::manage::SPEC_FILE_NAME;
 
 /// Validates the spec file in the working directory and reports any problem with its
-/// line and column. Returns whether the spec is valid. Fails when there is no spec file or it
-/// is a symlink.
+/// line and column. Returns whether the spec is valid. Fails when there is no spec file, it
+/// can't be read, or it is a symlink.
 pub fn validate_spec(working_dir: &Path) -> Result<bool> {
     let spec_path = working_dir.join(SPEC_FILE_NAME);
 
-    let Some(text) = read_spec_text(&spec_path)? else {
-        bail!("can't find {SPEC_FILE_NAME} in {}", working_dir.display());
-    };
-
-    match parse_spec(&text) {
-        Ok(_) => {
+    match firebrick_spec::from_file(&spec_path) {
+        Ok(Some(_)) => {
             println!("{SPEC_FILE_NAME} is valid");
             Ok(true)
         }
-        Err(report) => {
-            eprintln!("{report}");
+        Ok(None) => bail!("can't find {SPEC_FILE_NAME} in {}", working_dir.display()),
+        Err(err) if err.diagnostic().is_some() => {
+            eprintln!("{}", spec_error(err));
             Ok(false)
         }
+        Err(err) => Err(err.into()),
     }
 }
 
-/// Loads the spec, or returns `None` when there is no spec file. Formats a problem the way
-/// `fbk validate` reports it: `file:line:column: error: message`.
+/// Loads the spec, or returns `None` when there is no spec file. Reports a problem like
+/// [`spec_error`].
 pub(crate) fn load_spec(spec_path: &Path) -> Result<Option<SandboxSpec>> {
-    let Some(text) = read_spec_text(spec_path)? else {
-        return Ok(None);
-    };
-
-    parse_spec(&text)
-        .map(Some)
-        .map_err(|report| anyhow!(report))
+    firebrick_spec::from_file(spec_path).map_err(spec_error)
 }
 
-/// Reads the text of the spec file, or returns `None` when there is none. Fails when it is a
-/// symlink.
-pub(crate) fn read_spec_text(spec_path: &Path) -> Result<Option<String>> {
-    firebrick_spec::read_text(spec_path).map_err(|err| anyhow!(report(&err)))
-}
-
-/// Parses the text of the spec file, formatting a problem the way `fbk validate` reports it.
-fn parse_spec(text: &str) -> Result<SandboxSpec, String> {
-    firebrick_spec::from_str(text).map_err(|err| report(&err))
-}
-
-/// Formats a problem with the spec file, with its position when it has one. A symlinked spec
-/// file is reported as is, since the error already names the file.
-pub(crate) fn report(err: &SandboxSpecError) -> String {
-    match (err.diagnostic(), err) {
-        (Some(diagnostic), _) => format!(
+/// Turns a problem with the spec file into an error. Invalid content reads the way `fbk
+/// validate` reports it, `file:line:column: error: message`; other errors keep their cause.
+pub(crate) fn spec_error(err: SandboxSpecError) -> anyhow::Error {
+    match err.diagnostic() {
+        Some(diagnostic) => anyhow!(
             "{SPEC_FILE_NAME}:{}:{}: error: {}",
-            diagnostic.line, diagnostic.column, diagnostic.message
+            diagnostic.line,
+            diagnostic.column,
+            diagnostic.message
         ),
-        (None, SandboxSpecError::Symlink(_)) => err.to_string(),
-        (None, _) => format!("{SPEC_FILE_NAME}: error: {err}"),
+        None => err.into(),
     }
 }
 
