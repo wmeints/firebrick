@@ -37,11 +37,8 @@ fn spec_name(working_dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
     use crate::symlinked_spec;
     use std::fs;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     fn project_dir(name: &str) -> (TempDir, PathBuf) {
@@ -151,7 +148,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn refuses_a_symlinked_spec_and_leaves_its_target_alone() {
         for (content, force) in [
             (Some("notes\n"), false),
@@ -159,25 +155,31 @@ mod tests {
             (None, false),
             (None, true),
         ] {
-            let (dir, target) = symlinked_spec::workspace(content);
-
-            let err = init_spec(dir.path(), force).unwrap_err();
-
-            assert_eq!(err.to_string(), symlinked_spec::SYMLINK_ERROR);
-            assert_eq!(symlinked_spec::target_content(&target).as_deref(), content);
+            assert_refuses_symlinked_spec(content, force);
         }
     }
 
+    /// Asserts that `init_spec` refuses a `.firebrick.yml` that links to a file with
+    /// `content`, or a missing one, and leaves that file alone.
+    fn assert_refuses_symlinked_spec(content: Option<&str>, force: bool) {
+        let Some((dir, target)) = symlinked_spec::workspace(content) else {
+            return;
+        };
+
+        let err = init_spec(dir.path(), force).unwrap_err();
+
+        assert_eq!(err.to_string(), symlinked_spec::SYMLINK_ERROR);
+        assert_eq!(symlinked_spec::target_content(&target).as_deref(), content);
+    }
+
     #[test]
-    #[cfg(unix)]
     fn write_failure_names_the_path() {
-        let (_root, dir) = project_dir("project");
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        // A directory that doesn't exist fails the write on every platform, also for root,
+        // whom a read-only directory doesn't stop.
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join("missing");
 
-        let result = init_spec(&dir, false);
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
-
-        let err = result.unwrap_err();
+        let err = init_spec(&dir, false).unwrap_err();
         assert!(
             err.to_string()
                 .contains(&dir.join(SPEC_FILE_NAME).display().to_string()),

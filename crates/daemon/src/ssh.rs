@@ -335,7 +335,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn failed_write_leaves_config_unchanged() {
         let dir = TempDir::new().unwrap();
         let ssh_dir = dir.path().join(".ssh");
@@ -343,12 +342,12 @@ mod tests {
 
         fs::create_dir_all(&ssh_dir).unwrap();
         fs::write(&user_config, "Host github.com\n").unwrap();
-        // A directory without write permission fails the write, like a full disk would.
-        fs::set_permissions(&ssh_dir, fs::Permissions::from_mode(0o500)).unwrap();
+        // A directory in the place of the temporary file fails the write on every platform,
+        // also for root, like a full disk would.
+        fs::create_dir(ssh_dir.join(".config.firebrick-tmp")).unwrap();
 
         let result = ensure_include(&user_config, Path::new("/data/firebrick/ssh/config"));
 
-        fs::set_permissions(&ssh_dir, fs::Permissions::from_mode(0o700)).unwrap();
         let err = result.unwrap_err().to_string();
         assert!(err.starts_with("failed to update"), "{err}");
         assert_eq!(
@@ -358,7 +357,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn symlinked_config_stays_symlink() {
         let dir = TempDir::new().unwrap();
         let dotfiles = dir.path().join("dotfiles/ssh_config");
@@ -367,7 +365,9 @@ mod tests {
         fs::create_dir_all(dotfiles.parent().unwrap()).unwrap();
         fs::create_dir_all(user_config.parent().unwrap()).unwrap();
         fs::write(&dotfiles, "Host github.com\n").unwrap();
-        std::os::unix::fs::symlink(&dotfiles, &user_config).unwrap();
+        if !crate::atomic_file::test_symlink(&dotfiles, &user_config) {
+            return;
+        }
 
         ensure_include(&user_config, Path::new("/data/firebrick/ssh/config")).unwrap();
 
@@ -379,14 +379,15 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn dangling_symlink_is_left_alone() {
         let dir = TempDir::new().unwrap();
         let user_config = dir.path().join(".ssh/config");
 
         fs::create_dir_all(user_config.parent().unwrap()).unwrap();
         let missing = dir.path().join("missing");
-        std::os::unix::fs::symlink(&missing, &user_config).unwrap();
+        if !crate::atomic_file::test_symlink(&missing, &user_config) {
+            return;
+        }
 
         let err = ensure_include(&user_config, Path::new("/data/firebrick/ssh/config"))
             .unwrap_err()

@@ -177,7 +177,6 @@ impl<'a> SpecFile<'a> {
 mod tests {
     use super::*;
     use crate::fake_daemon::{self, OTHER_WORKSPACE};
-    #[cfg(unix)]
     use crate::symlinked_spec;
     use std::fs;
     use tempfile::TempDir;
@@ -222,9 +221,10 @@ mod tests {
         assert!(!spec_text(&dir).contains("8080"), "{}", spec_text(&dir));
     }
 
-    #[cfg(unix)]
     async fn assert_forward_and_remove_refuse_symlink(content: Option<&str>) {
-        let (dir, target) = symlinked_spec::workspace(content);
+        let Some((dir, target)) = symlinked_spec::workspace(content) else {
+            return;
+        };
         // The sandbox belongs to this directory, so only the symlink check stops the write.
         let workspace = dunce::canonicalize(dir.path()).unwrap();
         let mut client = fake_daemon::serve("dev", workspace.to_str().unwrap()).await;
@@ -242,13 +242,11 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(unix)]
     async fn forward_and_remove_refuse_a_symlink_to_a_spec_and_leave_it_alone() {
         assert_forward_and_remove_refuse_symlink(Some(SPEC)).await;
     }
 
     #[tokio::test]
-    #[cfg(unix)]
     async fn forward_and_remove_refuse_a_dangling_symlink_and_create_no_file() {
         assert_forward_and_remove_refuse_symlink(None).await;
     }

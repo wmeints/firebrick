@@ -1007,7 +1007,6 @@ fn format_status(status: SandboxStatus) -> String {
 mod tests {
     use super::*;
     use crate::fake_daemon::{self, OTHER_WORKSPACE};
-    #[cfg(unix)]
     use crate::symlinked_spec;
     use std::fs;
     use tempfile::TempDir;
@@ -1268,9 +1267,10 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(unix)]
     async fn assert_resolve_refuses_symlink(content: Option<&str>) {
-        let (dir, _target) = symlinked_spec::workspace(content);
+        let Some((dir, _target)) = symlinked_spec::workspace(content) else {
+            return;
+        };
 
         let err = resolve_spec(dir.path(), &mut unreachable_client())
             .await
@@ -1280,13 +1280,11 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(unix)]
     async fn symlinked_spec_file_returns_error() {
         assert_resolve_refuses_symlink(Some("name: dev\n")).await;
     }
 
     #[tokio::test]
-    #[cfg(unix)]
     async fn dangling_symlinked_spec_file_returns_error() {
         assert_resolve_refuses_symlink(None).await;
     }
@@ -1899,14 +1897,15 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn new_sandbox_settings_show_the_target_of_a_symlinked_mount() {
         let dir = TempDir::new().unwrap();
         let project = dir.path().join("project");
         let target = dir.path().join("target");
         fs::create_dir_all(&project).unwrap();
         fs::create_dir_all(&target).unwrap();
-        std::os::unix::fs::symlink(&target, project.join("lib")).unwrap();
+        if !symlinked_spec::symlink_dir(&target, &project.join("lib")) {
+            return;
+        }
         fs::write(
             project.join(SPEC_FILE_NAME),
             "name: dev\nmounts:\n  - host: lib\n    guest: /mnt/lib\n",

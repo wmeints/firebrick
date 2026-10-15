@@ -599,11 +599,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn workspace_is_stored_under_its_canonical_path() {
         let fixture = Fixture::new();
         let link = fixture.config.path().join("link");
-        std::os::unix::fs::symlink(fixture.workspace.path(), &link).unwrap();
+        if !crate::symlinked_spec::symlink_dir(fixture.workspace.path(), &link) {
+            return;
+        }
 
         Approvals::at(fixture.path(), &link)
             .unwrap()

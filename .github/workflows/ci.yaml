@@ -95,6 +95,10 @@ jobs:
   windows:
     name: Windows format, lint and unit tests
     runs-on: windows-latest
+    env:
+      # The runner may create symlinks, so the tests that check how firebrick treats them run
+      # here; a developer's Windows without Developer Mode can't, and stops them early.
+      FIREBRICK_TEST_SYMLINKS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

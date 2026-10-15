@@ -1057,6 +1057,12 @@ mod windows_tests {
     /// Asserts that the access list grants access to the user, the system (`SY`) and the
     /// administrators (`BA`) only, and to nobody else, such as the built-in users or everyone.
     fn assert_private(acl: &str) {
+        assert_trustees(acl, &["BA", "SY"]);
+    }
+
+    /// Asserts that the access list in Security Descriptor Definition Language grants access to
+    /// the user and the `others` only, in any order.
+    pub(crate) fn assert_trustees(acl: &str, others: &[&str]) {
         let user = win32::Sid::current_user().unwrap().string().unwrap();
         // The trustee is the last field of each `(A;flags;rights;;;trustee)` entry.
         let mut trustees: Vec<&str> = acl
@@ -1066,7 +1072,8 @@ mod windows_tests {
             .collect();
         trustees.sort_unstable();
 
-        let mut expected = ["BA", "SY", user_trustee(&user)];
+        let mut expected = others.to_vec();
+        expected.push(user_trustee(&user));
         expected.sort_unstable();
         assert_eq!(trustees, expected, "{acl}");
     }

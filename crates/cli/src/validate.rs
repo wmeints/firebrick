@@ -47,7 +47,6 @@ pub(crate) fn spec_error(err: SandboxSpecError) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
     use crate::symlinked_spec;
     use std::fs;
     use tempfile::TempDir;
@@ -92,14 +91,21 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn symlinked_spec_returns_error() {
         for content in [Some("name: dev\n"), None] {
-            let (dir, _target) = symlinked_spec::workspace(content);
-
-            let err = validate_spec(dir.path()).unwrap_err();
-
-            assert_eq!(err.to_string(), symlinked_spec::SYMLINK_ERROR);
+            assert_refuses_symlinked_spec(content);
         }
+    }
+
+    /// Asserts that validating refuses a `.firebrick.yml` that links to a file with `content`,
+    /// or a missing one.
+    fn assert_refuses_symlinked_spec(content: Option<&str>) {
+        let Some((dir, _target)) = symlinked_spec::workspace(content) else {
+            return;
+        };
+
+        let err = validate_spec(dir.path()).unwrap_err();
+
+        assert_eq!(err.to_string(), symlinked_spec::SYMLINK_ERROR);
     }
 }

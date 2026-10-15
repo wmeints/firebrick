@@ -58,6 +58,30 @@ fn keep_permissions(target: &Path, temp: &Path) -> io::Result<()> {
     }
 }
 
+/// Creates `link` as a symlink to the file `target`, which may not exist, for the tests of
+/// files that keep a symlink. Returns `false` when Windows refuses, because creating a symlink
+/// takes administrator rights or Developer Mode there, so the test can stop. With
+/// `FIREBRICK_TEST_SYMLINKS` set, as in CI, that fails the test instead.
+#[cfg(test)]
+pub(crate) fn test_symlink(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    let created = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let created = std::os::windows::fs::symlink_file(target, link);
+
+    match created {
+        Ok(()) => true,
+        Err(err) if cfg!(windows) && std::env::var_os("FIREBRICK_TEST_SYMLINKS").is_none() => {
+            eprintln!(
+                "can't create a symlink ({err}), so the test stops; set \
+                 FIREBRICK_TEST_SYMLINKS=1 to fail it"
+            );
+            false
+        }
+        Err(err) => panic!("can't create a symlink: {err}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,13 +99,14 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn replaces_target_of_symlink() {
         let dir = TempDir::new().unwrap();
         let target = dir.path().join("target");
         let link = dir.path().join("link");
         fs::write(&target, "old\n").unwrap();
-        std::os::unix::fs::symlink(&target, &link).unwrap();
+        if !crate::atomic_file::test_symlink(&target, &link) {
+            return;
+        }
 
         write(&link, "new\n", 0o600).unwrap();
 

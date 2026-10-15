@@ -268,6 +268,46 @@ mod tests {
         );
     }
 
+    /// Returns the access list of the pipe in Security Descriptor Definition Language. Windows
+    /// PowerShell reads it through a client that connects with the right to read it, which
+    /// opening the pipe by name for its security, as `icacls` does, can't: that takes the free
+    /// instance like a client.
+    #[cfg(windows)]
+    fn pipe_sddl(path: &Path) -> String {
+        let script = format!(
+            "$rights = [IO.Pipes.PipeAccessRights]'ReadData, WriteData, ReadPermissions'; \
+             $client = New-Object IO.Pipes.NamedPipeClientStream('.', '{}', $rights, \
+             [IO.Pipes.PipeOptions]::None, \
+             [Security.Principal.TokenImpersonationLevel]::Identification, \
+             [IO.HandleInheritability]::None); \
+             $client.Connect(5000); \
+             $client.GetAccessControl().GetSecurityDescriptorSddlForm('All')",
+            path.to_string_lossy().trim_start_matches(r"\\.\pipe\")
+        );
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn the_pipe_grants_access_to_the_user_and_the_system_only() {
+        let (_temp, path) = test_endpoint("acl");
+        let accepted = tokio::spawn(answer_pong(Listener::bind(&path).unwrap()));
+
+        let acl = tokio::task::spawn_blocking(move || pipe_sddl(&path))
+            .await
+            .unwrap();
+
+        accepted.abort();
+        let dacl = &acl[acl.find("D:").unwrap()..];
+        assert!(dacl.starts_with("D:P"), "not protected: {acl}");
+        crate::windows_tests::assert_trustees(dacl.trim_end(), &["SY"]);
+    }
+
     /// Sandboxes keep the endpoints of their vsock routes from when they were created, so the
     /// names must not change.
     #[cfg(windows)]

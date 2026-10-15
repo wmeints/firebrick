@@ -358,12 +358,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn keeps_a_symlinked_settings_file_a_symlink() {
         let (root, settings) = vscode_root();
         let target = root.path().join("dotfiles-settings.json");
         fs::write(&target, "{}\n").unwrap();
-        std::os::unix::fs::symlink(&target, &settings).unwrap();
+        if !crate::atomic_file::test_symlink(&target, &settings) {
+            return;
+        }
 
         sync_settings(root.path(), &hosts(&["project.fbk"]));
 
@@ -416,11 +417,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn leaves_dangling_settings_symlink_alone() {
         let (root, settings) = vscode_root();
         let target = root.path().join("dotfiles/settings.json");
-        std::os::unix::fs::symlink(&target, &settings).unwrap();
+        if !crate::atomic_file::test_symlink(&target, &settings) {
+            return;
+        }
 
         let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
 

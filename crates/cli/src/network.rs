@@ -389,7 +389,6 @@ where
 mod tests {
     use super::*;
     use crate::fake_daemon::{self, OTHER_WORKSPACE};
-    #[cfg(unix)]
     use crate::symlinked_spec;
     use std::fs;
     use std::path::PathBuf;
@@ -503,9 +502,10 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     async fn assert_update_refuses_symlink(content: Option<&str>) {
-        let (dir, target) = symlinked_spec::workspace(content);
+        let Some((dir, target)) = symlinked_spec::workspace(content) else {
+            return;
+        };
         // The sandbox belongs to this directory, so only the symlink check stops the write.
         let workspace = dunce::canonicalize(dir.path()).unwrap();
         let client = fake_daemon::serve("dev", workspace.to_str().unwrap()).await;
@@ -519,13 +519,11 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(unix)]
     async fn update_refuses_a_symlink_to_a_spec_and_leaves_it_alone() {
         assert_update_refuses_symlink(Some("name: dev\n")).await;
     }
 
     #[tokio::test]
-    #[cfg(unix)]
     async fn update_refuses_a_dangling_symlink_and_creates_no_file() {
         assert_update_refuses_symlink(None).await;
     }

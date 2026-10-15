@@ -1177,10 +1177,11 @@ pub mod tests {
         assert!(exists(&path).unwrap());
     }
 
-    #[cfg(unix)]
     #[test]
     fn exists_refuses_a_symlink() {
-        let (_link_dir, link, _target) = symlinked_spec("missing.yml");
+        let Some((_link_dir, link, _target)) = symlinked_spec("missing.yml") else {
+            return;
+        };
         assert!(matches!(exists(&link), Err(SandboxSpecError::Symlink(_))));
     }
 
@@ -2249,25 +2250,45 @@ pub mod tests {
         assert!(matches!(err, SandboxSpecError::CantWrite { .. }));
     }
 
-    /// Creates `.firebrick.yml` in a new directory as a symlink to `target` in that directory.
-    /// Unix only: creating a symlink on Windows takes administrator rights or Developer Mode.
-    #[cfg(unix)]
-    fn symlinked_spec(target: &str) -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
+    /// Creates `.firebrick.yml` in a new directory as a symlink to `target` in that directory,
+    /// or returns `None` when this Windows can't create symlinks (see [`symlink_file`]).
+    fn symlinked_spec(target: &str) -> Option<(TempDir, std::path::PathBuf, std::path::PathBuf)> {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(".firebrick.yml");
         let target = dir.path().join(target);
-        std::os::unix::fs::symlink(&target, &path).unwrap();
-        (dir, path, target)
+        symlink_file(&target, &path).then_some((dir, path, target))
     }
 
-    #[cfg(unix)]
+    /// Creates `link` as a symlink to the file `target`, which may not exist. Returns `false`
+    /// when Windows refuses, because creating a symlink takes administrator rights or Developer
+    /// Mode there, so the test can stop. With `FIREBRICK_TEST_SYMLINKS` set, as in CI, that
+    /// fails the test instead.
+    fn symlink_file(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let created = std::os::windows::fs::symlink_file(target, link);
+
+        match created {
+            Ok(()) => true,
+            Err(err) if cfg!(windows) && std::env::var_os("FIREBRICK_TEST_SYMLINKS").is_none() => {
+                eprintln!(
+                    "can't create a symlink ({err}), so the test stops; set FIREBRICK_TEST_SYMLINKS=1 to fail it"
+                );
+                false
+            }
+            Err(err) => panic!("can't create a symlink: {err}"),
+        }
+    }
+
     const SYMLINK_ERROR: &str =
         ".firebrick.yml is a symlink; firebrick only uses a regular file in the workspace";
 
-    #[cfg(unix)]
     #[test]
     fn read_text_refuses_a_symlink() {
-        let (_dir, path, target) = symlinked_spec("notes.txt");
+        let Some((_dir, path, target)) = symlinked_spec("notes.txt") else {
+            return;
+        };
         fs::write(&target, "name: dev\n").unwrap();
 
         let err = read_text(&path).unwrap_err();
@@ -2275,10 +2296,11 @@ pub mod tests {
         assert_eq!(err.to_string(), SYMLINK_ERROR);
     }
 
-    #[cfg(unix)]
     #[test]
     fn read_text_refuses_a_dangling_symlink() {
-        let (_dir, path, _target) = symlinked_spec("missing.yml");
+        let Some((_dir, path, _target)) = symlinked_spec("missing.yml") else {
+            return;
+        };
 
         let err = read_text(&path).unwrap_err();
 
@@ -2294,10 +2316,11 @@ pub mod tests {
         assert_eq!(text, None);
     }
 
-    #[cfg(unix)]
     #[test]
     fn from_file_refuses_a_symlink() {
-        let (_dir, path, target) = symlinked_spec("notes.txt");
+        let Some((_dir, path, target)) = symlinked_spec("notes.txt") else {
+            return;
+        };
         fs::write(&target, "name: dev\n").unwrap();
 
         let result = from_file(&path);
@@ -2305,10 +2328,11 @@ pub mod tests {
         assert!(matches!(result, Err(SandboxSpecError::Symlink(_))));
     }
 
-    #[cfg(unix)]
     #[test]
     fn write_text_refuses_a_symlink_and_leaves_its_target_alone() {
-        let (dir, path, target) = symlinked_spec("notes.txt");
+        let Some((dir, path, target)) = symlinked_spec("notes.txt") else {
+            return;
+        };
         fs::write(&target, "precious host content\n").unwrap();
 
         let err = write_text(&path, "name: dev\n").unwrap_err();
@@ -2321,10 +2345,11 @@ pub mod tests {
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 
-    #[cfg(unix)]
     #[test]
     fn write_text_refuses_a_dangling_symlink() {
-        let (_dir, path, target) = symlinked_spec("missing.yml");
+        let Some((_dir, path, target)) = symlinked_spec("missing.yml") else {
+            return;
+        };
 
         let err = write_text(&path, "name: dev\n").unwrap_err();
 
