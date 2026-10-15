@@ -31,12 +31,20 @@ The rest of this README is for people who work on the source code.
 
 ### Setup
 
-Development needs Linux with KVM, macOS on Apple Silicon, or Windows with a WSL
-2 distribution that has nested virtualization, like Firebrick itself; the
-integration tests boot real VMs. On Windows, run all development commands inside
-the distribution. See
+Development needs Linux with KVM, macOS on Apple Silicon, or Windows 11 x64 with
+the Windows Hypervisor Platform, like Firebrick itself; the integration tests
+boot real VMs. See
 [Installation](https://firebrick-sandbox.dev/docs/installation/) for the
 details.
+
+On Windows, also install the Visual Studio Build Tools with the C++ workload
+(`Microsoft.VisualStudio.Workload.VCTools`), which Rust needs to link, and run
+the integration tests with `mise run integration-tests`. Cargo's job object
+keeps microsandbox from starting VMs, so the plain `cargo test` command can't
+run them there
+([ADR 0050](docs/architecture/decisions/0050-talk-over-named-pipes-on-windows.md)).
+The repository checks out with LF line endings, which the format checks expect,
+also with Git for Windows' `core.autocrlf=true`.
 
 Install the toolchain (Rust, Node, pnpm, `buf`, `protoc`, `dprint`,
 `actionlint`, `cargo-audit`, `lefthook`, the GitHub CLI and Claude Code) with

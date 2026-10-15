@@ -21,6 +21,7 @@
 use crate::rate_limit::RateLimit;
 use crate::vsock::{self, Connections, Listeners, Refused};
 use async_trait::async_trait;
+use firebrick_utils::ipc;
 use microsandbox::sandbox::{SandboxBuilder, SandboxSpec};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -30,7 +31,6 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 
 /// Guest vsock port the stand-ins connect to, on host CID 2.
@@ -418,8 +418,8 @@ fn kind_list(kinds: &[Kind]) -> Vec<u8> {
 }
 
 /// Reads the request of one connection and writes the answer.
-async fn serve_connection(stream: UnixStream, channel: Arc<Channel>) {
-    let (read, mut write) = stream.into_split();
+async fn serve_connection(stream: ipc::Stream, channel: Arc<Channel>) {
+    let (read, mut write) = tokio::io::split(stream);
     let mut read = BufReader::new(read);
     let request = tokio::time::timeout(REQUEST_TIMEOUT, read_request(&mut read)).await;
     let reply = match request {
@@ -465,7 +465,7 @@ async fn read_content(read: impl AsyncRead + Unpin, length: usize) -> io::Result
 /// [`vsock::MAX_CONNECTIONS`] connections.
 fn accept(
     connections: &mut Connections,
-    accepted: io::Result<(UnixStream, tokio::net::unix::SocketAddr)>,
+    accepted: io::Result<ipc::Stream>,
     channel: &Arc<Channel>,
 ) {
     let answer = |stream| serve_connection(stream, Arc::clone(channel));
@@ -492,7 +492,11 @@ fn finished(channel: &Channel, result: Result<(), tokio::task::JoinError>) {
 
 /// Accepts connections from the sandbox until `shutdown` fires or its sender is dropped, and
 /// answers them.
-async fn serve(listener: UnixListener, channel: Arc<Channel>, shutdown: oneshot::Receiver<()>) {
+async fn serve(
+    mut listener: ipc::Listener,
+    channel: Arc<Channel>,
+    shutdown: oneshot::Receiver<()>,
+) {
     let mut connections = Connections::default();
     tokio::pin!(shutdown);
 
@@ -590,11 +594,14 @@ pub enum Desktop {
     X11,
     /// macOS, read with `pbpaste` and `osascript` and written with `osascript`.
     MacOs,
+    /// Windows, read and written with the .NET clipboard in a `powershell.exe` script.
+    Windows,
 }
 
 /// Reads and writes the host clipboard with the tools of the desktop: `wl-paste` and `wl-copy`
-/// on Wayland, `xclip` on X11, and `pbpaste` and `osascript` on macOS. fbkd inherits the
-/// display of the `fbk` that started it, so it uses the clipboard of that desktop session.
+/// on Wayland, `xclip` on X11, `pbpaste` and `osascript` on macOS, and `powershell.exe` on
+/// Windows. fbkd inherits the display of the `fbk` that started it, so it uses the clipboard of
+/// that desktop session.
 #[derive(Debug, Clone)]
 pub struct HostTools {
     desktop: Option<Desktop>,
@@ -602,12 +609,12 @@ pub struct HostTools {
 }
 
 impl HostTools {
-    /// Returns the tools of the desktop fbkd runs on: macOS, or on Linux Wayland when
+    /// Returns the tools of the desktop fbkd runs on: macOS, Windows, or on Linux Wayland when
     /// `WAYLAND_DISPLAY` is set and X11 when `DISPLAY` is. They're looked up on fbkd's `PATH`.
     pub fn from_env() -> Self {
         let is_set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
 
-        Self::new(detect(cfg!(target_os = "macos"), is_set), None)
+        Self::new(detect(std::env::consts::OS, is_set), None)
     }
 
     /// Returns the tools of the desktop, or of none when there's no display, looked up on
@@ -652,7 +659,7 @@ impl HostClipboard for HostTools {
 
         Ok(match desktop {
             Desktop::MacOs => kinds_from_clipboard_info(&types),
-            Desktop::Wayland | Desktop::X11 => kinds_from_types(&types),
+            Desktop::Wayland | Desktop::X11 | Desktop::Windows => kinds_from_types(&types),
         })
     }
 
@@ -682,22 +689,63 @@ impl HostClipboard for HostTools {
     }
 }
 
-/// Returns the desktop for macOS when `macos` is set, and otherwise by the display variables
-/// that `is_set` reports, or `None` when there's no display.
-fn detect(macos: bool, is_set: impl Fn(&str) -> bool) -> Option<Desktop> {
-    if macos {
-        Some(Desktop::MacOs)
-    } else if is_set("WAYLAND_DISPLAY") {
-        Some(Desktop::Wayland)
-    } else if is_set("DISPLAY") {
-        Some(Desktop::X11)
-    } else {
-        None
+/// Returns the desktop of the operating system `os`, as in [`std::env::consts::OS`]: macOS and
+/// Windows have one, and on other systems the display variables that `is_set` reports tell,
+/// or `None` when there's no display.
+fn detect(os: &str, is_set: impl Fn(&str) -> bool) -> Option<Desktop> {
+    match os {
+        "macos" => Some(Desktop::MacOs),
+        "windows" => Some(Desktop::Windows),
+        _ if is_set("WAYLAND_DISPLAY") => Some(Desktop::Wayland),
+        _ if is_set("DISPLAY") => Some(Desktop::X11),
+        _ => None,
     }
 }
 
 /// A program and its arguments.
 type Command = (&'static str, &'static [&'static str]);
+
+/// The program that runs the Windows clipboard scripts. Windows PowerShell comes with every
+/// Windows and runs scripts in the single-threaded apartment the clipboard needs.
+const POWERSHELL: &str = "powershell.exe";
+
+/// Lists the kinds on the Windows clipboard as the types [`kinds_from_types`] knows.
+const WINDOWS_LIST: &str = "Add-Type -AssemblyName System.Windows.Forms; \
+    if ([Windows.Forms.Clipboard]::ContainsText()) { 'text/plain' }; \
+    if ([Windows.Forms.Clipboard]::ContainsData('PNG') -or \
+        [Windows.Forms.Clipboard]::ContainsImage()) { 'image/png' }";
+
+/// Writes the text on the Windows clipboard to stdout as UTF-8, with LF line endings.
+const WINDOWS_READ_TEXT: &str = "Add-Type -AssemblyName System.Windows.Forms; \
+    $t = [Windows.Forms.Clipboard]::GetText() -replace '\\r\\n', [string][char]10; \
+    $b = [Text.Encoding]::UTF8.GetBytes($t); \
+    [Console]::OpenStandardOutput().Write($b, 0, $b.Length)";
+
+/// Writes the image on the Windows clipboard to stdout as PNG: the clipboard's own PNG, or its
+/// bitmap encoded as PNG.
+const WINDOWS_READ_PNG: &str = "Add-Type -AssemblyName System.Windows.Forms, System.Drawing; \
+    $s = [Windows.Forms.Clipboard]::GetData('PNG'); \
+    if ($s -is [IO.MemoryStream]) { $b = $s.ToArray() } else { \
+        $i = [Windows.Forms.Clipboard]::GetImage(); \
+        if ($i -eq $null) { [Console]::Error.Write('Nothing is copied'); exit 1 }; \
+        $m = New-Object IO.MemoryStream; \
+        $i.Save($m, [Drawing.Imaging.ImageFormat]::Png); $b = $m.ToArray() }; \
+    [Console]::OpenStandardOutput().Write($b, 0, $b.Length)";
+
+/// Sets the Windows clipboard to the UTF-8 text on stdin, or clears it for empty text.
+const WINDOWS_WRITE_TEXT: &str = "Add-Type -AssemblyName System.Windows.Forms; \
+    $m = New-Object IO.MemoryStream; [Console]::OpenStandardInput().CopyTo($m); \
+    $t = [Text.Encoding]::UTF8.GetString($m.ToArray()); \
+    if ($t) { [Windows.Forms.Clipboard]::SetDataObject($t, $true, 10, 100) } \
+    else { [Windows.Forms.Clipboard]::Clear() }";
+
+/// Sets the Windows clipboard to the PNG image on stdin, as PNG for the applications that take
+/// it and as a bitmap for the others.
+const WINDOWS_WRITE_PNG: &str = "Add-Type -AssemblyName System.Windows.Forms, System.Drawing; \
+    $m = New-Object IO.MemoryStream; [Console]::OpenStandardInput().CopyTo($m); \
+    $m.Position = 0; $o = New-Object Windows.Forms.DataObject; \
+    $o.SetData('PNG', $m); $o.SetImage([Drawing.Image]::FromStream($m)); \
+    [Windows.Forms.Clipboard]::SetDataObject($o, $true, 10, 100)";
 
 /// Returns the command that lists the types on the clipboard.
 fn list_command(desktop: Desktop) -> Command {
@@ -705,8 +753,20 @@ fn list_command(desktop: Desktop) -> Command {
         Desktop::Wayland => ("wl-paste", &["--list-types"]),
         Desktop::X11 => ("xclip", &["-selection", "clipboard", "-t", "TARGETS", "-o"]),
         Desktop::MacOs => ("osascript", &["-e", "clipboard info"]),
+        Desktop::Windows => (
+            POWERSHELL,
+            &[NO_PROFILE, NON_INTERACTIVE, COMMAND, WINDOWS_LIST],
+        ),
     }
 }
+
+/// The arguments `powershell.exe` runs a script with: without the user's profile, which could
+/// print to stdout or take long, and without prompts.
+const NO_PROFILE: &str = "-NoProfile";
+/// See [`NO_PROFILE`].
+const NON_INTERACTIVE: &str = "-NonInteractive";
+/// See [`NO_PROFILE`].
+const COMMAND: &str = "-Command";
 
 /// Returns the command that prints the content of the kind.
 fn read_command(desktop: Desktop, kind: Kind) -> Command {
@@ -723,6 +783,14 @@ fn read_command(desktop: Desktop, kind: Kind) -> Command {
         ),
         (Desktop::MacOs, Kind::Text) => ("pbpaste", &[]),
         (Desktop::MacOs, Kind::Png) => ("osascript", &["-e", "the clipboard as «class PNGf»"]),
+        (Desktop::Windows, Kind::Text) => (
+            POWERSHELL,
+            &[NO_PROFILE, NON_INTERACTIVE, COMMAND, WINDOWS_READ_TEXT],
+        ),
+        (Desktop::Windows, Kind::Png) => (
+            POWERSHELL,
+            &[NO_PROFILE, NON_INTERACTIVE, COMMAND, WINDOWS_READ_PNG],
+        ),
     }
 }
 
@@ -741,6 +809,14 @@ fn write_command(desktop: Desktop, kind: Kind) -> Command {
         ),
         // osascript reads the script from stdin.
         (Desktop::MacOs, _) => ("osascript", &["-"]),
+        (Desktop::Windows, Kind::Text) => (
+            POWERSHELL,
+            &[NO_PROFILE, NON_INTERACTIVE, COMMAND, WINDOWS_WRITE_TEXT],
+        ),
+        (Desktop::Windows, Kind::Png) => (
+            POWERSHELL,
+            &[NO_PROFILE, NON_INTERACTIVE, COMMAND, WINDOWS_WRITE_PNG],
+        ),
     }
 }
 
@@ -934,6 +1010,7 @@ async fn run_with_input(
 fn command(program: &str, args: &[&str], path: Option<&OsString>) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(program);
     command.args(args).kill_on_drop(true);
+    hide_console(&mut command);
 
     // A PATH set for the child is also where the program is looked up.
     if let Some(path) = path {
@@ -941,6 +1018,18 @@ fn command(program: &str, args: &[&str], path: Option<&OsString>) -> tokio::proc
     }
 
     command
+}
+
+/// Does nothing: unix tools need no console.
+#[cfg(unix)]
+fn hide_console(_command: &mut tokio::process::Command) {}
+
+/// Gives the program a console without a window. `fbk` starts fbkd without a console, so
+/// Windows would otherwise open a console window for each console program fbkd runs.
+#[cfg(windows)]
+fn hide_console(command: &mut tokio::process::Command) {
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+    command.creation_flags(CREATE_NO_WINDOW);
 }
 
 /// Returns the error for a program that took longer than [`HOST_TIMEOUT`].
@@ -1115,11 +1204,14 @@ mod tests {
     }
 
     fn clipboards(dir: &std::path::Path, host: FakeClipboard) -> Clipboards {
-        Clipboards::new(Some(dir.join("clipboard")), Arc::new(host))
+        Clipboards::new(
+            Some(vsock::test_endpoint_dir(dir, "clipboard")),
+            Arc::new(host),
+        )
     }
 
-    async fn connect(clipboards: &Clipboards, sandbox: &str) -> io::Result<UnixStream> {
-        UnixStream::connect(clipboards.socket_path(sandbox).unwrap()).await
+    async fn connect(clipboards: &Clipboards, sandbox: &str) -> io::Result<ipc::Stream> {
+        ipc::connect(&clipboards.socket_path(sandbox).unwrap()).await
     }
 
     /// Sends the request, ends the input and returns the whole answer.
@@ -1202,18 +1294,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn answers_invalid_to_unknown_or_unfinished_requests() {
+    async fn answers_invalid_to_unknown_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let clipboards = clipboards(dir.path(), FakeClipboard::with(Some(b"text"), None));
+        clipboards.listen("sb", true).await.unwrap();
+
+        assert_eq!(ask(&clipboards, "sb", b"primary\n").await, b"invalid\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn answers_invalid_to_unfinished_requests() {
         let dir = tempfile::tempdir().unwrap();
         let clipboards = clipboards(dir.path(), FakeClipboard::with(Some(b"text"), None));
         clipboards.listen("sb", true).await.unwrap();
 
         let answers = [
-            ask(&clipboards, "sb", b"primary\n").await,
             ask(&clipboards, "sb", b"text").await,
             ask(&clipboards, "sb", b"").await,
         ];
 
-        assert_eq!(answers, [b"invalid\n"; 3]);
+        assert_eq!(answers, [b"invalid\n"; 2]);
+    }
+
+    /// A named pipe can't be half-closed, so on Windows a request that ends before its line
+    /// isn't seen to end. fbkd closes it after [`REQUEST_TIMEOUT`] without an answer, and keeps
+    /// answering other requests.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn closes_unfinished_requests_after_the_request_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let clipboards = clipboards(dir.path(), FakeClipboard::with(Some(b"text"), None));
+        clipboards.listen("sb", true).await.unwrap();
+        let started = Instant::now();
+
+        let answer = ask(&clipboards, "sb", b"text").await;
+
+        assert_eq!(answer, b"");
+        assert!(
+            started.elapsed() >= REQUEST_TIMEOUT,
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(ask(&clipboards, "sb", b"types\n").await, b"ok 5\ntext\n");
     }
 
     #[tokio::test]
@@ -1234,7 +1357,7 @@ mod tests {
     }
 
     /// Opens the connections and sends a request for text on each.
-    async fn send_text_requests(clipboards: &Clipboards, count: usize) -> Vec<UnixStream> {
+    async fn send_text_requests(clipboards: &Clipboards, count: usize) -> Vec<ipc::Stream> {
         let mut streams = Vec::new();
 
         for _ in 0..count {
@@ -1254,7 +1377,10 @@ mod tests {
             ..FakeClipboard::with(Some(b"text"), None)
         };
         let host = Arc::new(host);
-        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        let clipboards = Clipboards::new(
+            Some(vsock::test_endpoint_dir(dir.path(), "clipboard")),
+            host.clone(),
+        );
         clipboards.listen("sb", true).await.unwrap();
         // The listener accepts connections in the order they connect, so it has accepted the
         // busy ones by the time it accepts the extra one.
@@ -1302,7 +1428,10 @@ mod tests {
     async fn copies_text_and_png_to_the_host_clipboard() {
         let dir = tempfile::tempdir().unwrap();
         let host = Arc::new(FakeClipboard::with(None, None));
-        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        let clipboards = Clipboards::new(
+            Some(vsock::test_endpoint_dir(dir.path(), "clipboard")),
+            host.clone(),
+        );
         clipboards.listen("sb", true).await.unwrap();
 
         let text = ask(&clipboards, "sb", &copy_request("text", "héllo".as_bytes())).await;
@@ -1324,7 +1453,10 @@ mod tests {
     async fn refuses_copies_over_the_limits_without_reading_them() {
         let dir = tempfile::tempdir().unwrap();
         let host = Arc::new(FakeClipboard::with(None, None));
-        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        let clipboards = Clipboards::new(
+            Some(vsock::test_endpoint_dir(dir.path(), "clipboard")),
+            host.clone(),
+        );
         clipboards.listen("sb", true).await.unwrap();
         let text = format!("copy text {}\n", MAX_TEXT + 1);
         let png = format!("copy png {}\n", MAX_PNG + 1);
@@ -1343,7 +1475,10 @@ mod tests {
     async fn copies_content_up_to_the_limit() {
         let dir = tempfile::tempdir().unwrap();
         let host = Arc::new(FakeClipboard::with(None, None));
-        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        let clipboards = Clipboards::new(
+            Some(vsock::test_endpoint_dir(dir.path(), "clipboard")),
+            host.clone(),
+        );
         clipboards.listen("sb", true).await.unwrap();
         let text = vec![b'a'; MAX_TEXT];
 
@@ -1357,7 +1492,10 @@ mod tests {
     async fn refuses_content_that_isnt_valid_for_its_kind() {
         let dir = tempfile::tempdir().unwrap();
         let host = Arc::new(FakeClipboard::with(None, None));
-        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        let clipboards = Clipboards::new(
+            Some(vsock::test_endpoint_dir(dir.path(), "clipboard")),
+            host.clone(),
+        );
         clipboards.listen("sb", true).await.unwrap();
 
         let answers = [
@@ -1374,7 +1512,10 @@ mod tests {
     async fn sets_nothing_when_the_content_ends_early() {
         let dir = tempfile::tempdir().unwrap();
         let host = Arc::new(FakeClipboard::with(None, None));
-        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        let clipboards = Clipboards::new(
+            Some(vsock::test_endpoint_dir(dir.path(), "clipboard")),
+            host.clone(),
+        );
         clipboards.listen("sb", true).await.unwrap();
 
         let answer = ask(&clipboards, "sb", b"copy text 10\nshort").await;
@@ -1387,7 +1528,10 @@ mod tests {
     async fn answers_invalid_to_malformed_copy_requests() {
         let dir = tempfile::tempdir().unwrap();
         let host = Arc::new(FakeClipboard::with(None, None));
-        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        let clipboards = Clipboards::new(
+            Some(vsock::test_endpoint_dir(dir.path(), "clipboard")),
+            host.clone(),
+        );
         clipboards.listen("sb", true).await.unwrap();
         let requests: [&[u8]; 6] = [
             b"copy text\nhi",
@@ -1408,7 +1552,10 @@ mod tests {
     async fn denies_copies_from_a_sandbox_without_the_copy_label() {
         let dir = tempfile::tempdir().unwrap();
         let host = Arc::new(FakeClipboard::with(Some(b"text"), None));
-        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        let clipboards = Clipboards::new(
+            Some(vsock::test_endpoint_dir(dir.path(), "clipboard")),
+            host.clone(),
+        );
         clipboards.listen("sb", false).await.unwrap();
 
         let copy = ask(&clipboards, "sb", &copy_request("text", b"hi")).await;
@@ -1423,7 +1570,10 @@ mod tests {
     async fn refuses_copies_beyond_the_rate_limit() {
         let dir = tempfile::tempdir().unwrap();
         let host = Arc::new(FakeClipboard::with(None, None));
-        let clipboards = Clipboards::new(Some(dir.path().join("clipboard")), host.clone());
+        let clipboards = Clipboards::new(
+            Some(vsock::test_endpoint_dir(dir.path(), "clipboard")),
+            host.clone(),
+        );
         clipboards.listen("sb", true).await.unwrap();
 
         let request = copy_request("text", b"hi");
@@ -1461,14 +1611,17 @@ mod tests {
 
         clipboards.remove("sb").await;
 
-        assert!(!clipboards.socket_path("sb").unwrap().exists());
+        assert!(!ipc::exists(&clipboards.socket_path("sb").unwrap()).await);
         assert!(connect(&clipboards, "sb").await.is_err());
     }
 
     #[tokio::test]
     async fn add_route_adds_the_marker_and_a_stream_route_to_the_socket() {
         let clipboards = Clipboards::new(
-            Some(PathBuf::from("/run/firebrick/clipboard")),
+            Some(vsock::test_endpoint_dir(
+                std::path::Path::new("/run/firebrick"),
+                "clipboard",
+            )),
             Arc::new(FakeClipboard::with(None, None)),
         );
         let builder = clipboards.add_route(
@@ -1562,13 +1715,42 @@ mod tests {
     fn detect_follows_the_platform_and_the_display_variables() {
         let set = |names: &'static [&'static str]| move |name: &str| names.contains(&name);
 
-        assert_eq!(detect(true, set(&[])), Some(Desktop::MacOs));
+        assert_eq!(detect("macos", set(&[])), Some(Desktop::MacOs));
+        assert_eq!(detect("windows", set(&[])), Some(Desktop::Windows));
         assert_eq!(
-            detect(false, set(&["WAYLAND_DISPLAY", "DISPLAY"])),
+            detect("linux", set(&["WAYLAND_DISPLAY", "DISPLAY"])),
             Some(Desktop::Wayland)
         );
-        assert_eq!(detect(false, set(&["DISPLAY"])), Some(Desktop::X11));
-        assert_eq!(detect(false, set(&[])), None);
+        assert_eq!(detect("linux", set(&["DISPLAY"])), Some(Desktop::X11));
+        assert_eq!(detect("linux", set(&[])), None);
+    }
+
+    #[test]
+    fn windows_runs_each_clipboard_script_with_powershell_without_a_profile() {
+        let commands = [
+            list_command(Desktop::Windows),
+            read_command(Desktop::Windows, Kind::Text),
+            read_command(Desktop::Windows, Kind::Png),
+            write_command(Desktop::Windows, Kind::Text),
+            write_command(Desktop::Windows, Kind::Png),
+        ];
+
+        for (program, args) in commands {
+            assert_eq!(program, "powershell.exe");
+            assert_eq!(&args[..3], ["-NoProfile", "-NonInteractive", "-Command"]);
+            // Double quotes would need escaping on the Windows command line.
+            assert!(!args[3].contains('"'), "{}", args[3]);
+        }
+    }
+
+    #[test]
+    fn windows_lists_its_kinds_as_types_and_passes_content_through() {
+        assert_eq!(
+            kinds_from_types("text/plain\r\nimage/png\r\n"),
+            [Kind::Text, Kind::Png]
+        );
+        assert_eq!(input(Desktop::Windows, Kind::Png, b"png".to_vec()), b"png");
+        assert_eq!(output_limit(Desktop::Windows, Kind::Png, 10), 10);
     }
 
     #[test]

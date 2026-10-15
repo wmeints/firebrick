@@ -281,14 +281,15 @@ within 10 seconds. A sandbox created before copying was supported can only
 paste: `wl-copy` asks you to recreate it.
 
 `fbkd` uses the clipboard with `wl-paste` and `wl-copy` on Wayland, `xclip` on
-X11, and `pbpaste` and `osascript` on macOS, so install `wl-clipboard` or
-`xclip` on Linux. It uses the display of the terminal where you first ran `fbk`.
-When `fbk` started it from an SSH session without a display, `wl-paste` in the
-sandbox prints `the host clipboard isn't available; fbkd has no display`; stop
-`fbkd` and run `fbk` from your desktop. On Linux, `fbkd` needs `XDG_RUNTIME_DIR`
-set to a private directory for the clipboard; without it, `fbk start` refuses to
-create a sandbox with `clipboard: true`. In a sandbox without the setting,
-`wl-paste` and `wl-copy` print `clipboard sharing is off for this sandbox`.
+X11, `pbpaste` and `osascript` on macOS, and Windows PowerShell on Windows, so
+install `wl-clipboard` or `xclip` on Linux. It uses the display of the terminal
+where you first ran `fbk`. When `fbk` started it from an SSH session without a
+display, `wl-paste` in the sandbox prints `the host clipboard isn't available;
+fbkd has no display`; stop `fbkd` and run `fbk` from your desktop. On Linux,
+`fbkd` needs `XDG_RUNTIME_DIR` set to a private directory for the clipboard;
+without it, `fbk start` refuses to create a sandbox with `clipboard: true`. In a
+sandbox without the setting, `wl-paste` and `wl-copy` print `clipboard sharing
+is off for this sandbox`.
 
 ## Docker data disk
 
@@ -319,6 +320,19 @@ it uses the default under your home directory:
 microsandbox home: it refuses to start when neither `HOME` nor the matching
 `XDG_*` variable is an absolute path (or `MSB_HOME` is set, for the microsandbox
 home). `fbk` only uses a socket served by your own user or by root.
+
+On Windows, an `XDG_*` variable that is an absolute path still wins, but the
+defaults follow Windows instead, and `HOME` doesn't count:
+
+| Path                                        | Contents                                                                                        |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `\\.\pipe\firebrick-<SID>-fbkd`             | The named pipe the CLI and daemon talk over. Only your user and `LocalSystem` can open it.      |
+| `\\.\pipe\firebrick-<SID>-netlog-<sandbox>` | The pipes sandboxes report their network activity to; `-clipboard-<sandbox>` for the clipboard. |
+| `%LOCALAPPDATA%\firebrick\state`            | The daemon's logs, the microsandbox home (`msb`) and the network records (`network`).           |
+| `%LOCALAPPDATA%\firebrick\data`             | The SSH keys and config (`ssh`) and the secrets (`secrets.yml`).                                |
+| `%APPDATA%\firebrick\approved.yml`          | The settings you approved per project.                                                          |
+
+`<SID>` is your user's security identifier, such as `S-1-5-21-...`.
 
 The daemon logs at the `info` level. Set `RUST_LOG` in the environment that
 starts `fbkd` to change it, for example `RUST_LOG=debug`. The CLI starts `fbkd`

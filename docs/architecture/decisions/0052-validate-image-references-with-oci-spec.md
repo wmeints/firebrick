@@ -1,4 +1,4 @@
-# 50. Validate image references with oci-spec
+# 52. Validate image references with oci-spec
 
 ## Status
 

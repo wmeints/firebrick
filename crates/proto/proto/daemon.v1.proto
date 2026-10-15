@@ -196,6 +196,9 @@ enum SandboxStatus {
   SANDBOX_STATUS_STARTING = 3;
   SANDBOX_STATUS_STOPPING = 4;
   SANDBOX_STATUS_CRASHED = 5;
+  // The sandbox runs, but its runtime didn't report whether it's paused. Only
+  // ListSandboxes reports it; the other calls fail instead.
+  SANDBOX_STATUS_UNKNOWN = 6;
 }
 
 message RemoveSandboxRequest {

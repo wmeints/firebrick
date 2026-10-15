@@ -3,7 +3,10 @@ use std::fmt;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::IpAddr;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -834,17 +837,38 @@ fn read_checked(path: &Path, checked: &fs::Metadata) -> Result<String, SandboxSp
         path: path.to_path_buf(),
         source,
     };
-    let mut file = fs::File::open(path).map_err(cant_read)?;
-    let opened = file.metadata().map_err(cant_read)?;
-
-    if (opened.dev(), opened.ino()) != (checked.dev(), checked.ino()) {
+    let Some(mut file) = open_checked(path, checked).map_err(cant_read)? else {
         return Err(symlink_error(path));
-    }
+    };
 
     let mut text = String::new();
     file.read_to_string(&mut text).map_err(cant_read)?;
 
     Ok(text)
+}
+
+/// Opens the file at `path`, or returns `None` when the opened file isn't the `checked` one.
+#[cfg(unix)]
+fn open_checked(path: &Path, checked: &fs::Metadata) -> std::io::Result<Option<fs::File>> {
+    let file = fs::File::open(path)?;
+    let opened = file.metadata()?;
+
+    Ok(((opened.dev(), opened.ino()) == (checked.dev(), checked.ino())).then_some(file))
+}
+
+/// Opens the file at `path` without following a symlink, or returns `None` when what it opened
+/// isn't a regular file. Windows opens a symlink itself with `FILE_FLAG_OPEN_REPARSE_POINT`, so
+/// a symlink swapped in after the check is never followed.
+#[cfg(windows)]
+fn open_checked(path: &Path, _checked: &fs::Metadata) -> std::io::Result<Option<fs::File>> {
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let opened = file.metadata()?;
+
+    Ok((opened.is_file() && !opened.is_symlink()).then_some(file))
 }
 
 /// Returns the metadata of the file at `path` without following a symlink, or `None` when it
@@ -1194,6 +1218,7 @@ pub mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_text_refuses_a_fifo_instead_of_hanging() {
         let dir = TempDir::new().unwrap();
@@ -1210,16 +1235,33 @@ pub mod tests {
     }
 
     #[test]
-    fn exists_reports_a_regular_file_and_refuses_a_symlink() {
+    fn exists_reports_a_regular_file() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(".firebrick.yml");
         assert!(!exists(&path).unwrap());
 
         fs::write(&path, "name: dev\n").unwrap();
         assert!(exists(&path).unwrap());
+    }
 
-        let (_link_dir, link, _target) = symlinked_spec("missing.yml");
+    #[test]
+    fn exists_refuses_a_symlink() {
+        let Some((_link_dir, link, _target)) = symlinked_spec("missing.yml") else {
+            return;
+        };
         assert!(matches!(exists(&link), Err(SandboxSpecError::Symlink(_))));
+    }
+
+    #[test]
+    fn exists_refuses_a_directory() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".firebrick.yml");
+        fs::create_dir(&path).unwrap();
+
+        assert!(matches!(
+            exists(&path),
+            Err(SandboxSpecError::NotRegularFile(_))
+        ));
     }
 
     #[test]
@@ -2364,26 +2406,44 @@ pub mod tests {
 
     #[test]
     fn to_file_reports_write_failure() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join(".firebrick.yml");
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+        let path = dir.path().join("missing").join(".firebrick.yml");
 
-        let result = to_file(&default_spec("dev".to_string()), &path);
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        let err = to_file(&default_spec("dev".to_string()), &path).unwrap_err();
 
-        let err = result.unwrap_err();
         assert_eq!(err.to_string(), format!("can't write {}", path.display()));
         assert!(matches!(err, SandboxSpecError::CantWrite { .. }));
     }
 
-    /// Creates `.firebrick.yml` in a new directory as a symlink to `target` in that directory.
-    fn symlinked_spec(target: &str) -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
+    /// Creates `.firebrick.yml` in a new directory as a symlink to `target` in that directory,
+    /// or returns `None` when this Windows can't create symlinks (see [`symlink_file`]).
+    fn symlinked_spec(target: &str) -> Option<(TempDir, std::path::PathBuf, std::path::PathBuf)> {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(".firebrick.yml");
         let target = dir.path().join(target);
-        std::os::unix::fs::symlink(&target, &path).unwrap();
-        (dir, path, target)
+        symlink_file(&target, &path).then_some((dir, path, target))
+    }
+
+    /// Creates `link` as a symlink to the file `target`, which may not exist. Returns `false`
+    /// when Windows refuses, because creating a symlink takes administrator rights or Developer
+    /// Mode there, so the test can stop. With `FIREBRICK_TEST_SYMLINKS` set, as in CI, that
+    /// fails the test instead.
+    fn symlink_file(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let created = std::os::windows::fs::symlink_file(target, link);
+
+        match created {
+            Ok(()) => true,
+            Err(err) if cfg!(windows) && std::env::var_os("FIREBRICK_TEST_SYMLINKS").is_none() => {
+                eprintln!(
+                    "can't create a symlink ({err}), so the test stops; set FIREBRICK_TEST_SYMLINKS=1 to fail it"
+                );
+                false
+            }
+            Err(err) => panic!("can't create a symlink: {err}"),
+        }
     }
 
     const SYMLINK_ERROR: &str =
@@ -2391,7 +2451,9 @@ pub mod tests {
 
     #[test]
     fn read_text_refuses_a_symlink() {
-        let (_dir, path, target) = symlinked_spec("notes.txt");
+        let Some((_dir, path, target)) = symlinked_spec("notes.txt") else {
+            return;
+        };
         fs::write(&target, "name: dev\n").unwrap();
 
         let err = read_text(&path).unwrap_err();
@@ -2401,7 +2463,9 @@ pub mod tests {
 
     #[test]
     fn read_text_refuses_a_dangling_symlink() {
-        let (_dir, path, _target) = symlinked_spec("missing.yml");
+        let Some((_dir, path, _target)) = symlinked_spec("missing.yml") else {
+            return;
+        };
 
         let err = read_text(&path).unwrap_err();
 
@@ -2419,7 +2483,9 @@ pub mod tests {
 
     #[test]
     fn from_file_refuses_a_symlink() {
-        let (_dir, path, target) = symlinked_spec("notes.txt");
+        let Some((_dir, path, target)) = symlinked_spec("notes.txt") else {
+            return;
+        };
         fs::write(&target, "name: dev\n").unwrap();
 
         let result = from_file(&path);
@@ -2429,7 +2495,9 @@ pub mod tests {
 
     #[test]
     fn write_text_refuses_a_symlink_and_leaves_its_target_alone() {
-        let (dir, path, target) = symlinked_spec("notes.txt");
+        let Some((dir, path, target)) = symlinked_spec("notes.txt") else {
+            return;
+        };
         fs::write(&target, "precious host content\n").unwrap();
 
         let err = write_text(&path, "name: dev\n").unwrap_err();
@@ -2444,7 +2512,9 @@ pub mod tests {
 
     #[test]
     fn write_text_refuses_a_dangling_symlink() {
-        let (_dir, path, target) = symlinked_spec("missing.yml");
+        let Some((_dir, path, target)) = symlinked_spec("missing.yml") else {
+            return;
+        };
 
         let err = write_text(&path, "name: dev\n").unwrap_err();
 

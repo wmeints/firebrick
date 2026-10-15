@@ -1,12 +1,12 @@
-use std::os::unix::process::CommandExt;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use anyhow::{Context, Result, bail};
+use firebrick_utils::ipc::{self, Stream};
 use hyper_util::rt::TokioIo;
-use tokio::net::UnixStream;
 use tokio::time::{Instant, sleep};
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
@@ -15,9 +15,11 @@ const DAEMON_BINARY: &str = "fbkd";
 const DAEMON_START_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Connects to the daemon over its unix socket, starting the daemon when needed.
+/// Connects to the daemon over its endpoint, a unix socket or a named pipe, starting the daemon
+/// when needed.
 pub async fn connect() -> Result<SandboxManagementServiceClient<Channel>> {
-    let path = firebrick_utils::socket_path();
+    let path =
+        firebrick_utils::socket_path().context("can't name the firebrick daemon's endpoint")?;
 
     // Note: the HTTP endpoint isn't actually used. It will only show up in the authority header.
     let channel = Endpoint::try_from("http://localhost")
@@ -34,59 +36,92 @@ pub async fn connect() -> Result<SandboxManagementServiceClient<Channel>> {
     Ok(SandboxManagementServiceClient::new(channel))
 }
 
-/// Connects to the daemon socket, spawning the daemon and waiting for it when it isn't running.
-pub async fn ensure_daemon(socket_path: &Path) -> Result<UnixStream> {
-    if let Ok(stream) = UnixStream::connect(socket_path).await {
-        return verify_owner(socket_path, stream);
+/// Connects to the daemon's endpoint, spawning the daemon and waiting for it when it isn't
+/// running. Refuses an endpoint that a process of another user serves, so `fbk` never sends
+/// secrets or requests to a daemon another user planted there, for example in the shared temp
+/// dir when `XDG_RUNTIME_DIR` isn't set, or under the predictable pipe name on Windows.
+pub async fn ensure_daemon(socket_path: &Path) -> Result<Stream> {
+    if let Some(stream) = try_connect(socket_path).await? {
+        return Ok(stream);
     }
 
     // The socket file may be left behind by a daemon that didn't shut down cleanly.
     // The daemon refuses to start when the socket exists, so clean it up first.
-    if socket_path.exists() {
-        std::fs::remove_file(socket_path)
-            .with_context(|| format!("failed to remove stale socket {}", socket_path.display()))?;
-    }
+    ipc::remove(socket_path)
+        .await
+        .with_context(|| format!("failed to remove stale socket {}", socket_path.display()))?;
 
     // The daemon's stderr is discarded, so report the errors it would exit with here.
     if let Some(err) = firebrick_utils::missing_dir() {
         bail!("can't start the firebrick daemon: {err}");
     }
 
-    let child = Command::new(daemon_binary())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .context("failed to start the firebrick daemon")?;
+    // The daemon outlives `fbk`, so it must not keep the pipes `fbk` was started with open.
+    firebrick_utils::keep_stdio_from_children();
+    let child = spawn_daemon().context("failed to start the firebrick daemon")?;
 
-    let stream = wait_for_daemon(socket_path, child).await?;
-    verify_owner(socket_path, stream)
+    wait_for_daemon(socket_path, child).await
 }
 
-/// Returns the stream when the process serving it runs as the current user or root, so `fbk`
-/// never sends secrets or requests to a daemon another user planted on the socket path, for
-/// example in the shared temp dir when `XDG_RUNTIME_DIR` isn't set.
-fn verify_owner(socket_path: &Path, stream: UnixStream) -> Result<UnixStream> {
-    let peer_uid = stream
-        .peer_cred()
-        .with_context(|| format!("failed to read the owner of {}", socket_path.display()))?
-        .uid();
-    if !firebrick_utils::is_trusted_peer(peer_uid, nix::unistd::geteuid().as_raw()) {
-        bail!(
-            "refusing to use {}: it's served by UID {peer_uid}, not by you",
-            socket_path.display()
-        );
+/// Starts the daemon detached from the terminal.
+#[cfg(unix)]
+fn spawn_daemon() -> std::io::Result<Child> {
+    daemon_command(0).spawn()
+}
+
+/// Starts the daemon detached from the terminal and, when the job object `fbk` runs in allows
+/// it, outside that job. Terminals such as the ones of IDEs can run `fbk` in a job that kills
+/// its processes when it closes, and microsandbox starts each VM outside the job of `fbkd`,
+/// which a job without the breakaway right refuses. A job that refuses breakaway refuses it
+/// to `fbkd` as well, so `fbk` then starts `fbkd` in the job and says so.
+#[cfg(windows)]
+fn spawn_daemon() -> std::io::Result<Child> {
+    use windows_sys::Win32::System::Threading::CREATE_BREAKAWAY_FROM_JOB;
+
+    match daemon_command(CREATE_BREAKAWAY_FROM_JOB).spawn() {
+        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
+            eprintln!(
+                "note: this terminal's job object keeps the firebrick daemon in it, so the \
+                 daemon stops when the terminal closes and may not be able to start sandboxes"
+            );
+            daemon_command(0).spawn()
+        }
+        spawned => spawned,
     }
-    Ok(stream)
 }
 
-/// Waits until the spawned daemon listens on the socket, failing when it exits or times out.
-async fn wait_for_daemon(socket_path: &Path, mut child: Child) -> Result<UnixStream> {
+/// Connects to the daemon, returning `None` when nothing serves the endpoint: it doesn't exist,
+/// or on Unix only a stale socket file is left. Fails on every other error, such as an endpoint
+/// that another user serves or one that stays busy, instead of starting a second daemon.
+async fn try_connect(socket_path: &Path) -> Result<Option<Stream>> {
+    match ipc::connect(socket_path).await {
+        Ok(stream) => Ok(Some(stream)),
+        Err(err)
+            if matches!(
+                err.kind(),
+                ErrorKind::NotFound | ErrorKind::ConnectionRefused
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
+            bail!("refusing to use the firebrick daemon: {err}")
+        }
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "can't connect to the firebrick daemon at {}",
+                socket_path.display()
+            )
+        }),
+    }
+}
+
+/// Waits until the spawned daemon listens on the endpoint, failing when it exits or times out.
+async fn wait_for_daemon(socket_path: &Path, mut child: Child) -> Result<Stream> {
     let deadline = Instant::now() + DAEMON_START_TIMEOUT;
 
     loop {
-        if let Ok(stream) = UnixStream::connect(socket_path).await {
+        if let Some(stream) = try_connect(socket_path).await? {
             return Ok(stream);
         }
 
@@ -105,11 +140,41 @@ async fn wait_for_daemon(socket_path: &Path, mut child: Child) -> Result<UnixStr
     }
 }
 
-/// Returns the daemon binary next to the current executable, or falls back to looking it up on `PATH`.
-fn daemon_binary() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(DAEMON_BINARY)))
+/// Returns the command that starts the daemon detached from the terminal, without stdio. On
+/// Windows it's created with the `extra_flags` too.
+fn daemon_command(extra_flags: u32) -> Command {
+    let dir = std::env::current_exe().ok();
+    let mut command = Command::new(daemon_binary_in(dir.as_deref().and_then(Path::parent)));
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    detach(&mut command, extra_flags);
+    command
+}
+
+/// Starts the daemon in a process group of its own, so the terminal's signals don't reach it.
+/// Unix has no creation flags, so `_extra_flags` is always 0 there.
+#[cfg(unix)]
+fn detach(command: &mut Command, _extra_flags: u32) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+/// Starts the daemon without a console and in a process group of its own, so it outlives the
+/// console `fbk` runs in and Ctrl-C there doesn't reach it, with the `extra_flags` too.
+#[cfg(windows)]
+fn detach(command: &mut Command, extra_flags: u32) {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | extra_flags);
+}
+
+/// Returns the daemon binary in `dir`, the directory of the `fbk` binary, or falls back to
+/// looking it up on `PATH` when it isn't there.
+fn daemon_binary_in(dir: Option<&Path>) -> PathBuf {
+    let file_name = format!("{DAEMON_BINARY}{}", std::env::consts::EXE_SUFFIX);
+    dir.map(|dir| dir.join(&file_name))
         .filter(|path| path.is_file())
         .unwrap_or_else(|| PathBuf::from(DAEMON_BINARY))
 }
@@ -118,14 +183,66 @@ fn daemon_binary() -> PathBuf {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn accepts_a_socket_served_by_the_current_user() {
+    /// Returns an endpoint unique to this test, in the directory it returns, if any.
+    fn test_endpoint(test: &str) -> (Option<tempfile::TempDir>, PathBuf) {
+        if cfg!(windows) {
+            let pipe = format!(r"\\.\pipe\fbk-cli-test-{}-{test}", std::process::id());
+            return (None, PathBuf::from(pipe));
+        }
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fbkd.sock");
-        let _listener = tokio::net::UnixListener::bind(&path).unwrap();
+        (Some(dir), path)
+    }
 
-        let stream = UnixStream::connect(&path).await.unwrap();
+    /// Accepts one client on the listener.
+    async fn accept_one(mut listener: ipc::Listener) -> std::io::Result<()> {
+        listener.accept().await.map(drop)
+    }
 
-        verify_owner(&path, stream).unwrap();
+    #[tokio::test]
+    async fn try_connect_uses_an_endpoint_served_by_the_current_user() {
+        let (_dir, path) = test_endpoint("served");
+        let accepted = tokio::spawn(accept_one(ipc::Listener::bind(&path).unwrap()));
+
+        let stream = try_connect(&path).await.unwrap();
+
+        assert!(stream.is_some());
+        accepted.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn try_connect_finds_no_daemon_at_a_missing_endpoint() {
+        let (_dir, path) = test_endpoint("missing");
+
+        assert!(try_connect(&path).await.unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn try_connect_finds_no_daemon_at_a_stale_socket_file() {
+        let (_dir, path) = test_endpoint("stale");
+        drop(ipc::Listener::bind(&path).unwrap());
+
+        assert!(path.exists());
+        assert!(try_connect(&path).await.unwrap().is_none());
+    }
+
+    #[test]
+    fn daemon_binary_is_the_one_next_to_fbk() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = dir
+            .path()
+            .join(format!("fbkd{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&daemon, "").unwrap();
+
+        assert_eq!(daemon_binary_in(Some(dir.path())), daemon);
+    }
+
+    #[test]
+    fn daemon_binary_falls_back_to_the_path_without_one_next_to_fbk() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert_eq!(daemon_binary_in(Some(dir.path())), PathBuf::from("fbkd"));
+        assert_eq!(daemon_binary_in(None), PathBuf::from("fbkd"));
     }
 }

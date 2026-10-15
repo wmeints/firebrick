@@ -10,6 +10,7 @@
 
 use crate::vsock::{self, Connections, Listeners, Refused};
 use chrono::{DateTime, Utc};
+use firebrick_utils::ipc;
 use firebrick_utils::strip_control;
 use microsandbox::sandbox::{SandboxBuilder, SandboxSpec};
 use serde::{Deserialize, Serialize};
@@ -21,7 +22,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 
 /// Guest vsock port the logger in the guest writes its events to, on host CID 2.
@@ -566,7 +566,7 @@ async fn skip_line<R: AsyncBufRead + Unpin>(reader: &mut R) -> io::Result<()> {
 }
 
 /// Records the lines of one connection from the logger until it closes.
-async fn read_events(stream: UnixStream, recorder: Arc<Recorder>) {
+async fn read_events(stream: ipc::Stream, recorder: Arc<Recorder>) {
     let mut reader = BufReader::new(stream);
     let mut buf = Vec::with_capacity(MAX_LINE + 1);
 
@@ -587,7 +587,7 @@ async fn read_events(stream: UnixStream, recorder: Arc<Recorder>) {
 /// already has [`vsock::MAX_CONNECTIONS`] connections.
 fn accept(
     connections: &mut Connections,
-    accepted: io::Result<(UnixStream, tokio::net::unix::SocketAddr)>,
+    accepted: io::Result<ipc::Stream>,
     recorder: &Arc<Recorder>,
 ) {
     let read = |stream| read_events(stream, Arc::clone(recorder));
@@ -622,7 +622,11 @@ fn finished(recorder: &Recorder, result: Result<(), tokio::task::JoinError>) {
 /// record to its file every [`FLUSH_INTERVAL`] while it changes. When `shutdown` fires or its
 /// sender is dropped, it writes the record a last time, unless the sandbox was removed, and
 /// returns, which closes its connections.
-async fn serve(listener: UnixListener, recorder: Arc<Recorder>, shutdown: oneshot::Receiver<()>) {
+async fn serve(
+    mut listener: ipc::Listener,
+    recorder: Arc<Recorder>,
+    shutdown: oneshot::Receiver<()>,
+) {
     let mut connections = Connections::default();
     let mut flush = tokio::time::interval(FLUSH_INTERVAL);
     tokio::pin!(shutdown);
@@ -744,6 +748,7 @@ impl NetLogs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::AsyncWriteExt;
 
@@ -1020,16 +1025,19 @@ mod tests {
 
     /// Returns a registry with its sockets and records in a temp directory.
     fn netlogs(dir: &Path) -> NetLogs {
-        NetLogs::new(Some(dir.join("netlog")), Some(dir.join("network")))
+        NetLogs::new(
+            Some(vsock::test_endpoint_dir(dir, "netlog")),
+            Some(dir.join("network")),
+        )
     }
 
     /// Connects to the sandbox's socket like the logger in the guest.
-    async fn connect_logger(logs: &NetLogs, sandbox: &str) -> io::Result<UnixStream> {
-        UnixStream::connect(logs.socket_path(sandbox).unwrap()).await
+    async fn connect_logger(logs: &NetLogs, sandbox: &str) -> io::Result<ipc::Stream> {
+        ipc::connect(&logs.socket_path(sandbox).unwrap()).await
     }
 
     /// Opens `count` connections to the sandbox's socket.
-    async fn connect_many(logs: &NetLogs, count: usize) -> Vec<UnixStream> {
+    async fn connect_many(logs: &NetLogs, count: usize) -> Vec<ipc::Stream> {
         let mut streams = vec![];
 
         for _ in 0..count {
@@ -1040,7 +1048,7 @@ mod tests {
     }
 
     /// Writes the lines, each followed by a newline, to the stream.
-    async fn write_lines(stream: &mut UnixStream, lines: &[&str]) {
+    async fn write_lines(stream: &mut ipc::Stream, lines: &[&str]) {
         let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
         stream.write_all(text.as_bytes()).await.unwrap();
     }
@@ -1107,10 +1115,12 @@ mod tests {
         logs.close().await;
 
         let path = dir.path().join("network/sb.json");
+        #[cfg(unix)]
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         let json: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         let first_seen = json["connections"][0]["first_seen"].as_str().unwrap();
+        #[cfg(unix)]
         assert_eq!(mode & 0o777, 0o600);
         assert!(
             DateTime::parse_from_rfc3339(first_seen).is_ok(),
@@ -1150,6 +1160,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn listen_without_a_usable_socket_directory_records_nothing() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("netlog"), "not a directory").unwrap();
@@ -1173,7 +1184,7 @@ mod tests {
         logs.remove("sb").await;
         tokio::time::sleep(FLUSH_INTERVAL * 2).await;
 
-        assert!(!logs.socket_path("sb").unwrap().exists());
+        assert!(!ipc::exists(&logs.socket_path("sb").unwrap()).await);
         assert!(!dir.path().join("network/sb.json").exists());
         assert_eq!(logs.record("sb").await.unwrap(), Record::default());
     }

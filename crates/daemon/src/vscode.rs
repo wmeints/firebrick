@@ -68,9 +68,15 @@ pub fn config_root() -> Option<PathBuf> {
 }
 
 /// Returns `$XDG_CONFIG_HOME`, or `~/.config` when it isn't set.
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn platform_config_root() -> Option<PathBuf> {
     settings_file::xdg_config_home()
+}
+
+/// Returns `%APPDATA%`.
+#[cfg(windows)]
+fn platform_config_root() -> Option<PathBuf> {
+    settings_file::app_data()
 }
 
 /// Returns `~/Library/Application Support`.
@@ -356,7 +362,9 @@ mod tests {
         let (root, settings) = vscode_root();
         let target = root.path().join("dotfiles-settings.json");
         fs::write(&target, "{}\n").unwrap();
-        std::os::unix::fs::symlink(&target, &settings).unwrap();
+        if !crate::atomic_file::test_symlink(&target, &settings) {
+            return;
+        }
 
         sync_settings(root.path(), &hosts(&["project.fbk"]));
 
@@ -412,7 +420,9 @@ mod tests {
     fn leaves_dangling_settings_symlink_alone() {
         let (root, settings) = vscode_root();
         let target = root.path().join("dotfiles/settings.json");
-        std::os::unix::fs::symlink(&target, &settings).unwrap();
+        if !crate::atomic_file::test_symlink(&target, &settings) {
+            return;
+        }
 
         let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
 

@@ -82,6 +82,16 @@ build on it when `Cargo.lock` has a newer version.
   status becomes `Paused`; `resume()` continues the same processes
   (`$M/sandbox/pause.rs`). firebrick never pauses sandboxes itself, but `msb`
   can, so code that stops or recreates a sandbox has to expect `Paused`.
+- The database never stores `Paused`. `Sandbox::get` and `Sandbox::list_with`
+  ask the runtime of a `Running` sandbox for its pause state with a 250 ms
+  timeout and report `Running` when it doesn't answer (`projected_status` in
+  `$M/sandbox/pause.rs`), so `status_snapshot()` can't be trusted to tell a
+  paused sandbox apart on a busy host. `SandboxHandle::pause_state()` asks
+  without a timeout; `current_status` in `sandboxes.rs` uses it.
+- A failed request to a runtime's control endpoint closes microsandbox's shared
+  session to it, and the next caller on that session fails with `ClientError {
+  kind: Closed, delivery: NotSent }`. Only the request after that opens a new
+  session, so retry such an error.
 - `Sandbox::list_with` rejects an empty cursor. Only call `.cursor(..)` with the
   cursor of the previous page.
 - `Sandbox::list_with` reads a page of rows and then reloads each sandbox
@@ -322,6 +332,34 @@ build on it when `Cargo.lock` has a newer version.
 - To run firebrick or `msb` against real VMs, use the `smoke-test` skill. It
   isolates `MSB_HOME` and the daemon from the user's, and loads locally built
   images with `msb load`, so no registry is needed.
+
+**Windows (preview)**
+
+Verified on Windows 11 x64 with WHP and microsandbox 0.7.8 (ADR 0050, 0051).
+
+- The runtime is `msb.exe` and `libkrunfw.dll`; `msb.exe run` boots VMs with WHP
+  enabled and no other setup.
+- A vsock route's host path must be a local named pipe (`\\.\pipe\<name>`,
+  checked in `$M/sandbox/builder.rs`), and only stream routes work. microsandbox
+  opens the pipe as a client (`WindowsNamedPipePortBackend`), so `fbkd` serves
+  it.
+- A bind mount host must be a plain path such as `C:\Users\me\project`. A
+  verbatim `\\?\C:\...` path, which `fs::canonicalize` returns on Windows, is
+  refused, so use `dunce::canonicalize`. microsandbox makes host paths absolute
+  but doesn't canonicalize them.
+- A detached start spawns `msb.exe` with `DETACHED_PROCESS |
+  CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB` (`$M/runtime/spawn.rs`).
+  In a job object without `JOB_OBJECT_LIMIT_BREAKAWAY_OK` that fails with `Io(Os
+  { code: 5, .. })` ("access denied"). Cargo 1.99 runs test binaries in such a
+  job, so the `vm-tests` can't boot VMs under `cargo test` on Windows; `mise run
+  integration-tests` runs the binaries itself.
+- With WHP a VM's memory is committed when it boots. A VM that doesn't fit in
+  the free commit exits before its agent starts, with `BootStart … sandbox
+  process exited (exit code: 0) before agent relay became available`.
+  `scripts/vm-tests.ps1` caps the parallel tests by the free commit for that.
+- `MSB_HOME=/tmp/firebrick-msb` from `.cargo/config.toml` resolves to
+  `C:\tmp\firebrick-msb` on the current drive. Don't switch between that and the
+  `C:\` spelling in one home; the database then fails with a disk I/O error.
 
 **Debugging**
 

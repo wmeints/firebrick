@@ -120,6 +120,61 @@ deletes the directory. It refuses any path that isn't a smoke-test environment.
 Tell the user which commands you ran, with their real output and exit codes, and
 which image the sandbox used.
 
+## Windows
+
+On Windows, use `smoke-env.ps1` from PowerShell instead of `smoke-env.sh`. It
+puts the environment in `%TEMP%\firebrick-smoke.XXXX`, and isolates what Windows
+uses instead of `XDG_RUNTIME_DIR` and `HOME`:
+
+| Variable                       | Isolates                                                     |
+| ------------------------------ | ------------------------------------------------------------ |
+| `FIREBRICK_PIPE_PREFIX`        | the daemon and vsock pipes, so the CLI starts its own `fbkd` |
+| `USERPROFILE`                  | the `Include` line fbkd adds to `~\.ssh\config`              |
+| `FIREBRICK_EDITOR_CONFIG_ROOT` | the editor settings fbkd syncs in `%APPDATA%`                |
+
+`MSB_HOME` and the `XDG_*` variables isolate the rest, as on Unix. Build with
+`cargo build`, then:
+
+```powershell
+$envFile = .\.claude\skills\smoke-test\smoke-env.ps1 up
+. $envFile
+New-Item -ItemType Directory -Force "$env:SMOKE_WORK\demo"; Set-Location "$env:SMOKE_WORK\demo"
+Set-Content .firebrick.yml "name: smoke-demo`nimage: ubuntu:26.04`ninit: false`n"
+& $FIREBRICK start --yes
+& $FIREBRICK ls
+$null | & $FIREBRICK run -- sh -c 'id; pwd'
+```
+
+Dot-source the env file again in every new PowerShell command, as on Unix. A
+command that runs `fbk` without it starts a daemon against the user's own
+`%LOCALAPPDATA%\firebrick` and `~\.ssh\config`.
+
+- Run `fbk` directly. `Start-Process -Wait` tracks the process tree in a job
+  object without the breakaway right, so the `fbkd` that `fbk` starts can't
+  start VMs, and the call waits for the daemon to exit.
+- For `ssh`, which can hang, start it with `Start-Process` without `-Wait` and
+  bound it with `WaitForExit`:
+
+  ```powershell
+  $ssh = Start-Process C:\Windows\System32\OpenSSH\ssh.exe -NoNewWindow -PassThru `
+      -ArgumentList '-F', $env:SMOKE_SSH_CONFIG, '-o', 'BatchMode=yes', 'demo.fbk', 'whoami'
+  if (-not $ssh.WaitForExit(60000)) { $ssh.Kill() }
+  ```
+- The daemon log is in `$env:XDG_STATE_HOME\firebrick\fbkd.log.*`.
+- Windows locks a running `fbkd.exe`, so stop this environment's daemon before
+  `cargo build` replaces it: `smoke-env.ps1 down` does, or rename
+  `target\debug\fbkd.exe` aside, which Windows allows for a running program.
+
+Clean up with:
+
+```powershell
+.\.claude\skills\smoke-test\smoke-env.ps1 down $envFile
+```
+
+It removes the sandboxes and stops only the `fbkd` that serves the environment's
+pipe, then deletes the directory. It refuses any path that isn't a smoke-test
+environment.
+
 ## Test a local image
 
 To test changes to the `Dockerfile` before the image is published, build it with

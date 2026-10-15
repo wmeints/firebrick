@@ -217,7 +217,7 @@ working.
 `.firebrick.yml` is attacker-controlled, and serde_yaml decodes `\e`, `\a` and
 `\x..` escapes in double-quoted scalars, so a key or value can hold any control
 character. Spec text reaches the terminal and `fbkd.log` in two ways, and both
-are closed (ADR 0044, ADR 0050):
+are closed (ADR 0044, ADR 0052):
 
 - `SandboxSpecError::diagnostic` passes the YAML error message, which quotes
   keys and values such as an unknown field, through
@@ -263,9 +263,23 @@ including the values of `fbk secret set`. After `client` connects to the socket,
 also to a daemon it just spawned, it reads the peer's credentials with tokio's
 `UnixStream::peer_cred` and uses the connection only when the peer's UID is the
 effective UID of `fbk` or `0`, for the same reason the daemon allows root.
-Otherwise it fails with `refusing to use <socket path>: it's served by UID
-<uid>, not by you` before it sends a request. On macOS the temp dir is a private
-per-user directory, so the check matters on Linux without `XDG_RUNTIME_DIR`.
+Otherwise it fails with `refusing to use the firebrick daemon: <socket path>:
+the server runs as UID <uid> (PID <pid>), not as you` before it sends a request.
+On macOS the temp dir is a private per-user directory, so the check matters on
+Linux without `XDG_RUNTIME_DIR`. Both checks live in `firebrick_utils::ipc`.
+
+On Windows the daemon's endpoint is a named pipe whose name anybody can predict
+and list, so both checks matter there
+([ADR 0050](decisions/0050-talk-over-named-pipes-on-windows.md)):
+
+- `ipc::Listener` creates the pipe's first instance with
+  `FILE_FLAG_FIRST_PIPE_INSTANCE`, so the daemon refuses to serve a pipe that
+  another process created first. Every instance rejects remote clients and has a
+  protected access list that grants access to the user and `LocalSystem` only.
+- The daemon reads the client's process ID with `GetNamedPipeClientProcessId`,
+  and `fbk` reads the server's with `GetNamedPipeServerProcessId`. Each reads
+  the user that process runs as from its access token and only uses the
+  connection when that user is its own or `LocalSystem`.
 
 The daemon's data and logs never fall back to the temp dir. A user who creates
 `/tmp/firebrick` first could read the secrets and SSH keys or plant an SSH

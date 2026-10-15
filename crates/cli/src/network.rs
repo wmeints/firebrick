@@ -445,7 +445,7 @@ mod tests {
     #[tokio::test]
     async fn update_sends_the_network_of_the_working_directory_sandbox() {
         let (dir, _) = workspace();
-        let canonical = fs::canonicalize(dir.path()).unwrap();
+        let canonical = dunce::canonicalize(dir.path()).unwrap();
         let client = fake_daemon::serve("dev", canonical.to_str().unwrap()).await;
 
         let error = update_with(rules_change(), dir.path(), Ok(client), approve_all(&dir))
@@ -503,9 +503,11 @@ mod tests {
     }
 
     async fn assert_update_refuses_symlink(content: Option<&str>) {
-        let (dir, target) = symlinked_spec::workspace(content);
+        let Some((dir, target)) = symlinked_spec::workspace(content) else {
+            return;
+        };
         // The sandbox belongs to this directory, so only the symlink check stops the write.
-        let workspace = fs::canonicalize(dir.path()).unwrap();
+        let workspace = dunce::canonicalize(dir.path()).unwrap();
         let client = fake_daemon::serve("dev", workspace.to_str().unwrap()).await;
 
         let error = update_with(rules_change(), dir.path(), Ok(client), approve_all(&dir))
@@ -1015,7 +1017,7 @@ mod tests {
     /// fake daemon whose sandbox `dev` mounts it and recorded `activity`.
     async fn log_workspace(activity: Option<Vec<NetworkActivity>>) -> (TempDir, String, Client) {
         let (dir, spec_path) = workspace();
-        let canonical = fs::canonicalize(dir.path()).unwrap();
+        let canonical = dunce::canonicalize(dir.path()).unwrap();
         let client =
             fake_daemon::serve_with_activity("dev", canonical.to_str().unwrap(), activity).await;
         let content = fs::read_to_string(spec_path).unwrap();

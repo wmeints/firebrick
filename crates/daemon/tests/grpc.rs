@@ -23,14 +23,15 @@ use firebrick_daemon::clipboard::{self, Cause, Clipboards, HostClipboard, HostEr
 use firebrick_daemon::open::{self, Opener};
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{mise, netlog, sandboxes, server};
+use firebrick_utils::ipc;
 use hyper_util::rt::TokioIo;
-use microsandbox::Sandbox;
 use microsandbox::sandbox::{
     OwnedVolumeStorage, RootfsSource, SandboxHandle, SandboxSpec, VolumeMount, VsockSocketType,
 };
 use microsandbox::snapshot::{Snapshot, SnapshotHandle};
+use microsandbox::{MicrosandboxError, MicrosandboxResult, Sandbox};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, UnixStream};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OnceCell, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
@@ -173,9 +174,8 @@ impl TestDaemon {
         init_logging();
         STALE_SWEEP.get_or_init(sweep_stale_sandboxes).await;
 
-        let socket_path =
-            std::env::temp_dir().join(format!("fbk-it-{}-{}.sock", std::process::id(), name));
-        let _ = std::fs::remove_file(&socket_path);
+        let socket_path = daemon_endpoint(name);
+        let _ = ipc::remove(&socket_path).await;
 
         let (tx, rx) = oneshot::channel();
         let opener = Arc::new(RecordingOpener::default());
@@ -218,7 +218,7 @@ impl TestDaemon {
         // The HTTP endpoint isn't used; it only shows up in the authority header.
         let channel = Endpoint::try_from("http://localhost")
             .unwrap()
-            .connect_with_connector(service_fn(move |_: Uri| connect_unix(path.clone())))
+            .connect_with_connector(service_fn(move |_: Uri| connect(path.clone())))
             .await
             .expect("failed to connect to test daemon");
 
@@ -260,14 +260,14 @@ async fn serve_until(
 }
 
 /// Connects to the daemon socket for a gRPC channel.
-async fn connect_unix(path: PathBuf) -> std::io::Result<TokioIo<UnixStream>> {
-    Ok(TokioIo::new(UnixStream::connect(path).await?))
+async fn connect(path: PathBuf) -> std::io::Result<TokioIo<ipc::Stream>> {
+    Ok(TokioIo::new(ipc::connect(&path).await?))
 }
 
 async fn wait_for_socket(path: &Path) {
     let deadline = Instant::now() + Duration::from_secs(5);
 
-    while UnixStream::connect(path).await.is_err() {
+    while !ipc::is_served(path).await {
         assert!(Instant::now() < deadline, "daemon did not start listening");
         sleep(Duration::from_millis(10)).await;
     }
@@ -299,13 +299,35 @@ fn sandbox_pid(name: &str) -> Option<u32> {
     pid.parse().ok()
 }
 
+/// Returns the endpoint of the test daemon `name`: a socket in the temp directory, or a pipe on
+/// Windows.
+fn daemon_endpoint(name: &str) -> PathBuf {
+    let file = format!("fbk-it-{}-{}", std::process::id(), name);
+    if cfg!(windows) {
+        return PathBuf::from(format!(r"\\.\pipe\{file}"));
+    }
+    std::env::temp_dir().join(format!("{file}.sock"))
+}
+
 /// Whether a process with the id still runs. `kill -0` works on both Linux and macOS.
+#[cfg(unix)]
 fn process_is_alive(pid: u32) -> bool {
     std::process::Command::new("kill")
         .args(["-0", &pid.to_string()])
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+/// Whether a process with the id still runs, by whether `tasklist` lists it. Its CSV quotes the
+/// PID, which no message for a missing process does, in any language.
+#[cfg(windows)]
+fn process_is_alive(pid: u32) -> bool {
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\"")))
 }
 
 /// Removes the sandboxes, and their host directories, of test processes that no longer run.
@@ -357,9 +379,9 @@ async fn remove_stale_sandbox(sb: &SandboxHandle) {
 fn remove_stale_host_files() {
     let dirs = [
         Some(std::env::temp_dir()),
-        firebrick_utils::netlog_socket_dir(),
+        firebrick_utils::netlog_socket_dir().ok().flatten(),
         firebrick_utils::network_log_dir(),
-        firebrick_utils::clipboard_socket_dir(),
+        firebrick_utils::clipboard_socket_dir().ok().flatten(),
     ];
 
     for dir in dirs.iter().flatten() {
@@ -390,9 +412,9 @@ async fn remove_sandbox(name: &str) {
     }
 
     let _ = std::fs::remove_dir_all(workspace_path(name));
-    let _ = std::fs::remove_file(netlog_socket(name));
+    let _ = ipc::remove(&netlog_socket(name)).await;
     let _ = std::fs::remove_file(netlog_record(name));
-    let _ = std::fs::remove_file(clipboard_socket(name));
+    let _ = ipc::remove(&clipboard_socket(name)).await;
 }
 
 async fn sandbox_status(
@@ -437,7 +459,7 @@ async fn wait_for_status(
 /// temp directory goes through the `/var` symlink, and microsandbox refuses to bind mount a
 /// host path that goes through a symlink.
 fn test_temp_dir() -> PathBuf {
-    std::fs::canonicalize(std::env::temp_dir()).expect("failed to resolve the temp directory")
+    dunce::canonicalize(std::env::temp_dir()).expect("failed to resolve the temp directory")
 }
 
 /// Returns the host directory used as the workspace of a test sandbox. It's named after the
@@ -543,7 +565,15 @@ fn sandbox_pid_parses_the_pid_of_test_sandboxes_only() {
 
 #[test]
 fn process_is_alive_tells_live_from_dead_processes() {
-    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let (program, args): (&str, &[&str]) = if cfg!(windows) {
+        ("cmd", &["/C", "exit"])
+    } else {
+        ("true", &[])
+    };
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .spawn()
+        .unwrap();
     let pid = child.id();
     child.wait().unwrap();
 
@@ -618,7 +648,7 @@ async fn get_sandbox_returns_name_status_workspace_path_and_image() {
     );
     assert_eq!(
         Path::new(&sandbox.workspace_host_path),
-        std::fs::canonicalize(workspace_path(name)).unwrap()
+        dunce::canonicalize(workspace_path(name)).unwrap()
     );
     assert_eq!(
         sandbox_spec(name).await.labels.get(sandboxes::IMAGE_LABEL),
@@ -2524,7 +2554,7 @@ async fn network_snapshot_paths(name: &str) -> Vec<PathBuf> {
         .await
         .iter()
         .filter_map(|snapshot| snapshot.path().ok())
-        .filter_map(|path| std::fs::canonicalize(path).ok())
+        .filter_map(|path| dunce::canonicalize(path).ok())
         .collect()
 }
 
@@ -2535,7 +2565,7 @@ fn resolve_kept_snapshot(message: &str) -> String {
     const KEPT: &str = "; the sandbox was kept as snapshot ";
 
     match message.split_once(KEPT) {
-        Some((head, path)) => match std::fs::canonicalize(path) {
+        Some((head, path)) => match dunce::canonicalize(path) {
             Ok(path) => format!("{head}{KEPT}{}", path.display()),
             Err(_) => message.to_string(),
         },
@@ -2754,12 +2784,12 @@ async fn update_network_refuses_a_paused_sandbox() {
     let mut client = daemon.client().await;
     start_running_sandbox(&mut client, name).await;
     let sb = Sandbox::get(name).await.unwrap();
-    sb.pause().await.unwrap();
+    pause(&sb).await.unwrap();
 
     let status = update_network(&mut client, name, allow_policy(true, &["example.org"])).await;
     let paused = sandbox_status(&mut client, name).await;
 
-    sb.resume().await.unwrap();
+    resume(&sb).await.unwrap();
     daemon.stop().await;
     remove_sandbox_and_snapshots(name).await;
 
@@ -2770,6 +2800,203 @@ async fn update_network_refuses_a_paused_sandbox() {
         format!("sandbox {name} is paused; resume it before updating its network rules")
     );
     assert_eq!(paused, Some(SandboxStatus::Paused));
+}
+
+// Windows has no `kill -STOP`, which these tests freeze the runtime of a sandbox with.
+#[cfg(unix)]
+#[tokio::test]
+async fn paused_sandbox_with_a_slow_runtime_is_not_reported_running() {
+    let name: &str = &sandbox_name("paused-slow");
+    remove_sandbox_and_snapshots(name).await;
+
+    let daemon = TestDaemon::start("paused-slow").await;
+    let mut client = daemon.client().await;
+    let (sb, pid) = start_paused_sandbox(&mut client, name).await;
+
+    let listed = slowed(name, sandbox_status(&mut client, name)).await;
+    let got = slowed(name, get_status(&mut client, name)).await;
+    let policy = allow_policy(true, &["example.org"]);
+    let updated = slowed(name, update_network(&mut client, name, policy)).await;
+    let upgraded = slowed(name, upgrade(&mut client, name, UPGRADE_IMAGE)).await;
+    let kept = runtime_pid(name).await;
+
+    resume(&sb).await.unwrap();
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
+
+    assert_eq!(listed.0, Some(SandboxStatus::Paused));
+    assert_eq!(got.0, Ok(SandboxStatus::Paused));
+    assert_eq!(code(updated.0), Code::FailedPrecondition);
+    assert_eq!(code(upgraded.0), Code::FailedPrecondition);
+    // Each request waited for the runtime, so it asked while the runtime was stopped.
+    for elapsed in [listed.1, got.1, updated.1, upgraded.1] {
+        assert!(elapsed >= SLOW_RUNTIME, "answered in {elapsed:?}");
+    }
+    assert_eq!(kept, pid, "the paused sandbox was replaced");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn paused_sandbox_with_a_hung_runtime_is_listed_as_unknown_and_not_replaced() {
+    let name: &str = &sandbox_name("paused-hung");
+    remove_sandbox_and_snapshots(name).await;
+
+    let daemon = TestDaemon::start("paused-hung").await;
+    let (mut list_client, mut get_client) = (daemon.client().await, daemon.client().await);
+    let mut client = daemon.client().await;
+    let (sb, pid) = start_paused_sandbox(&mut client, name).await;
+
+    let requests = async {
+        tokio::join!(
+            sandbox_status(&mut list_client, name),
+            get_status(&mut get_client, name),
+            update_network(&mut client, name, allow_policy(true, &["example.org"])),
+        )
+    };
+    let ((listed, got, updated), _) = frozen(name, HUNG_RUNTIME, requests).await;
+    let kept = runtime_pid(name).await;
+
+    resume(&sb).await.unwrap();
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
+
+    assert_eq!(listed, Some(SandboxStatus::Unknown));
+    assert_eq!(got, Err(Code::Internal));
+    assert_eq!(code(updated), Code::Internal);
+    assert_eq!(kept, pid, "the paused sandbox was replaced");
+}
+
+/// Starts a sandbox and pauses it, and returns it with the id of its runtime process.
+#[cfg(unix)]
+async fn start_paused_sandbox(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> (SandboxHandle, i32) {
+    start_running_sandbox(client, name).await;
+    let sb = Sandbox::get(name).await.unwrap();
+    pause(&sb).await.unwrap();
+
+    (sb, runtime_pid(name).await)
+}
+
+/// How long a test stops a sandbox's runtime to make it miss the 250 ms microsandbox gives it
+/// to report whether the sandbox is paused, as on a busy host.
+#[cfg(unix)]
+const SLOW_RUNTIME: Duration = Duration::from_secs(1);
+
+/// How long a test stops a sandbox's runtime to make it miss the 10 s the daemon gives it to
+/// report whether the sandbox is paused.
+#[cfg(unix)]
+const HUNG_RUNTIME: Duration = Duration::from_secs(12);
+
+/// Returns the status the daemon reports for the sandbox, or the code it fails with.
+#[cfg(unix)]
+async fn get_status(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> Result<SandboxStatus, Code> {
+    client
+        .get_sandbox(GetSandboxRequest {
+            name: name.to_string(),
+        })
+        .await
+        .map(|response| response.into_inner().status())
+        .map_err(|status| status.code())
+}
+
+/// Returns the code of a failed request.
+#[cfg(unix)]
+fn code<T: std::fmt::Debug>(result: Result<T, Status>) -> Code {
+    result.expect_err("the request succeeded").code()
+}
+
+/// Returns the id of the process that runs the sandbox, which changes when it's replaced.
+#[cfg(unix)]
+async fn runtime_pid(name: &str) -> i32 {
+    Sandbox::get(name)
+        .await
+        .unwrap()
+        .local()
+        .and_then(|local| local.pid)
+        .expect("sandbox has no runtime process")
+}
+
+/// How often a test sends a pause or resume that microsandbox didn't send.
+const CONTROL_ATTEMPTS: u32 = 5;
+
+/// Pauses the sandbox, see [`send_control`].
+async fn pause(sb: &SandboxHandle) -> MicrosandboxResult<()> {
+    send_control(|| sb.pause()).await
+}
+
+/// Resumes the sandbox, see [`send_control`].
+async fn resume(sb: &SandboxHandle) -> MicrosandboxResult<()> {
+    send_control(|| sb.resume()).await
+}
+
+/// Sends a pause or resume to the sandbox's runtime, again when microsandbox didn't send it.
+/// A failed request from another task, such as the daemon's, closes microsandbox's shared
+/// connection to the runtime, and a request on it then fails with `Closed` before it's sent.
+/// Only such unsent requests are retried, so the runtime never gets one twice. microsandbox
+/// doesn't export the delivery of the error, so it's read from the message.
+async fn send_control<F, Fut>(mut request: F) -> MicrosandboxResult<()>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = MicrosandboxResult<()>>,
+{
+    let mut attempt = 1;
+
+    loop {
+        match request().await {
+            Err(err @ MicrosandboxError::ControlClient(_))
+                if attempt < CONTROL_ATTEMPTS && err.to_string().contains("delivery: NotSent") =>
+            {
+                attempt += 1;
+                sleep(POLL_INTERVAL).await;
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Runs the request while the sandbox's runtime is stopped for [`SLOW_RUNTIME`], see [`frozen`].
+#[cfg(unix)]
+async fn slowed<T>(name: &str, request: impl Future<Output = T>) -> (T, Duration) {
+    frozen(name, SLOW_RUNTIME, request).await
+}
+
+/// Runs the request while the sandbox's runtime process is stopped for the time, and returns
+/// its result and how long it took.
+#[cfg(unix)]
+async fn frozen<T>(
+    name: &str,
+    freeze: Duration,
+    request: impl Future<Output = T>,
+) -> (T, Duration) {
+    let pid = runtime_pid(name).await.to_string();
+    signal_process("STOP", &pid).await;
+    let start = Instant::now();
+
+    let request = async { (request.await, start.elapsed()) };
+    let thaw = async {
+        sleep(freeze).await;
+        signal_process("CONT", &pid).await;
+    };
+    let (result, ()) = tokio::join!(request, thaw);
+
+    result
+}
+
+/// Sends the signal to the process with `kill`.
+#[cfg(unix)]
+async fn signal_process(signal: &str, pid: &str) {
+    let status = tokio::process::Command::new("kill")
+        .args([format!("-{signal}").as_str(), pid])
+        .status()
+        .await
+        .expect("failed to run kill");
+
+    assert!(status.success(), "kill -{signal} {pid} failed");
 }
 
 /// Image upgrade tests create their sandboxes from, before they upgrade them to
@@ -3073,12 +3300,12 @@ async fn upgrade_refuses_a_paused_sandbox() {
     let mut client = daemon.client().await;
     start_and_wait(&mut client, old_image_request(name)).await;
     let sb = Sandbox::get(name).await.unwrap();
-    sb.pause().await.unwrap();
+    pause(&sb).await.unwrap();
 
     let status = upgrade(&mut client, name, UPGRADE_IMAGE).await;
     let paused = sandbox_status(&mut client, name).await;
 
-    sb.resume().await.unwrap();
+    resume(&sb).await.unwrap();
     daemon.stop().await;
     remove_sandbox_and_snapshots(name).await;
 
@@ -3615,11 +3842,12 @@ async fn forward_port_fails_for_a_stored_port_that_is_still_busy() {
     assert_eq!(status.code(), Code::FailedPrecondition, "{status:?}");
 }
 
-/// Returns the host socket fbkd listens on for the sandbox's network log.
+/// Returns the host socket fbkd listens on for the sandbox's network log, a pipe on Windows.
 fn netlog_socket(name: &str) -> PathBuf {
-    firebrick_utils::netlog_socket_dir()
-        .expect("set XDG_RUNTIME_DIR to an absolute path for the network log tests on Linux")
-        .join(format!("{name}.sock"))
+    let dir = firebrick_utils::netlog_socket_dir()
+        .expect("can't name the network log endpoints")
+        .expect("set XDG_RUNTIME_DIR to an absolute path for the network log tests on Linux");
+    ipc::endpoint(&dir, name).expect("the sandbox name is too long for an endpoint")
 }
 
 /// Returns the file fbkd records the sandbox's network activity in.
@@ -3640,7 +3868,7 @@ async fn has_netlog_route(name: &str) -> bool {
 
 /// Writes the lines to the sandbox's network log socket, as the logger in the guest does.
 async fn write_netlog_lines(name: &str, lines: &[&str]) {
-    let mut stream = UnixStream::connect(netlog_socket(name))
+    let mut stream = ipc::connect(&netlog_socket(name))
         .await
         .expect("fbkd doesn't listen on the network log socket");
 
@@ -3755,7 +3983,7 @@ async fn update_network_adds_the_network_log_route_to_a_sandbox_without_one() {
     let activity_before = list_network_activity(&mut client, name).await;
     let updated = update_network(&mut client, name, allow_policy(true, &["example.com"])).await;
     let routed_after = has_netlog_route(name).await;
-    let listening = UnixStream::connect(netlog_socket(name)).await.is_ok();
+    let listening = ipc::is_served(&netlog_socket(name)).await;
     let activity_after = list_network_activity(&mut client, name).await;
 
     daemon.stop().await;
@@ -3856,11 +4084,12 @@ async fn list_network_activity_returns_the_recorded_events_with_the_policy() {
     assert!(!tcp.allowed, "no IP rule allows 93.184.215.14");
 }
 
-/// Returns the host socket fbkd listens on for the sandbox's clipboard.
+/// Returns the host socket fbkd listens on for the sandbox's clipboard, a pipe on Windows.
 fn clipboard_socket(name: &str) -> PathBuf {
-    firebrick_utils::clipboard_socket_dir()
-        .expect("set XDG_RUNTIME_DIR to an absolute path for the clipboard tests on Linux")
-        .join(format!("{name}.sock"))
+    let dir = firebrick_utils::clipboard_socket_dir()
+        .expect("can't name the clipboard endpoints")
+        .expect("set XDG_RUNTIME_DIR to an absolute path for the clipboard tests on Linux");
+    ipc::endpoint(&dir, name).expect("the sandbox name is too long for an endpoint")
 }
 
 /// Whether the sandbox has a stream route from the clipboard port to its socket.

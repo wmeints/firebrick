@@ -30,10 +30,16 @@ use std::sync::{Arc, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::sync::OwnedMutexGuard;
-use tokio::time::{Instant, sleep};
+use tokio::time::{Instant, sleep, timeout};
 
 /// How long a sandbox gets to shut down gracefully before it is killed.
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the runtime of a running sandbox gets to report whether the sandbox is paused.
+const PAUSE_STATE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long to wait before asking the runtime of a sandbox again whether it's paused.
+const PAUSE_STATE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 /// How long deleting a snapshot waits for the operations that still read it.
 const SNAPSHOT_IN_USE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -154,8 +160,9 @@ pub struct StartSandbox<'a> {
 pub struct SandboxInfo {
     /// Name of the sandbox.
     pub name: String,
-    /// Status of the sandbox.
-    pub status: SandboxStatus,
+    /// Status of the sandbox, or `None` in a listing when its runtime didn't report whether it's
+    /// paused.
+    pub status: Option<SandboxStatus>,
     /// SSH host name of the sandbox, if it has one.
     pub hostname: Option<String>,
     /// Guest path the workspace is mounted at, e.g. `/workspaces/project`, if it has one.
@@ -170,9 +177,9 @@ pub struct SandboxInfo {
 }
 
 impl SandboxInfo {
-    /// Reads the sandbox's config once. A config that can't be read leaves out everything it
-    /// holds, and is logged.
-    fn of(handle: &SandboxHandle) -> Self {
+    /// Reads the sandbox's config once and reports it with the status. A config that can't be
+    /// read leaves out everything it holds, and is logged.
+    fn of(handle: &SandboxHandle, status: Option<SandboxStatus>) -> Self {
         let spec = match handle.config() {
             Ok(config) => Some(config.spec),
             Err(err) => {
@@ -188,7 +195,7 @@ impl SandboxInfo {
 
         Self {
             name: handle.name().to_string(),
-            status: handle.status_snapshot(),
+            status,
             hostname: spec.and_then(|spec| spec.labels.get(ssh::HOSTNAME_LABEL).cloned()),
             workspace_path: spec.and_then(|spec| spec.runtime.workdir.clone()),
             workspace_host_path: spec.and_then(workspace_host_path_in),
@@ -876,16 +883,20 @@ impl SandboxManager {
 
     /// Returns the sandbox with the name.
     pub async fn get(&self, name: &str) -> Result<SandboxInfo, SandboxError> {
-        Ok(SandboxInfo::of(&get_sandbox(name).await?))
+        let sb = get_sandbox(name).await?;
+
+        Ok(SandboxInfo::of(&sb, Some(current_status(&sb).await?)))
     }
 
     /// Returns every sandbox.
     pub async fn list(&self) -> Result<Vec<SandboxInfo>, SandboxError> {
-        Ok(list_all_sandboxes()
-            .await?
-            .iter()
-            .map(SandboxInfo::of)
-            .collect())
+        let mut sandboxes = vec![];
+
+        for sb in list_all_sandboxes().await? {
+            sandboxes.extend(listed_info(&sb).await?);
+        }
+
+        Ok(sandboxes)
     }
 
     /// Connects to the running sandbox with the name and starts its URL relay.
@@ -945,7 +956,7 @@ impl SandboxManager {
             return Ok(false);
         }
 
-        if sb.status_snapshot() == SandboxStatus::Paused {
+        if current_status(&sb).await? == SandboxStatus::Paused {
             return Err(SandboxError::failed_precondition(format!(
                 "sandbox {name} is paused; resume it before updating its network rules"
             )));
@@ -976,7 +987,7 @@ impl SandboxManager {
     ) -> Result<Upgrade, SandboxError> {
         let _recreation = self.recreations.read().await;
         let image = sandbox_image(image);
-        refuse_paused(&get_sandbox(name).await?)?;
+        refuse_paused(&get_sandbox(name).await?).await?;
 
         // The pull can take minutes, so it runs before the sandbox is locked.
         let digest = pull_image(name, image, on_pull).await?;
@@ -984,7 +995,7 @@ impl SandboxManager {
         let _guard = self.lock_sandbox(name).await;
         // Get the sandbox again, because it may have changed while the image was pulled.
         let sb = get_sandbox(name).await?;
-        refuse_paused(&sb)?;
+        refuse_paused(&sb).await?;
         let config = sb
             .config()
             .map_err(|err| change_failed(name, Change::Image(image), &err))?;
@@ -1707,8 +1718,8 @@ async fn remove_leftover(name: &str, what: &str) {
 
 /// Fails with `FailedPrecondition` when the sandbox is paused, because an upgrade can't pause
 /// it again.
-fn refuse_paused(sb: &SandboxHandle) -> Result<(), SandboxError> {
-    if sb.status_snapshot() != SandboxStatus::Paused {
+async fn refuse_paused(sb: &SandboxHandle) -> Result<(), SandboxError> {
+    if current_status(sb).await? != SandboxStatus::Paused {
         return Ok(());
     }
 
@@ -1848,6 +1859,95 @@ pub async fn stop_or_kill(sb: &SandboxHandle, timeout: Duration) -> Result<(), M
             sb.kill().await
         }
         result => result,
+    }
+}
+
+/// Returns the status of the sandbox, see [`observed_status`]. Fails when the runtime doesn't
+/// report whether the sandbox is paused, instead of guessing.
+async fn current_status(sb: &SandboxHandle) -> Result<SandboxStatus, SandboxError> {
+    observed_status(sb).await?.ok_or_else(|| {
+        SandboxError::internal(format!(
+            "the runtime of sandbox {} didn't report whether it's paused; try again, or stop \
+             and start the sandbox",
+            sb.name()
+        ))
+    })
+}
+
+/// Returns the status of the sandbox. microsandbox reports a paused sandbox as running when its
+/// runtime doesn't say within 250 ms that it's paused, which happens on a busy host, so this
+/// asks the runtime of a running sandbox again and waits up to [`PAUSE_STATE_TIMEOUT`]. Returns
+/// `None` when the runtime doesn't answer in time.
+async fn observed_status(sb: &SandboxHandle) -> Result<Option<SandboxStatus>, SandboxError> {
+    match timeout(PAUSE_STATE_TIMEOUT, ask_pause_state(sb)).await {
+        Ok(status) => status.map(Some),
+        Err(_) => {
+            tracing::error!(
+                "the runtime of sandbox {} didn't report within {PAUSE_STATE_TIMEOUT:?} whether \
+                 it's paused",
+                sb.name()
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Returns the info of a listed sandbox, without a status when its runtime doesn't report
+/// whether it's paused, or `None` when it was removed after it was listed.
+async fn listed_info(sb: &SandboxHandle) -> Result<Option<SandboxInfo>, SandboxError> {
+    match observed_status(sb).await {
+        Ok(status) => Ok(Some(SandboxInfo::of(sb, status))),
+        Err(SandboxError::NotFound(_)) => {
+            tracing::info!("sandbox {} was removed while listing it", sb.name());
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Asks the runtime of a running sandbox whether it's paused until it answers or the sandbox
+/// stops. microsandbox closes its connection to the runtime when a request fails, and only
+/// the next request opens a new one, so a failed request is retried. Each retry gets the
+/// sandbox again, because it may have stopped, been removed or been replaced in the meantime,
+/// and microsandbox refuses requests through the handle of a replaced sandbox.
+async fn ask_pause_state(sb: &SandboxHandle) -> Result<SandboxStatus, SandboxError> {
+    if let Some(status) = try_pause_state(sb).await {
+        return Ok(status);
+    }
+
+    loop {
+        sleep(PAUSE_STATE_RETRY_INTERVAL).await;
+
+        if let Some(status) = try_pause_state(&get_sandbox(sb.name()).await?).await {
+            return Ok(status);
+        }
+    }
+}
+
+/// Returns the status of the sandbox, asking its runtime once whether it's paused when
+/// microsandbox reports it as running. Returns `None` when that request fails.
+async fn try_pause_state(sb: &SandboxHandle) -> Option<SandboxStatus> {
+    let status = sb.status_snapshot();
+
+    if status != SandboxStatus::Running {
+        return Some(status);
+    }
+
+    let name = sb.name();
+
+    match sb.pause_state().await {
+        Ok(state) if state.paused || state.recovery_required => Some(SandboxStatus::Paused),
+        Ok(_) => Some(SandboxStatus::Running),
+        // A runtime without a control endpoint, such as one whose control listener failed to
+        // start, can't be paused either, because pausing goes through the same endpoint.
+        Err(err @ MicrosandboxError::Runtime(_)) => {
+            tracing::debug!("sandbox {name} runs without a pause control: {err}");
+            Some(SandboxStatus::Running)
+        }
+        Err(err) => {
+            tracing::debug!("failed to read the pause state of sandbox {name}: {err}");
+            None
+        }
     }
 }
 
@@ -2391,6 +2491,17 @@ mod tests {
     use super::*;
     use crate::clipboard::HostTools;
     use crate::open::HostOpener;
+    use crate::vsock::test_endpoint_dir;
+
+    /// Returns the host path as an absolute path of the platform: unchanged on Unix, and on the
+    /// `C:` drive on Windows, where a path without a drive isn't absolute.
+    fn host(path: &str) -> String {
+        if cfg!(windows) {
+            format!("C:{path}")
+        } else {
+            path.to_string()
+        }
+    }
 
     /// Returns a manager with a store at `path` that has a secret for `example.com` under each
     /// name.
@@ -2626,9 +2737,12 @@ mod tests {
 
     /// Returns the spec microsandbox would create the sandbox with, with its sockets in `/run`.
     async fn built_spec(settings: &SandboxSettings) -> SandboxSpec {
-        let netlogs = NetLogs::new(Some("/run/fbk/netlog".into()), None);
+        let netlogs = NetLogs::new(
+            Some(test_endpoint_dir(Path::new("/run/fbk"), "netlog")),
+            None,
+        );
         let clipboards = Clipboards::new(
-            Some("/run/fbk/clipboard".into()),
+            Some(test_endpoint_dir(Path::new("/run/fbk"), "clipboard")),
             Arc::new(HostTools::new(None, None)),
         );
 
@@ -2646,7 +2760,7 @@ mod tests {
         let settings = new_settings("", true);
         let spec = built_spec(&settings).await;
         let clipboards = Clipboards::new(
-            Some("/run/fbk/clipboard".into()),
+            Some(test_endpoint_dir(Path::new("/run/fbk"), "clipboard")),
             Arc::new(HostTools::new(None, None)),
         );
 
@@ -2769,11 +2883,11 @@ mod tests {
     #[test]
     fn workspace_mount_path_uses_leaf_name() {
         assert_eq!(
-            workspace_mount_path("/home/user/project").unwrap(),
+            workspace_mount_path(&host("/home/user/project")).unwrap(),
             "/workspaces/project"
         );
         assert_eq!(
-            workspace_mount_path("/home/user/project/").unwrap(),
+            workspace_mount_path(&host("/home/user/project/")).unwrap(),
             "/workspaces/project"
         );
     }
@@ -2801,14 +2915,14 @@ mod tests {
 
     #[test]
     fn check_mounts_accepts_absolute_paths() {
-        let mounts = [mount("/home/user/lib", "/workspaces/lib")];
+        let mounts = [mount(&host("/home/user/lib"), "/workspaces/lib")];
 
         assert_eq!(check_mounts(&mounts, "/workspaces/project"), Ok(()));
     }
 
     #[test]
     fn check_mounts_rejects_the_workspace_guest_path() {
-        let mounts = [mount("/home/user/lib", "/workspaces/project")];
+        let mounts = [mount(&host("/home/user/lib"), "/workspaces/project")];
 
         assert_eq!(
             check_mounts(&mounts, "/workspaces/project"),
@@ -2820,7 +2934,7 @@ mod tests {
 
     #[test]
     fn check_mounts_rejects_the_workspace_guest_path_in_another_form() {
-        let mounts = [mount("/home/user/lib", "/workspaces/project/.")];
+        let mounts = [mount(&host("/home/user/lib"), "/workspaces/project/.")];
 
         assert_eq!(
             check_mounts(&mounts, "/workspaces/project"),
@@ -2832,7 +2946,7 @@ mod tests {
 
     #[test]
     fn check_mounts_rejects_the_docker_data_path() {
-        let mounts = [mount("/home/user/docker", "/var/lib/docker/")];
+        let mounts = [mount(&host("/home/user/docker"), "/var/lib/docker/")];
 
         assert_eq!(
             check_mounts(&mounts, "/workspaces/project"),
@@ -2846,10 +2960,10 @@ mod tests {
     fn check_mounts_rejects_relative_and_invalid_paths() {
         for mounts in [
             [mount("../lib", "/lib")],
-            [mount("/home/user/lib", "lib")],
-            [mount("/home/user/lib", "/")],
-            [mount("/home/user/lib", "/lib/../etc")],
-            [mount("/home/user/lib", "/lib:v1")],
+            [mount(&host("/home/user/lib"), "lib")],
+            [mount(&host("/home/user/lib"), "/")],
+            [mount(&host("/home/user/lib"), "/lib/../etc")],
+            [mount(&host("/home/user/lib"), "/lib:v1")],
         ] {
             assert!(
                 matches!(

@@ -222,9 +222,11 @@ mod tests {
     }
 
     async fn assert_forward_and_remove_refuse_symlink(content: Option<&str>) {
-        let (dir, target) = symlinked_spec::workspace(content);
+        let Some((dir, target)) = symlinked_spec::workspace(content) else {
+            return;
+        };
         // The sandbox belongs to this directory, so only the symlink check stops the write.
-        let workspace = fs::canonicalize(dir.path()).unwrap();
+        let workspace = dunce::canonicalize(dir.path()).unwrap();
         let mut client = fake_daemon::serve("dev", workspace.to_str().unwrap()).await;
         let port = PortMapping {
             host: 3000,

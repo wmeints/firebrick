@@ -17,5 +17,10 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_yaml = "0.9.34"
 thiserror = "2.0.21"
 
+[target.'cfg(windows)'.dependencies]
+# `FILE_FLAG_OPEN_REPARSE_POINT`, to open a spec file without following a symlink; the version
+# tokio uses.
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 tempfile = "3.27.0"
