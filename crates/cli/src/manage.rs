@@ -324,7 +324,7 @@ pub(crate) async fn check_workspace_owner(
     }
 
     // microsandbox stores the mounted host path canonicalized, so compare it canonicalized.
-    let working_dir = std::fs::canonicalize(workspace).with_context(|| {
+    let working_dir = dunce::canonicalize(workspace).with_context(|| {
         format!(
             "failed to resolve working directory {}",
             workspace.display()
@@ -446,7 +446,7 @@ fn build_start_request(spec: SandboxSpec, workspace: &Path) -> Result<StartSandb
     let mounts = resolve_mounts(
         spec.mounts.unwrap_or_default(),
         workspace,
-        std::env::var_os("HOME"),
+        std::env::var_os(firebrick_utils::HOME_VAR),
     )?;
 
     Ok(StartSandboxRequest {
@@ -504,7 +504,7 @@ fn resolve_host_path(
         None => spec_dir.join(host),
     };
 
-    let canonical = std::fs::canonicalize(&path).map_err(|err| mount_error(&path, &err))?;
+    let canonical = dunce::canonicalize(&path).map_err(|err| mount_error(&path, &err))?;
 
     if !canonical.is_dir() {
         bail!("can't mount {}: not a directory", canonical.display());
@@ -513,13 +513,26 @@ fn resolve_host_path(
     Ok(canonical)
 }
 
+/// The characters that end the `~user` at the start of a host path.
+#[cfg(unix)]
+const SEPARATORS: &[char] = &['/'];
+
+/// The characters that end the `~user` at the start of a host path.
+#[cfg(windows)]
+const SEPARATORS: &[char] = &['/', '\\'];
+
 /// Expands `~` or `~user` at the start of a host path, the way a shell does. `rest` is the
 /// host path without its `~`.
 fn expand_tilde(host: &str, rest: &str, home: Option<&std::ffi::OsStr>) -> Result<PathBuf> {
-    let (user, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    let (user, tail) = rest.split_once(SEPARATORS).unwrap_or((rest, ""));
 
     let home = if user.is_empty() {
-        PathBuf::from(home.with_context(|| format!("can't expand ~ in {host}: $HOME isn't set"))?)
+        PathBuf::from(home.with_context(|| {
+            format!(
+                "can't expand ~ in {host}: ${} isn't set",
+                firebrick_utils::HOME_VAR
+            )
+        })?)
     } else {
         user_home(host, user)?
     };
@@ -528,12 +541,19 @@ fn expand_tilde(host: &str, rest: &str, home: Option<&std::ffi::OsStr>) -> Resul
 }
 
 /// Looks up the home directory of the user in the user database.
+#[cfg(unix)]
 fn user_home(host: &str, user: &str) -> Result<PathBuf> {
     let entry = nix::unistd::User::from_name(user)
         .with_context(|| format!("can't expand ~{user} in {host}"))?
         .ok_or_else(|| anyhow!("can't expand {host}: user {user} doesn't exist"))?;
 
     Ok(entry.dir)
+}
+
+/// Fails: Windows has no user database to look up the home directory of `~user` in.
+#[cfg(windows)]
+fn user_home(host: &str, user: &str) -> Result<PathBuf> {
+    bail!("can't expand ~{user} in {host}: ~user isn't supported on Windows; use ~ or a path")
 }
 
 /// Describes why the host path can't be mounted, without the OS error code.
@@ -1262,7 +1282,9 @@ mod tests {
     }
 
     async fn assert_resolve_refuses_symlink(content: Option<&str>) {
-        let (dir, _target) = symlinked_spec::workspace(content);
+        let Some((dir, _target)) = symlinked_spec::workspace(content) else {
+            return;
+        };
 
         let err = resolve_spec(dir.path(), &mut unreachable_client())
             .await
@@ -1319,7 +1341,7 @@ mod tests {
     #[tokio::test]
     async fn without_name_accepts_sandbox_of_working_directory() {
         let dir = workspace_named("dev");
-        let canonical = fs::canonicalize(dir.path()).unwrap();
+        let canonical = dunce::canonicalize(dir.path()).unwrap();
         let mut client = fake_daemon::serve("dev", canonical.to_str().unwrap()).await;
 
         let name = sandbox_name(None, dir.path(), &mut client).await.unwrap();
@@ -1383,7 +1405,7 @@ mod tests {
 
     /// Serves a fake daemon whose sandbox `name` mounts the directory.
     async fn serve_sandbox_of(name: &str, dir: &Path) -> SandboxManagementServiceClient<Channel> {
-        let canonical = fs::canonicalize(dir).unwrap();
+        let canonical = dunce::canonicalize(dir).unwrap();
         fake_daemon::serve(name, canonical.to_str().unwrap()).await
     }
 
@@ -1864,7 +1886,8 @@ mod tests {
     fn start_request_carries_mounts_from_spec() {
         let dir = TempDir::new().unwrap();
         let project = dir.path().join("project");
-        fs::create_dir_all(project.join("../shared-lib")).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(dir.path().join("shared-lib")).unwrap();
         fs::write(
             project.join(SPEC_FILE_NAME),
             "name: dev\nmounts:\n  - host: ../shared-lib\n    guest: /workspaces/shared-lib\n    readonly: true\n",
@@ -1877,7 +1900,7 @@ mod tests {
         assert_eq!(
             request.mounts,
             [Mount {
-                host: fs::canonicalize(dir.path().join("shared-lib"))
+                host: dunce::canonicalize(dir.path().join("shared-lib"))
                     .unwrap()
                     .to_string_lossy()
                     .into_owned(),
@@ -1894,7 +1917,9 @@ mod tests {
         let target = dir.path().join("target");
         fs::create_dir_all(&project).unwrap();
         fs::create_dir_all(&target).unwrap();
-        std::os::unix::fs::symlink(&target, project.join("lib")).unwrap();
+        if !symlinked_spec::symlink_dir(&target, &project.join("lib")) {
+            return;
+        }
         fs::write(
             project.join(SPEC_FILE_NAME),
             "name: dev\nmounts:\n  - host: lib\n    guest: /mnt/lib\n",
@@ -1908,7 +1933,7 @@ mod tests {
         assert_eq!(
             settings.mounts,
             [MountSpec {
-                host: fs::canonicalize(&target)
+                host: dunce::canonicalize(&target)
                     .unwrap()
                     .to_string_lossy()
                     .into_owned(),
@@ -1939,7 +1964,7 @@ mod tests {
 
         let resolved = resolve_host_path(host, Path::new("/elsewhere"), None).unwrap();
 
-        assert_eq!(resolved, fs::canonicalize(dir.path()).unwrap());
+        assert_eq!(resolved, dunce::canonicalize(dir.path()).unwrap());
     }
 
     #[test]
@@ -1952,7 +1977,7 @@ mod tests {
 
         assert_eq!(
             resolved,
-            fs::canonicalize(dir.path().join("shared")).unwrap()
+            dunce::canonicalize(dir.path().join("shared")).unwrap()
         );
     }
 
@@ -1967,22 +1992,24 @@ mod tests {
 
         assert_eq!(
             resolved,
-            fs::canonicalize(dir.path().join("datasets")).unwrap()
+            dunce::canonicalize(dir.path().join("datasets")).unwrap()
         );
-        assert_eq!(home_only, fs::canonicalize(dir.path()).unwrap());
+        assert_eq!(home_only, dunce::canonicalize(dir.path()).unwrap());
     }
 
     #[test]
+    #[cfg(unix)]
     fn host_path_expands_other_users_home() {
         // root exists on every Linux and macOS host; its home differs between them.
         let root_home = nix::unistd::User::from_name("root").unwrap().unwrap().dir;
 
         let resolved = resolve_host_path("~root", Path::new("/elsewhere"), None).unwrap();
 
-        assert_eq!(resolved, fs::canonicalize(root_home).unwrap());
+        assert_eq!(resolved, dunce::canonicalize(root_home).unwrap());
     }
 
     #[test]
+    #[cfg(unix)]
     fn host_path_with_unknown_user_is_refused() {
         let error =
             resolve_host_path("~fbk-no-such-user/data", Path::new("/elsewhere"), None).unwrap_err();
@@ -1997,7 +2024,34 @@ mod tests {
     fn host_path_needs_home_for_tilde() {
         let error = resolve_host_path("~/datasets", Path::new("/elsewhere"), None).unwrap_err();
 
-        assert!(error.to_string().contains("$HOME isn't set"), "{error}");
+        let missing = format!("${} isn't set", firebrick_utils::HOME_VAR);
+        assert!(error.to_string().contains(&missing), "{error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn host_path_of_another_user_is_refused_on_windows() {
+        let error = resolve_host_path("~bob/data", Path::new(r"C:\elsewhere"), None).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "can't expand ~bob in ~bob/data: ~user isn't supported on Windows; use ~ or a path"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn host_path_expands_home_with_a_backslash() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("datasets")).unwrap();
+        let home = Some(dir.path().as_os_str());
+
+        let resolved = resolve_host_path(r"~\datasets", Path::new(r"C:\elsewhere"), home).unwrap();
+
+        assert_eq!(
+            resolved,
+            dunce::canonicalize(dir.path().join("datasets")).unwrap()
+        );
     }
 
     #[test]
@@ -2020,7 +2074,7 @@ mod tests {
     fn host_path_that_is_a_file_is_refused() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("file"), "").unwrap();
-        let file = fs::canonicalize(dir.path().join("file")).unwrap();
+        let file = dunce::canonicalize(dir.path().join("file")).unwrap();
 
         let error = resolve_host_path("file", dir.path(), None).unwrap_err();
 

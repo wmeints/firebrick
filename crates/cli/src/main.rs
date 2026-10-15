@@ -239,7 +239,7 @@ struct RunArgs {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let working_dir = env::current_dir()?;
+    let working_dir = working_dir()?;
 
     match cli.command {
         // Validating and creating the spec don't need the daemon.
@@ -253,6 +253,20 @@ async fn main() -> Result<()> {
         }
         command => run_with_daemon(command, working_dir).await,
     }
+}
+
+/// Returns the working directory.
+#[cfg(unix)]
+fn working_dir() -> Result<PathBuf> {
+    Ok(env::current_dir()?)
+}
+
+/// Returns the working directory in its canonical form. Windows paths are case-insensitive and
+/// keep the case they were typed in, so without this `C:\Proj` and `c:\proj` would get sandboxes
+/// of their own.
+#[cfg(windows)]
+fn working_dir() -> Result<PathBuf> {
+    Ok(dunce::canonicalize(env::current_dir()?)?)
 }
 
 /// Validates the spec in the working directory and exits with code 1 when it is invalid.

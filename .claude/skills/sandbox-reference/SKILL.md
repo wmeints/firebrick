@@ -333,6 +333,34 @@ build on it when `Cargo.lock` has a newer version.
   isolates `MSB_HOME` and the daemon from the user's, and loads locally built
   images with `msb load`, so no registry is needed.
 
+**Windows (preview)**
+
+Verified on Windows 11 x64 with WHP and microsandbox 0.7.8 (ADR 0050, 0051).
+
+- The runtime is `msb.exe` and `libkrunfw.dll`; `msb.exe run` boots VMs with WHP
+  enabled and no other setup.
+- A vsock route's host path must be a local named pipe (`\\.\pipe\<name>`,
+  checked in `$M/sandbox/builder.rs`), and only stream routes work. microsandbox
+  opens the pipe as a client (`WindowsNamedPipePortBackend`), so `fbkd` serves
+  it.
+- A bind mount host must be a plain path such as `C:\Users\me\project`. A
+  verbatim `\\?\C:\...` path, which `fs::canonicalize` returns on Windows, is
+  refused, so use `dunce::canonicalize`. microsandbox makes host paths absolute
+  but doesn't canonicalize them.
+- A detached start spawns `msb.exe` with `DETACHED_PROCESS |
+  CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB` (`$M/runtime/spawn.rs`).
+  In a job object without `JOB_OBJECT_LIMIT_BREAKAWAY_OK` that fails with `Io(Os
+  { code: 5, .. })` ("access denied"). Cargo 1.99 runs test binaries in such a
+  job, so the `vm-tests` can't boot VMs under `cargo test` on Windows; `mise run
+  integration-tests` runs the binaries itself.
+- With WHP a VM's memory is committed when it boots. A VM that doesn't fit in
+  the free commit exits before its agent starts, with `BootStart … sandbox
+  process exited (exit code: 0) before agent relay became available`.
+  `scripts/vm-tests.ps1` caps the parallel tests by the free commit for that.
+- `MSB_HOME=/tmp/firebrick-msb` from `.cargo/config.toml` resolves to
+  `C:\tmp\firebrick-msb` on the current drive. Don't switch between that and the
+  `C:\` spelling in one home; the database then fails with a disk I/O error.
+
 **Debugging**
 
 - `fbkd` maps many errors to a generic gRPC `Internal` status. Read the daemon

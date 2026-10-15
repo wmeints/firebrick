@@ -1,8 +1,9 @@
 //! Integration test for the microsandbox home `fbkd` picks when `MSB_HOME` isn't set.
 //!
-//! The test runs the `fbkd` binary with `MSB_HOME` removed and `HOME` and the XDG directories
-//! pointed at a fresh directory under `/tmp`, so it never touches the user's state. It boots a
-//! real VM; run it with `cargo test -p firebrick-daemon --features vm-tests`.
+//! The test runs the `fbkd` binary with `MSB_HOME` removed and the home and XDG directories
+//! pointed at a fresh directory under `/tmp`, or the temp directory on Windows, so it never
+//! touches the user's state. On Windows its pipes get a prefix of their own. It boots a real VM;
+//! run it with `cargo test -p firebrick-daemon --features vm-tests`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -13,8 +14,8 @@ use firebrick_daemon::api::{
     AttachRequest, AttachResize, AttachStart, ListSandboxesRequest, NetworkPolicy,
     RemoveSandboxRequest, SandboxStatus, StartSandboxRequest, attach_request, attach_response,
 };
+use firebrick_utils::ipc;
 use hyper_util::rt::TokioIo;
-use tokio::net::UnixStream;
 use tokio::time::{Instant, sleep};
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Endpoint, Uri};
@@ -34,20 +35,18 @@ struct Daemon {
 
 impl Daemon {
     fn start() -> Self {
-        // Short, because microsandbox creates unix sockets under the home.
-        let root = PathBuf::from(format!("/tmp/fbk-mh-{}", std::process::id()));
+        let root = test_root();
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
 
-        let child = Command::new(env!("CARGO_BIN_EXE_fbkd"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fbkd"));
+        command
             .env_remove("MSB_HOME")
-            .env("HOME", root.join("home"))
             .env("XDG_STATE_HOME", root.join("state"))
             .env("XDG_DATA_HOME", root.join("data"))
-            .env("XDG_CONFIG_HOME", root.join("config"))
-            .env("XDG_RUNTIME_DIR", &root)
-            .spawn()
-            .expect("failed to start fbkd");
+            .env("XDG_CONFIG_HOME", root.join("config"));
+        isolate_home_and_endpoints(&mut command, &root);
+        let child = command.spawn().expect("failed to start fbkd");
 
         Self { root, child }
     }
@@ -55,7 +54,7 @@ impl Daemon {
     /// Waits until fbkd listens on its socket, failing as soon as it exits.
     async fn wait_for_socket(&mut self, socket: &Path) {
         let deadline = Instant::now() + TIMEOUT;
-        while UnixStream::connect(socket).await.is_err() {
+        while !ipc::is_served(socket).await {
             let exited = self.child.try_wait().unwrap();
             assert!(exited.is_none(), "fbkd exited before listening: {exited:?}");
             assert!(Instant::now() < deadline, "fbkd did not start listening");
@@ -64,13 +63,13 @@ impl Daemon {
     }
 
     async fn client(&mut self) -> SandboxManagementServiceClient<Channel> {
-        let socket = self.root.join("fbkd.sock");
+        let socket = daemon_endpoint(&self.root);
         self.wait_for_socket(&socket).await;
 
         // The HTTP endpoint isn't used; it only shows up in the authority header.
         let channel = Endpoint::try_from("http://localhost")
             .unwrap()
-            .connect_with_connector(service_fn(move |_: Uri| connect_unix(socket.clone())))
+            .connect_with_connector(service_fn(move |_: Uri| connect(socket.clone())))
             .await
             .expect("failed to connect to fbkd");
 
@@ -78,9 +77,58 @@ impl Daemon {
     }
 }
 
+/// Returns the directory the test keeps the daemon's state in. Short on Unix, because
+/// microsandbox creates unix sockets under the home.
+#[cfg(unix)]
+fn test_root() -> PathBuf {
+    PathBuf::from(format!("/tmp/fbk-mh-{}", std::process::id()))
+}
+
+/// Returns the directory the test keeps the daemon's state in, canonical without the `\\?\`
+/// prefix that microsandbox refuses in mounts.
+#[cfg(windows)]
+fn test_root() -> PathBuf {
+    let temp = dunce::canonicalize(std::env::temp_dir()).unwrap();
+    temp.join(format!("fbk-mh-{}", std::process::id()))
+}
+
+/// Points the daemon's home at `root/home` and puts its socket in `root`.
+#[cfg(unix)]
+fn isolate_home_and_endpoints(command: &mut Command, root: &Path) {
+    command
+        .env("HOME", root.join("home"))
+        .env("XDG_RUNTIME_DIR", root);
+}
+
+/// Points the daemon's home at `root/home` and gives its pipes a prefix of their own.
+#[cfg(windows)]
+fn isolate_home_and_endpoints(command: &mut Command, root: &Path) {
+    command
+        .env("USERPROFILE", root.join("home"))
+        .env("FIREBRICK_PIPE_PREFIX", pipe_prefix());
+}
+
+/// Returns the daemon's endpoint for the state in `root`.
+#[cfg(unix)]
+fn daemon_endpoint(root: &Path) -> PathBuf {
+    root.join("fbkd.sock")
+}
+
+/// Returns the daemon's endpoint, which [`isolate_home_and_endpoints`] named.
+#[cfg(windows)]
+fn daemon_endpoint(_root: &Path) -> PathBuf {
+    PathBuf::from(format!("{}-fbkd", pipe_prefix()))
+}
+
+/// Returns the prefix of the test daemon's pipes.
+#[cfg(windows)]
+fn pipe_prefix() -> String {
+    format!(r"\\.\pipe\fbk-mh-{}", std::process::id())
+}
+
 /// Connects to the daemon socket for a gRPC channel.
-async fn connect_unix(path: PathBuf) -> std::io::Result<TokioIo<UnixStream>> {
-    Ok(TokioIo::new(UnixStream::connect(path).await?))
+async fn connect(path: PathBuf) -> std::io::Result<TokioIo<ipc::Stream>> {
+    Ok(TokioIo::new(ipc::connect(&path).await?))
 }
 
 impl Drop for Daemon {
@@ -205,7 +253,7 @@ async fn start_and_check(root: PathBuf, mut client: SandboxManagementServiceClie
     let workspace = root.join("ws");
     std::fs::create_dir_all(&workspace).unwrap();
     // `/tmp` is a symlink on macOS, and microsandbox refuses to mount a path through one.
-    let workspace = std::fs::canonicalize(workspace).unwrap();
+    let workspace = dunce::canonicalize(workspace).unwrap();
     start(&mut client, start_request(&workspace)).await;
     wait_until_running(&mut client).await;
 
@@ -237,7 +285,8 @@ async fn start(client: &mut SandboxManagementServiceClient<Channel>, request: St
 /// `~/.microsandbox`.
 fn assert_in_firebrick_home(root: &Path) {
     let home = root.join("state/firebrick/msb");
-    assert_exists(&home.join("bin/msb"));
+    let msb = format!("msb{}", std::env::consts::EXE_SUFFIX);
+    assert_exists(&home.join("bin").join(msb));
     assert_exists(&home.join("db/msb.db"));
     assert_exists(&home.join("sandboxes").join(NAME));
     assert_exists(&home.join("tls/ca.crt"));

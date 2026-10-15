@@ -1,13 +1,15 @@
-//! The unix sockets behind the vsock routes of sandboxes, and the listeners on them.
+//! The endpoints behind the vsock routes of sandboxes, and the listeners on them.
 //!
-//! A vsock route connects a guest vsock port on host CID 2 to a host unix socket, and is fixed
-//! when the sandbox is created (ADR 0038). Each sandbox gets its own socket per channel, named
-//! after the sandbox, so the socket tells fbkd which sandbox a connection comes from without
-//! trusting the guest to say so. The sockets live in a directory private to the user and never
-//! fall back to a shared temp directory. [`Listeners`] keeps one listener per sandbox for a
-//! channel, such as the network log or the clipboard, and [`Connections`] bounds the
-//! connections a sandbox has open on it.
+//! A vsock route connects a guest vsock port on host CID 2 to a host endpoint, a unix socket or
+//! on Windows a named pipe (see [`ipc`]), and is fixed when the sandbox is created (ADR 0038).
+//! Each sandbox gets its own endpoint per channel, named after the sandbox, so the endpoint tells
+//! fbkd which sandbox a connection comes from without trusting the guest to say so. The sockets
+//! live in a directory private to the user and never fall back to a shared temp directory; the
+//! pipes only let the user in. [`Listeners`] keeps one listener per sandbox for a channel, such
+//! as the network log or the clipboard, and [`Connections`] bounds the connections a sandbox
+//! has open on it.
 
+use firebrick_utils::ipc;
 use microsandbox::sandbox::{SandboxBuilder, SandboxSpec, VsockSocketType};
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -15,7 +17,6 @@ use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinHandle, JoinSet};
 
@@ -26,23 +27,28 @@ pub const MAX_CONNECTIONS: usize = 4;
 /// isn't a single path component and the file would end up elsewhere. fbkd checks names when a
 /// request comes in; this keeps a name that slipped through inside the directory.
 pub fn sandbox_file(dir: &Path, sandbox: &str, extension: &str) -> Option<PathBuf> {
-    if Path::new(sandbox).file_name() != Some(OsStr::new(sandbox)) {
+    is_single_component(sandbox).then(|| dir.join(format!("{sandbox}.{extension}")))
+}
+
+/// Whether the sandbox name is a single path component, logging an error when it isn't.
+fn is_single_component(sandbox: &str) -> bool {
+    let single = Path::new(sandbox).file_name() == Some(OsStr::new(sandbox));
+    if !single {
         tracing::error!("refusing to name a file after the invalid sandbox name {sandbox:?}");
+    }
+    single
+}
+
+/// Returns the endpoint of the sandbox in the directory, or `None` when there's no directory,
+/// the name isn't a single path component, or the endpoint name is too long for a unix socket or
+/// a pipe, since microsandbox would then refuse to boot the sandbox.
+fn socket_path(dir: Option<&Path>, sandbox: &str) -> Option<PathBuf> {
+    let dir = dir?;
+    if !is_single_component(sandbox) {
         return None;
     }
 
-    Some(dir.join(format!("{sandbox}.{extension}")))
-}
-
-/// Returns the socket of the sandbox in the directory, or `None` when there's no directory, the
-/// name isn't a single path component, or the path is too long for a unix socket, since
-/// microsandbox would then refuse to boot the sandbox.
-fn socket_path(dir: Option<&Path>, sandbox: &str) -> Option<PathBuf> {
-    let path = sandbox_file(dir?, sandbox, "sock")?;
-
-    std::os::unix::net::SocketAddr::from_pathname(&path)
-        .is_ok()
-        .then_some(path)
+    ipc::endpoint(dir, sandbox)
 }
 
 /// Whether the spec has a stream route from the guest port to the socket.
@@ -54,15 +60,31 @@ fn routes_to(spec: &SandboxSpec, port: u32, socket: &Path) -> bool {
     })
 }
 
+/// Why there's no endpoint directory.
+#[cfg(unix)]
+const NO_ENDPOINT_DIR: &str = "XDG_RUNTIME_DIR isn't an absolute path";
+
+/// Why there's no endpoint directory.
+#[cfg(windows)]
+const NO_ENDPOINT_DIR: &str = "there's no pipe name for them";
+
 /// Returns the socket directory when it's private to the user, creating it when it's missing.
-/// Logs a warning that sandboxes get no `channel` when there's no directory or it isn't private.
-fn private_dir(dir: Option<PathBuf>, channel: &str) -> Option<PathBuf> {
-    let Some(dir) = dir else {
-        tracing::warn!("XDG_RUNTIME_DIR isn't an absolute path, so sandboxes get no {channel}");
-        return None;
+/// Logs a warning that sandboxes get no `channel` when there's no directory, it can't be named,
+/// or it isn't private.
+fn private_dir(dir: io::Result<Option<PathBuf>>, channel: &str) -> Option<PathBuf> {
+    let dir = match dir {
+        Ok(Some(dir)) => dir,
+        Ok(None) => {
+            tracing::warn!("{NO_ENDPOINT_DIR}, so sandboxes get no {channel}");
+            return None;
+        }
+        Err(err) => {
+            tracing::warn!("sandboxes get no {channel}: {err}");
+            return None;
+        }
     };
 
-    match firebrick_utils::create_private_dir(&dir) {
+    match ipc::prepare_dir(&dir) {
         Ok(()) => {
             tracing::info!("{channel} sockets are in {}", dir.display());
             Some(dir)
@@ -76,26 +98,26 @@ fn private_dir(dir: Option<PathBuf>, channel: &str) -> Option<PathBuf> {
     }
 }
 
-/// Binds the socket at `path` in the private directory `dir`. Checks the directory again first,
-/// since it may have been removed since fbkd started, for example by the cleanup of `/tmp`.
-/// Removes a stale socket file, but fails with [`io::ErrorKind::AddrInUse`] when another process
-/// listens on it.
-async fn bind(dir: &Path, path: &Path) -> io::Result<UnixListener> {
+/// Binds the endpoint at `path` in the private directory `dir`. Checks the directory again
+/// first, since it may have been removed since fbkd started, for example by the cleanup of
+/// `/tmp`. Removes a stale socket file, but fails with [`io::ErrorKind::AddrInUse`] when another
+/// process listens on it.
+async fn bind(dir: &Path, path: &Path) -> io::Result<ipc::Listener> {
     let dir = dir.to_path_buf();
-    tokio::task::spawn_blocking(move || firebrick_utils::create_private_dir(&dir))
+    tokio::task::spawn_blocking(move || ipc::prepare_dir(&dir))
         .await
         .map_err(io::Error::other)??;
 
-    if UnixStream::connect(path).await.is_ok() {
+    if ipc::is_served(path).await {
         return Err(io::Error::new(
             io::ErrorKind::AddrInUse,
             format!("another process listens on {}", path.display()),
         ));
     }
 
-    remove_if_exists(path).await?;
+    ipc::remove(path).await?;
 
-    UnixListener::bind(path)
+    ipc::Listener::bind(path)
 }
 
 /// Removes the file, if there's one, logging a warning when that fails.
@@ -142,15 +164,15 @@ impl Connections {
     /// [`MAX_CONNECTIONS`] connections.
     pub fn accept<F>(
         &mut self,
-        accepted: io::Result<(UnixStream, tokio::net::unix::SocketAddr)>,
-        serve: impl FnOnce(UnixStream) -> F,
+        accepted: io::Result<ipc::Stream>,
+        serve: impl FnOnce(ipc::Stream) -> F,
     ) -> Result<(), Refused>
     where
         F: Future<Output = ()> + Send + 'static,
     {
         match accepted {
             Ok(_) if self.tasks.len() >= MAX_CONNECTIONS => Err(Refused::Full),
-            Ok((stream, _)) => {
+            Ok(stream) => {
                 self.tasks.spawn(serve(stream));
                 Ok(())
             }
@@ -195,8 +217,12 @@ impl<S: Send + Sync + 'static> Listeners<S> {
 
     /// Creates a registry like [`Listeners::new`] with the sockets in `socket_dir` when it's
     /// private to the user, creating it when it's missing. Leaves out a directory that is
-    /// missing or isn't private, with a warning.
-    pub fn private(channel: &'static str, port: u32, socket_dir: Option<PathBuf>) -> Self {
+    /// missing, can't be named or isn't private, with a warning.
+    pub fn private(
+        channel: &'static str,
+        port: u32,
+        socket_dir: io::Result<Option<PathBuf>>,
+    ) -> Self {
         Self::new(channel, port, private_dir(socket_dir, channel))
     }
 
@@ -245,7 +271,7 @@ impl<S: Send + Sync + 'static> Listeners<S> {
         &self,
         sandbox: &str,
         state: impl Future<Output = S>,
-        serve: impl FnOnce(UnixListener, Arc<S>, oneshot::Receiver<()>) -> Fut,
+        serve: impl FnOnce(ipc::Listener, Arc<S>, oneshot::Receiver<()>) -> Fut,
     ) -> io::Result<()>
     where
         Fut: Future<Output = ()> + Send + 'static,
@@ -296,7 +322,7 @@ impl<S: Send + Sync + 'static> Listeners<S> {
     }
 
     /// Binds the sandbox's socket, removing a stale socket file first.
-    async fn bind(&self, sandbox: &str) -> io::Result<UnixListener> {
+    async fn bind(&self, sandbox: &str) -> io::Result<ipc::Listener> {
         let (Some(dir), Some(path)) = (&self.socket_dir, self.socket_path(sandbox)) else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -328,7 +354,11 @@ impl<S: Send + Sync + 'static> Listeners<S> {
             self.stop(sandbox, listening).await;
         }
 
-        remove_logged(self.socket_path(sandbox)).await;
+        if let Some(path) = self.socket_path(sandbox)
+            && let Err(err) = ipc::remove(&path).await
+        {
+            tracing::warn!("failed to remove {}: {err}", path.display());
+        }
     }
 
     /// Stops listening for every sandbox. Run when the daemon shuts down.
@@ -366,14 +396,42 @@ impl<S> Drop for Listeners<S> {
     }
 }
 
+/// Returns the directory of the `channel` endpoints for tests that keep their files in `dir`, a
+/// temp directory of their own: `<dir>/<channel>`, or on Windows a pipe prefix named after `dir`,
+/// which is just as unique.
+#[cfg(test)]
+pub(crate) fn test_endpoint_dir(dir: &Path, channel: &str) -> PathBuf {
+    if cfg!(windows) {
+        let unique = dir.file_name().unwrap_or_default().to_string_lossy();
+        return PathBuf::from(format!(r"\\.\pipe\fbk-test-{unique}-{channel}"));
+    }
+    dir.join(channel)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
-    /// A registry with its sockets in `dir/sockets`.
+    /// Returns an endpoint directory unique to `test`: a directory in a new temp directory, or a
+    /// pipe prefix on Windows.
+    fn endpoint_dir(test: &str) -> (Option<tempfile::TempDir>, PathBuf) {
+        if cfg!(windows) {
+            let pipe = format!(r"\\.\pipe\fbk-vsock-test-{}-{test}", std::process::id());
+            return (None, PathBuf::from(pipe));
+        }
+        let temp = tempfile::TempDir::new().unwrap();
+        let dir = temp.path().join("sockets");
+        (Some(temp), dir)
+    }
+
+    /// A registry with its endpoints in `dir`.
     fn listeners(dir: &Path) -> Listeners<()> {
-        Listeners::new("test", 52999, Some(dir.join("sockets")))
+        Listeners::new("test", 52999, Some(dir.to_path_buf()))
+    }
+
+    /// Accepts connections and closes each one, until accepting fails.
+    async fn close_each(mut listener: ipc::Listener) {
+        while listener.accept().await.is_ok() {}
     }
 
     /// Listens for the sandbox with a listener that closes each connection it accepts.
@@ -381,7 +439,7 @@ mod tests {
         listeners
             .listen(sandbox, async {}, |listener, _, stopped| async move {
                 tokio::select! {
-                    _ = async { while listener.accept().await.is_ok() {} } => {}
+                    () = close_each(listener) => {}
                     _ = stopped => {}
                 }
             })
@@ -390,19 +448,20 @@ mod tests {
 
     #[test]
     fn socket_path_is_none_when_too_long_or_without_a_directory() {
-        let dir = PathBuf::from("/run/user/1000/firebrick/netlog");
+        let (_temp, dir) = endpoint_dir("paths");
 
         assert_eq!(
             socket_path(Some(&dir), "short"),
-            Some(dir.join("short.sock"))
+            ipc::endpoint(&dir, "short")
         );
-        assert!(socket_path(Some(&dir), &"a".repeat(200)).is_none());
+        assert!(socket_path(Some(&dir), "short").is_some());
+        assert!(socket_path(Some(&dir), &"a".repeat(300)).is_none());
         assert!(socket_path(None, "short").is_none());
     }
 
     #[test]
     fn socket_path_is_none_for_a_name_that_leaves_the_directory() {
-        let dir = PathBuf::from("/run/user/1000/firebrick/netlog");
+        let (_temp, dir) = endpoint_dir("names");
 
         for name in ["../../x", "a/b", "..", ".", "", "/etc/x"] {
             assert!(socket_path(Some(&dir), name).is_none(), "{name:?}");
@@ -411,29 +470,30 @@ mod tests {
 
     #[tokio::test]
     async fn listen_leaves_a_live_socket_alone_and_replaces_a_stale_one() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let (first, second) = (listeners(temp.path()), listeners(temp.path()));
+        let (_temp, dir) = endpoint_dir("replace");
+        let (first, second) = (listeners(&dir), listeners(&dir));
         let path = first.socket_path("sb").unwrap();
 
         listen(&first, "sb").await.unwrap();
         let busy = listen(&second, "sb").await.unwrap_err();
         drop(first);
-        // The aborted listener closes its socket once the runtime drops its task.
+        // The aborted listener closes its endpoint once the runtime drops its task.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let replaced = listen(&second, "sb").await;
 
         assert_eq!(busy.kind(), io::ErrorKind::AddrInUse);
         assert!(replaced.is_ok(), "{replaced:?}");
-        assert!(UnixStream::connect(path).await.is_ok());
+        assert!(ipc::connect(&path).await.is_ok());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn listen_refuses_a_socket_directory_with_group_or_other_access() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let dir = temp.path().join("sockets");
+        use std::os::unix::fs::PermissionsExt;
+        let (_temp, dir) = endpoint_dir("open");
         std::fs::create_dir(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let listeners = listeners(temp.path());
+        let listeners = listeners(&dir);
 
         let error = listen(&listeners, "sb").await.unwrap_err();
 
@@ -452,8 +512,8 @@ mod tests {
 
     #[tokio::test]
     async fn remove_runs_before_stop_and_deletes_the_socket() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let listeners = listeners(temp.path());
+        let (_temp, dir) = endpoint_dir("remove");
+        let listeners = listeners(&dir);
         listen(&listeners, "sb").await.unwrap();
         let mut ran = false;
 
@@ -461,26 +521,31 @@ mod tests {
 
         assert!(ran);
         assert!(listeners.state("sb").is_none());
-        assert!(!listeners.socket_path("sb").unwrap().exists());
+        assert!(!ipc::exists(&listeners.socket_path("sb").unwrap()).await);
     }
 
+    #[cfg(unix)]
     #[test]
     fn private_keeps_only_a_private_directory() {
+        use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::TempDir::new().unwrap();
         let private = temp.path().join("private");
         let open = temp.path().join("open");
         std::fs::create_dir(&open).unwrap();
         std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        assert_eq!(private_dir(Some(private.clone()), "test"), Some(private));
-        assert_eq!(private_dir(Some(open), "test"), None);
-        assert_eq!(private_dir(None, "test"), None);
+        assert_eq!(
+            private_dir(Ok(Some(private.clone())), "test"),
+            Some(private)
+        );
+        assert_eq!(private_dir(Ok(Some(open)), "test"), None);
+        assert_eq!(private_dir(Ok(None), "test"), None);
     }
 
     #[tokio::test]
     async fn add_route_adds_a_stream_route_to_the_socket() {
-        let listeners: Listeners<()> =
-            Listeners::new("test", 52999, Some(PathBuf::from("/run/fbk/test")));
+        let (_temp, dir) = endpoint_dir("route");
+        let listeners = listeners(&dir);
         let builder = listeners.add_route(
             microsandbox::Sandbox::builder("sb").image("ubuntu:26.04"),
             "sb",
@@ -499,7 +564,7 @@ mod tests {
     /// Connects `count` clients to the listener at `path` and accepts each into `connections`
     /// with a task that waits for `held` to be released. Returns what each accept returned.
     async fn accept_clients(
-        (path, listener): (&Path, &UnixListener),
+        (path, listener): (&Path, &mut ipc::Listener),
         connections: &mut Connections,
         held: &tokio::sync::watch::Receiver<bool>,
         count: usize,
@@ -507,7 +572,7 @@ mod tests {
         let mut results = Vec::new();
 
         for _ in 0..count {
-            let _client = UnixStream::connect(path).await.unwrap();
+            let _client = ipc::connect(path).await.unwrap();
             let serve = |_| wait_for_release(held.clone());
             results.push(connections.accept(listener.accept().await, serve));
         }
@@ -517,13 +582,14 @@ mod tests {
 
     #[tokio::test]
     async fn connections_close_the_ones_beyond_the_limit() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let path = temp.path().join("sb.sock");
-        let listener = UnixListener::bind(&path).unwrap();
+        let (_temp, dir) = endpoint_dir("limit");
+        ipc::prepare_dir(&dir).unwrap();
+        let path = ipc::endpoint(&dir, "sb").unwrap();
+        let mut listener = ipc::Listener::bind(&path).unwrap();
         let mut connections = Connections::default();
         let (release, held) = tokio::sync::watch::channel(false);
 
-        let socket = (path.as_path(), &listener);
+        let socket = (path.as_path(), &mut listener);
         let results = accept_clients(socket, &mut connections, &held, MAX_CONNECTIONS + 1).await;
         release.send(true).unwrap();
 

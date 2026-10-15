@@ -3,6 +3,10 @@
 //!
 //! They spawn processes, so they live in a test binary of their own: in the unit tests a forked
 //! child can briefly hold the port of a listener another test just closed.
+//!
+//! The stubs are shell scripts, so the tests run on Unix only. `host_tools_windows.rs` runs the
+//! same scenarios on Windows against a stub `powershell.exe`; keep the two in step.
+#![cfg(unix)]
 
 use firebrick_daemon::clipboard::{Cause, Desktop, HostClipboard, HostError, HostTools, Kind};
 use std::os::unix::fs::PermissionsExt;

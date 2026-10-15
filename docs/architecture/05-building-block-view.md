@@ -24,11 +24,13 @@ C4Container
   provisions the SSH keys and writes the SSH config for the sandboxes.
 
 The CLI and daemon speak gRPC (`crates/proto/proto/daemon.v1.proto`) over the
-unix socket `$XDG_RUNTIME_DIR/fbkd.sock`. The workspace is a Cargo workspace
-with five crates: `firebrick-cli`, `firebrick-daemon`, `firebrick-proto`,
-`firebrick-spec` and `firebrick-utils`. The `firebrick-proto` crate generates
-the gRPC client and server code from the proto file, and the CLI and daemon both
-depend on it.
+unix socket `$XDG_RUNTIME_DIR/fbkd.sock`, or on Windows over the named pipe
+`\\.\pipe\firebrick-<SID>-fbkd`, through `firebrick_utils::ipc` (see
+[ADR 0050](decisions/0050-talk-over-named-pipes-on-windows.md)). The workspace
+is a Cargo workspace with five crates: `firebrick-cli`, `firebrick-daemon`,
+`firebrick-proto`, `firebrick-spec` and `firebrick-utils`. The `firebrick-proto`
+crate generates the gRPC client and server code from the proto file, and the CLI
+and daemon both depend on it.
 
 ## Level 2 - CLI
 
@@ -230,8 +232,8 @@ C4Component
     System_Ext(sshconfig, "~/.ssh/config", "OpenSSH config")
     System_Ext(editors, "settings.json", "VS Code-family user settings")
     System_Ext(zedsettings, "zed/settings.json", "Zed user settings")
-    System_Ext(browser, "xdg-open / open", "Host browser")
-    System_Ext(hostclip, "wl-paste / wl-copy / xclip / pbpaste / osascript", "Host clipboard")
+    System_Ext(browser, "xdg-open / open / rundll32", "Host browser")
+    System_Ext(hostclip, "wl-paste / wl-copy / xclip / pbpaste / osascript / powershell", "Host clipboard")
 
     Rel(main, runtime, "Ensures runtime")
     Rel(main, ssh, "Ensures keys")
@@ -275,10 +277,12 @@ C4Component
   `$XDG_STATE_HOME/firebrick`, exits when the socket is already in use, makes
   sure the microsandbox runtime and the SSH keys exist, makes the microsandbox
   `db` directory readable by the user only, syncs the SSH config and serves the
-  API until `SIGINT` or `SIGTERM`. Before serving, `server` reopens the port
-  forwards of the sandboxes that are running and removes the upgrade probes an
-  earlier daemon left behind. When it stops, their listeners close, and it waits
-  up to 60 seconds for updates and upgrades of sandboxes that are still running.
+  API until `SIGINT` or `SIGTERM`, on Windows until Ctrl-C, Ctrl-Break, the
+  console closing or Windows shutting down. Before serving, `server` reopens the
+  port forwards of the sandboxes that are running and removes the upgrade probes
+  an earlier daemon left behind. When it stops, their listeners close, and it
+  waits up to 60 seconds for updates and upgrades of sandboxes that are still
+  running.
 - `server` - Adapts `SandboxManagementService` to the modules below: it converts
   each request into plain values, calls `sandboxes`, `session` or `tunnel`, and
   converts the result into a response. It converts requested resources and
@@ -302,10 +306,11 @@ C4Component
   finishes when the client disconnects, streams the image pull and mise install
   progress and ends the stream with the open and failed forwards, or with the
   error status. It maps the `SandboxError` of `sandboxes` to gRPC status codes
-  in one place. It refuses to start when the socket already exists, gives the
-  socket mode `0600` after binding it and removes it on shutdown. It only hands
-  a connection to tonic when the peer's UID, read with `SO_PEERCRED`, is the
-  daemon's own UID or root (see
+  in one place. It refuses to start when the socket already exists, binds it
+  with `ipc::Listener`, which gives a socket mode `0600` and a pipe an access
+  list for the user and `LocalSystem` only, and removes it on shutdown. It only
+  hands a connection to tonic when the peer runs as the daemon's own user or
+  root, `LocalSystem` on Windows (see
   [Securing the daemon socket](08-crosscutting-concepts.md#securing-the-daemon-socket)).
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
@@ -494,13 +499,14 @@ C4Component
   names. A sandbox whose label can't be read, or one with a network policy that
   predates the label, opens only forwarded loopback URLs. At most 5 URLs per
   sandbox open within 10 seconds. `fbkd` opens the URL as the `url` crate
-  serializes it through an `Opener`; `HostOpener` runs `xdg-open <url>` on Linux
-  and `open <url>` on macOS with `tokio::process`, without a shell, and doesn't
-  wait for it; tests pass an opener that records the URLs. A rejected line is
-  logged at `warn` without the URL, with the reason. A relay that can't start or
-  exits with an error is logged as a warning with its stderr, and an opener that
-  fails is logged as a warning; neither fails the request. Before it opens a
-  URL, `fbkd` forwards its loopback ports into the sandbox with the relay's own
+  serializes it through an `Opener`; `HostOpener` runs `xdg-open <url>` on
+  Linux, `open <url>` on macOS and `rundll32 url.dll,FileProtocolHandler <url>`
+  on Windows with `tokio::process`, without a shell, and doesn't wait for it;
+  tests pass an opener that records the URLs. A rejected line is logged at
+  `warn` without the URL, with the reason. A relay that can't start or exits
+  with an error is logged as a warning with its stderr, and an opener that fails
+  is logged as a warning; neither fails the request. Before it opens a URL,
+  `fbkd` forwards its loopback ports into the sandbox with the relay's own
   `CallbackForwards`, which use a `SshConnector` of their own: the port of the
   URL's own host when that is `localhost`, `127.0.0.1` or `[::1]` with an
   explicit, non-zero port, and the same for the port of a percent-decoded `http`
@@ -518,17 +524,20 @@ C4Component
   `NetLogs::add_route` adds a stream route from guest vsock port `52000` to
   `$XDG_RUNTIME_DIR/firebrick/netlog/<sandbox>.sock`, or on macOS without
   `XDG_RUNTIME_DIR` to `/private/tmp/fbk-<uid>/<sandbox>.sock`
-  ([ADR 0042](decisions/0042-put-the-network-log-sockets-in-a-checked-tmp-directory-on-macos.md)).
-  On Linux without an absolute `XDG_RUNTIME_DIR` there are no sockets: unlike
-  the daemon socket, they never fall back to the shared temp directory, where
-  another user could create the directory first and take them over. `fbkd` logs
-  that once when it starts. `NetLogs::from_env` also creates the directory with
-  mode `0700` through `firebrick_utils::create_private_dir`, which refuses a
-  symlink and a directory owned by another user or with group or other access; a
-  refused directory gives no sandbox a route, with a warning naming it. When the
-  path doesn't fit in a unix socket address (104 bytes on macOS, 108 on Linux),
-  it adds no route either and logs a warning, because microsandbox would refuse
-  to boot the sandbox. `NetLogs::listen` binds the socket unless `fbkd` already
+  ([ADR 0042](decisions/0042-put-the-network-log-sockets-in-a-checked-tmp-directory-on-macos.md)),
+  and on Windows to the pipe `\\.\pipe\firebrick-<SID>-netlog-<sandbox>`, which
+  needs no directory
+  ([ADR 0050](decisions/0050-talk-over-named-pipes-on-windows.md)). On Linux
+  without an absolute `XDG_RUNTIME_DIR` there are no sockets: unlike the daemon
+  socket, they never fall back to the shared temp directory, where another user
+  could create the directory first and take them over. `fbkd` logs that once
+  when it starts. `NetLogs::from_env` also creates the directory with mode
+  `0700` through `firebrick_utils::create_private_dir`, which refuses a symlink
+  and a directory owned by another user or with group or other access; a refused
+  directory gives no sandbox a route, with a warning naming it. When the path
+  doesn't fit in a unix socket address (104 bytes on macOS, 108 on Linux), it
+  adds no route either and logs a warning, because microsandbox would refuse to
+  boot the sandbox. `NetLogs::listen` binds the socket unless `fbkd` already
   listens on it, replacing a listener that stopped, for example because it
   panicked: it checks the directory again the same way, leaves a socket that
   another process answers on alone, and removes a stale socket file first. A
@@ -566,7 +575,8 @@ C4Component
   [Copying to the host clipboard](06-runtime-view.md#copying-to-the-host-clipboard)).
   `Clipboards::add_route` adds a stream route from guest vsock port `52001` to
   `$XDG_RUNTIME_DIR/firebrick/clipboard/<sandbox>.sock`, or on macOS without
-  `XDG_RUNTIME_DIR` to `/private/tmp/fbkc-<uid>/<sandbox>.sock`, and the
+  `XDG_RUNTIME_DIR` to `/private/tmp/fbkc-<uid>/<sandbox>.sock`, or on Windows
+  to the pipe `\\.\pipe\firebrick-<SID>-clipboard-<sandbox>`, and the
   `firebrick-clipboard` script, which microsandbox mounts at
   `/.msb/scripts/firebrick-clipboard`, so the stand-ins can tell a sandbox
   without the setting from an `fbkd` that doesn't answer. The socket directory
@@ -587,24 +597,33 @@ C4Component
   returns more. `HostTools`, the `HostClipboard` of `fbkd`, lists the
   clipboard's types and then reads the requested one with `wl-paste` when
   `WAYLAND_DISPLAY` is set, otherwise with `xclip` when `DISPLAY` is, and with
-  `osascript` and `pbpaste` on macOS (`HostTools::from_env`). It writes it by
-  feeding the content to `wl-copy --type <type>`, `xclip -selection clipboard -t
-  <target> -i`, or on macOS an AppleScript with the content as hex data to
-  `osascript -`. Their stdout goes nowhere, and `fbkd` reads their stderr, for
-  at most 500 milliseconds, only when they fail, because `wl-copy` and `xclip`
-  leave a child behind that serves the clipboard and holds the pipes open; the
-  log line of a failed copy names the exit status and the tool's message. It
-  runs the tools with `tokio::process`, without a shell, stops reading past the
-  limit, and kills them after 4 seconds. A tool that reports an empty clipboard
-  means `empty`; no display, a missing tool and any other failure mean
-  `unavailable` with their cause, logged at `warn` with the reason, at most once
-  a minute per sandbox. `Clipboards::listen` fails when the sandbox has no
-  socket path or the socket can't be bound, and `sandboxes` then refuses to
-  create a sandbox with the setting. The unit tests pass a fake `HostClipboard`;
-  `tests/host_tools.rs` runs `HostTools::new` against stub tools on a `PATH` of
-  its own, in a test binary of its own, because a process spawned in the unit
-  tests can briefly hold the port of a listener that a `forward` test just
-  closed.
+  `osascript` and `pbpaste` on macOS (`HostTools::from_env`). On Windows it runs
+  `powershell.exe -NoProfile` scripts that use the .NET clipboard and write the
+  content to stdout as raw bytes, without a console window (see
+  [ADR 0051](decisions/0051-follow-windows-conventions-for-host-paths-and-tools.md)).
+  It writes it by feeding the content to `wl-copy --type <type>`, `xclip
+  -selection clipboard -t <target> -i`, on macOS an AppleScript with the content
+  as hex data to `osascript -`, or on Windows the raw bytes to a PowerShell
+  script. Their stdout goes nowhere, and `fbkd` reads their stderr, for at most
+  500 milliseconds, only when they fail, because `wl-copy` and `xclip` leave a
+  child behind that serves the clipboard and holds the pipes open; the log line
+  of a failed copy names the exit status and the tool's message. It runs the
+  tools with `tokio::process`, without a shell, stops reading past the limit,
+  and kills them after 4 seconds. A tool that reports an empty clipboard means
+  `empty`; no display, a missing tool and any other failure mean `unavailable`
+  with their cause, logged at `warn` with the reason, at most once a minute per
+  sandbox. `Clipboards::listen` fails when the sandbox has no socket path or the
+  socket can't be bound, and `sandboxes` then refuses to create a sandbox with
+  the setting. The unit tests pass a fake `HostClipboard`; `tests/host_tools.rs`
+  runs `HostTools::new` against stub tools on a `PATH` of its own, in a test
+  binary of its own, because a process spawned in the unit tests can briefly
+  hold the port of a listener that a `forward` test just closed. Its stubs are
+  shell scripts, so it runs on Unix only; `tests/host_tools_windows.rs` runs the
+  same scenarios on Windows against a stub `powershell.exe` that Windows
+  PowerShell compiles from C# once per run. The Unix scenarios of a missing tool
+  or display, a copy tool that leaves a child behind, and `osascript` have no
+  Windows counterpart, because PowerShell is part of Windows, which always has a
+  desktop, and PowerShell doesn't fork.
 - `vsock` - The listeners behind the vsock routes of `netlog` and `clipboard`.
   `Listeners<S>` keeps one listener per sandbox for a channel, with the state
   `S` it shares with the channel, such as the network record. It knows the
@@ -738,17 +757,27 @@ C4Component
   (`$XDG_RUNTIME_DIR/fbkd.sock`), the log directory
   (`$XDG_STATE_HOME/firebrick`), the SSH directory
   (`$XDG_DATA_HOME/firebrick/ssh`) and the secrets file
-  (`$XDG_DATA_HOME/firebrick/secrets.yml`), each falling back to `HOME`.
-  `netlog_socket_dir` and `clipboard_socket_dir` return the directories of the
-  sockets behind the vsock routes, which never fall back to the temp directory.
-  The log, SSH and secrets paths are `None` when neither variable is an absolute
-  path, never the temp dir, and `missing_dir` returns the error the daemon would
-  exit with. It also holds `is_trusted_peer`, the rule that only the same user
-  and root may be on the other end of the daemon socket, and `sanitize_label`,
-  which turns a directory's leaf into a lowercase DNS label (or `sandbox` when
-  nothing is left), so the SSH host names and the name `fbk init` writes match,
-  and `strip_control`, which removes terminal control characters from guest
-  output before the daemon puts it in an error message or a log line.
+  (`$XDG_DATA_HOME/firebrick/secrets.yml`), each falling back to `HOME`, or on
+  Windows to `%LOCALAPPDATA%\firebrick` (see
+  [ADR 0051](decisions/0051-follow-windows-conventions-for-host-paths-and-tools.md)).
+  Its `ipc` module is the transport between `fbk`, `fbkd` and microsandbox: unix
+  sockets, or named pipes on Windows, with a check of the user at the other end
+  on both sides. `make_private_dir` and `write_private` give directories and
+  files mode `0700` and `0600`, or on Windows a protected access list for the
+  user, `LocalSystem` and the administrators, and `keep_stdio_from_children`
+  stops the daemon `fbk` starts from inheriting its stdio handles on Windows.
+  Its `win32` module holds the Win32 calls behind these and the pipes, the only
+  `unsafe` code in the workspace besides `fbkd`'s `set_var`. `netlog_socket_dir`
+  and `clipboard_socket_dir` return the directories of the sockets behind the
+  vsock routes, which never fall back to the temp directory. The log, SSH and
+  secrets paths are `None` when neither variable is an absolute path, never the
+  temp dir, and `missing_dir` returns the error the daemon would exit with. It
+  also holds `is_trusted_peer`, the rule that only the same user and root may be
+  on the other end of the daemon socket, and `sanitize_label`, which turns a
+  directory's leaf into a lowercase DNS label (or `sandbox` when nothing is
+  left), so the SSH host names and the name `fbk init` writes match, and
+  `strip_control`, which removes terminal control characters from guest output
+  before the daemon puts it in an error message or a log line.
 
 The image, init, mise setting, resources, network rules, mounts and clipboard
 setting apply when a sandbox is created. Changing them in `.firebrick.yml`

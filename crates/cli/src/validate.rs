@@ -93,11 +93,19 @@ mod tests {
     #[test]
     fn symlinked_spec_returns_error() {
         for content in [Some("name: dev\n"), None] {
-            let (dir, _target) = symlinked_spec::workspace(content);
-
-            let err = validate_spec(dir.path()).unwrap_err();
-
-            assert_eq!(err.to_string(), symlinked_spec::SYMLINK_ERROR);
+            assert_refuses_symlinked_spec(content);
         }
+    }
+
+    /// Asserts that validating refuses a `.firebrick.yml` that links to a file with `content`,
+    /// or a missing one.
+    fn assert_refuses_symlinked_spec(content: Option<&str>) {
+        let Some((dir, _target)) = symlinked_spec::workspace(content) else {
+            return;
+        };
+
+        let err = validate_spec(dir.path()).unwrap_err();
+
+        assert_eq!(err.to_string(), symlinked_spec::SYMLINK_ERROR);
     }
 }
