@@ -12,7 +12,8 @@ use russh::keys::{Algorithm, PrivateKey};
 use std::collections::HashSet;
 use std::fs;
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 /// Sandbox label that stores the sandbox's SSH host name.
@@ -47,7 +48,7 @@ pub fn ensure_keys() -> Result<()> {
     let dir = ssh_dir()?;
 
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    make_private(&dir)?;
 
     let client_key = load_or_create_key(&dir.join(CLIENT_KEY_FILE))?;
     write_file(
@@ -72,10 +73,8 @@ fn load_or_create_key(path: &Path) -> Result<PrivateKey> {
         Err(err) if err.kind() == ErrorKind::NotFound => {
             let key = PrivateKey::random(&mut russh::keys::key::safe_rng(), Algorithm::Ed25519)?;
 
-            let mut file = fs::OpenOptions::new()
-                .write(true)
+            let mut file = private_file_options()
                 .create_new(true)
-                .mode(0o600)
                 .open(path)
                 .with_context(|| format!("failed to create SSH key {}", path.display()))?;
             file.write_all(key.to_openssh(LineEnding::LF)?.as_bytes())?;
@@ -121,8 +120,37 @@ pub fn sync_config(hostnames: &[String]) -> Result<()> {
     atomic_file::write(&config_path, &config, 0o600)
         .with_context(|| format!("failed to write {}", config_path.display()))?;
 
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    ensure_include(&PathBuf::from(home).join(".ssh/config"), &config_path)
+    let home = std::env::var_os(HOME_VAR).with_context(|| format!("{HOME_VAR} is not set"))?;
+    ensure_include(
+        &PathBuf::from(home).join(".ssh").join("config"),
+        &config_path,
+    )
+}
+
+/// The environment variable that holds the user's home directory, which holds `.ssh`.
+#[cfg(unix)]
+const HOME_VAR: &str = "HOME";
+
+/// The environment variable that holds the user's home directory, which holds `.ssh`.
+#[cfg(windows)]
+const HOME_VAR: &str = "USERPROFILE";
+
+/// Returns the path as it goes into an SSH config. On Windows that's with forward slashes,
+/// which Win32-OpenSSH accepts and which aren't escapes inside quotes.
+fn config_path(path: &Path) -> String {
+    let path = path.display().to_string();
+
+    if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path
+    }
+}
+
+/// Makes the directory accessible only to the user: mode `0700`, or on Windows an access list
+/// that the keys in it inherit, which Win32-OpenSSH requires of a private key.
+fn make_private(dir: &Path) -> std::io::Result<()> {
+    firebrick_utils::make_private_dir(dir)
 }
 
 /// Renders a host block per sandbox that tunnels through `fbk ssh-proxy`.
@@ -142,9 +170,9 @@ fn render_config(hostnames: &[String], ssh_dir: &Path, cli: &Path) -> String {
              IdentitiesOnly yes\n  \
              UserKnownHostsFile \"{known_hosts}\"\n  \
              StrictHostKeyChecking yes\n",
-            cli = cli.display(),
-            identity = ssh_dir.join(CLIENT_KEY_FILE).display(),
-            known_hosts = ssh_dir.join(KNOWN_HOSTS_FILE).display(),
+            cli = config_path(cli),
+            identity = config_path(&ssh_dir.join(CLIENT_KEY_FILE)),
+            known_hosts = config_path(&ssh_dir.join(KNOWN_HOSTS_FILE)),
         ));
     }
 
@@ -154,7 +182,7 @@ fn render_config(hostnames: &[String], ssh_dir: &Path, cli: &Path) -> String {
 /// Adds an `Include` line for the generated config to the top of the user's SSH config,
 /// unless it's already there. The include must come before any `Host` block to apply.
 fn ensure_include(user_config: &Path, include: &Path) -> Result<()> {
-    let include_line = format!("Include \"{}\"", include.display());
+    let include_line = format!("Include \"{}\"", config_path(include));
 
     let existing = read_user_config(user_config)?;
 
@@ -178,7 +206,7 @@ fn read_user_config(path: &Path) -> Result<String> {
         Err(err) if err.kind() == ErrorKind::NotFound => {
             if let Some(dir) = path.parent() {
                 fs::create_dir_all(dir)?;
-                fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+                make_private(dir)?;
             }
             Ok(String::new())
         }
@@ -186,13 +214,12 @@ fn read_user_config(path: &Path) -> Result<String> {
     }
 }
 
-/// Writes a file that only the user can read, keeping the permissions of an existing file.
+/// Writes a file that only the user can read, keeping the permissions of an existing file. On
+/// Windows a new file inherits the access list of its directory in the user's profile.
 fn write_file(path: &Path, content: &str) -> Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
+    let mut file = private_file_options()
         .create(true)
         .truncate(true)
-        .mode(0o600)
         .open(path)
         .with_context(|| format!("failed to write {}", path.display()))?;
     file.write_all(content.as_bytes())?;
@@ -200,11 +227,22 @@ fn write_file(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
+/// Returns options that open a file for writing and create it with mode `0600` on Unix. On
+/// Windows a new file inherits the access list of its directory in the user's profile.
+fn private_file_options() -> fs::OpenOptions {
+    let mut options = fs::OpenOptions::new();
+    options.write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options
+}
+
 /// Returns the CLI binary next to the daemon, or falls back to looking it up on `PATH`.
 fn cli_binary() -> PathBuf {
+    let file_name = format!("{CLI_BINARY}{}", std::env::consts::EXE_SUFFIX);
     std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(CLI_BINARY)))
+        .and_then(|exe| exe.parent().map(|dir| dir.join(&file_name)))
         .filter(|path| path.is_file())
         .unwrap_or_else(|| PathBuf::from(CLI_BINARY))
 }
@@ -212,6 +250,8 @@ fn cli_binary() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     fn taken(names: &[&str]) -> HashSet<String> {
@@ -295,7 +335,9 @@ mod tests {
 
         ensure_include(&user_config, Path::new("/data/firebrick/ssh/config")).unwrap();
 
+        #[cfg(unix)]
         let mode = fs::metadata(&user_config).unwrap().permissions().mode();
+        #[cfg(unix)]
         assert_eq!(mode & 0o777, 0o600);
         assert!(
             fs::read_to_string(&user_config)
@@ -305,6 +347,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn failed_write_leaves_config_unchanged() {
         let dir = TempDir::new().unwrap();
         let ssh_dir = dir.path().join(".ssh");
@@ -327,6 +370,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn symlinked_config_stays_symlink() {
         let dir = TempDir::new().unwrap();
         let dotfiles = dir.path().join("dotfiles/ssh_config");
@@ -347,6 +391,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn dangling_symlink_is_left_alone() {
         let dir = TempDir::new().unwrap();
         let user_config = dir.path().join(".ssh/config");
@@ -365,6 +410,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn existing_config_keeps_mode() {
         let dir = TempDir::new().unwrap();
         let user_config = dir.path().join(".ssh/config");
@@ -375,6 +421,7 @@ mod tests {
 
         ensure_include(&user_config, Path::new("/data/firebrick/ssh/config")).unwrap();
 
+        #[cfg(unix)]
         let mode = fs::metadata(&user_config).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o640);
     }
@@ -388,7 +435,9 @@ mod tests {
         let loaded = load_or_create_key(&path).unwrap();
 
         assert_eq!(created.public_key(), loaded.public_key());
+        #[cfg(unix)]
         let mode = fs::metadata(&path).unwrap().permissions().mode();
+        #[cfg(unix)]
         assert_eq!(mode & 0o777, 0o600);
     }
 }

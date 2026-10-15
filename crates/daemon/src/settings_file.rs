@@ -48,7 +48,7 @@ pub(crate) fn config_root_or(platform_root: impl FnOnce() -> Option<PathBuf>) ->
 }
 
 /// Returns `$XDG_CONFIG_HOME`, or `~/.config` when it isn't set.
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 pub(crate) fn xdg_config_home() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .filter(|dir| !dir.is_empty())
@@ -57,8 +57,17 @@ pub(crate) fn xdg_config_home() -> Option<PathBuf> {
 }
 
 /// Returns `~/.config`.
+#[cfg(unix)]
 pub(crate) fn home_config() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config"))
+}
+
+/// Returns `%APPDATA%`, where Windows applications keep the settings that roam with the user.
+#[cfg(windows)]
+pub(crate) fn app_data() -> Option<PathBuf> {
+    std::env::var_os("APPDATA")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
 }
 
 /// Reads a settings file, treating a missing file as empty. A symlink to a missing file is an

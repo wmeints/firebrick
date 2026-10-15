@@ -37,8 +37,10 @@ fn spec_name(working_dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::symlinked_spec;
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
@@ -149,6 +151,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn refuses_a_symlinked_spec_and_leaves_its_target_alone() {
         for (content, force) in [
             (Some("notes\n"), false),
@@ -166,6 +169,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn write_failure_names_the_path() {
         let (_root, dir) = project_dir("project");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();

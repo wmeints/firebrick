@@ -45,9 +45,10 @@ Firebrick consists of two executables:
   when it isn't running.
 
 The CLI and daemon talk gRPC over a unix socket (`$XDG_RUNTIME_DIR/fbkd.sock`,
-or `fbkd.sock` in the temp directory when `XDG_RUNTIME_DIR` isn't set). The
-daemon mounts the working directory read/write in the sandbox at
-`/workspaces/<leaf>`, where `<leaf>` is the name of the directory.
+or `fbkd.sock` in the temp directory when `XDG_RUNTIME_DIR` isn't set), or on
+Windows over a named pipe that only your user can open. The daemon mounts the
+working directory read/write in the sandbox at `/workspaces/<leaf>`, where
+`<leaf>` is the name of the directory.
 
 `fbkd` embeds the microsandbox runtime and installs it in its own microsandbox
 home, `~/.local/state/firebrick/msb` (or `$XDG_STATE_HOME/firebrick/msb`), on
@@ -88,8 +89,8 @@ in an editor on the host.
 - Linux with KVM, on x86_64 or ARM64. The release binaries need glibc 2.35 or
   newer.
 - macOS on Apple Silicon.
-- Windows 11 through WSL 2 with nested virtualization, which runs the Linux
-  release.
+- Windows 11 on x64 with the Windows Hypervisor Platform, as a preview, or
+  through WSL 2 with nested virtualization, which runs the Linux release.
 
 See [System requirements](/docs/installation/#system-requirements) for what each
 platform needs and how to check your machine.

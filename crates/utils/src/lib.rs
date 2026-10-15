@@ -1,8 +1,14 @@
-//! File locations, naming rules and text helpers shared by the Firebrick CLI and daemon.
+//! File locations, local endpoints, naming rules and text helpers shared by the Firebrick CLI
+//! and daemon.
+
+pub mod ipc;
+#[cfg(windows)]
+mod win32;
 
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -10,64 +16,156 @@ use std::path::{Path, PathBuf};
 const FALLBACK_LABEL: &str = "sandbox";
 
 /// Error for when neither `XDG_DATA_HOME` nor `HOME` is an absolute path.
+#[cfg(unix)]
 pub const NO_DATA_DIR: &str =
     "can't choose a data directory: set HOME or XDG_DATA_HOME to an absolute path";
 
+/// Error for when neither `XDG_DATA_HOME` nor `LOCALAPPDATA` is an absolute path.
+#[cfg(windows)]
+pub const NO_DATA_DIR: &str =
+    "can't choose a data directory: set LOCALAPPDATA or XDG_DATA_HOME to an absolute path";
+
 /// Error for when neither `XDG_STATE_HOME` nor `HOME` is an absolute path.
+#[cfg(unix)]
 pub const NO_LOG_DIR: &str =
     "can't choose a log directory: set HOME or XDG_STATE_HOME to an absolute path";
 
-/// Returns the path of the daemon's unix socket.
+/// Error for when neither `XDG_STATE_HOME` nor `LOCALAPPDATA` is an absolute path.
+#[cfg(windows)]
+pub const NO_LOG_DIR: &str =
+    "can't choose a log directory: set LOCALAPPDATA or XDG_STATE_HOME to an absolute path";
+
+/// Error for when neither `XDG_CONFIG_HOME` nor `HOME` is an absolute path.
+#[cfg(unix)]
+pub const NO_CONFIG_DIR: &str =
+    "can't find the firebrick config directory: set HOME or XDG_CONFIG_HOME to an absolute path";
+
+/// Error for when neither `XDG_CONFIG_HOME` nor `APPDATA` is an absolute path.
+#[cfg(windows)]
+pub const NO_CONFIG_DIR: &str = "can't find the firebrick config directory: set APPDATA or \
+                                 XDG_CONFIG_HOME to an absolute path";
+
+/// Returns the daemon's endpoint (see [`ipc`]): the unix socket `$XDG_RUNTIME_DIR/fbkd.sock`,
+/// falling back to the temp directory.
+#[cfg(unix)]
 pub fn socket_path() -> PathBuf {
     runtime_dir_from(&env_var).join("fbkd.sock")
 }
 
-/// Returns the directory holding the unix sockets that sandboxes report their network activity
-/// to: `$XDG_RUNTIME_DIR/firebrick/netlog`, falling back to `/private/tmp/fbk-<uid>` on macOS,
-/// which has no `XDG_RUNTIME_DIR`.
+/// Returns the daemon's endpoint (see [`ipc`]): the named pipe `<prefix>-fbkd`, where the prefix
+/// is `\\.\pipe\firebrick-<SID of the user>` unless `FIREBRICK_PIPE_PREFIX` names another pipe.
+/// The name is predictable, so it's [`ipc`] that keeps other users from serving or using it.
+#[cfg(windows)]
+pub fn socket_path() -> PathBuf {
+    let prefix = pipe_prefix().unwrap_or_else(|| PathBuf::from(r"\\.\pipe\firebrick"));
+    with_suffix(&prefix, "-fbkd")
+}
+
+/// Returns the directory of the endpoints that sandboxes report their network activity to (see
+/// [`ipc::endpoint`]): `$XDG_RUNTIME_DIR/firebrick/netlog`, falling back to
+/// `/private/tmp/fbk-<uid>` on macOS, which has no `XDG_RUNTIME_DIR`, and the pipe name
+/// `<prefix>-netlog` on Windows, with the prefix of [`socket_path`].
 ///
-/// Returns `None` on other platforms when `XDG_RUNTIME_DIR` isn't an absolute path. Unlike
+/// Returns `None` on Linux when `XDG_RUNTIME_DIR` isn't an absolute path. Unlike
 /// [`socket_path`], it never falls back to the temp directory, whose path on macOS is too long
 /// for the sockets of long sandbox names. The macOS directory is in the shared `/tmp`, where
-/// another user could create it first, so check it with [`create_private_dir`] before use.
+/// another user could create it first, so check it with [`ipc::prepare_dir`] before use.
 pub fn netlog_socket_dir() -> Option<PathBuf> {
     socket_dir(NETLOG_SOCKETS)
 }
 
-/// Returns the directory holding the unix sockets that sandboxes read the host clipboard
-/// through: `$XDG_RUNTIME_DIR/firebrick/clipboard`, falling back to `/private/tmp/fbkc-<uid>` on
-/// macOS, which has no `XDG_RUNTIME_DIR`.
+/// Returns the directory of the endpoints that sandboxes read the host clipboard through (see
+/// [`ipc::endpoint`]): `$XDG_RUNTIME_DIR/firebrick/clipboard`, falling back to
+/// `/private/tmp/fbkc-<uid>` on macOS, which has no `XDG_RUNTIME_DIR`, and the pipe name
+/// `<prefix>-clipboard` on Windows.
 ///
 /// Like [`netlog_socket_dir`], it never falls back to the temp directory and returns `None` on
-/// other platforms without an absolute `XDG_RUNTIME_DIR`. The macOS directory sits next to the
-/// network log's instead of inside it, so the sockets of 63-character sandbox names still fit in
-/// a unix socket address. Check it with [`create_private_dir`] before use.
+/// Linux without an absolute `XDG_RUNTIME_DIR`. The macOS directory sits next to the network
+/// log's instead of inside it, so the sockets of 63-character sandbox names still fit in a unix
+/// socket address. Check it with [`ipc::prepare_dir`] before use.
 pub fn clipboard_socket_dir() -> Option<PathBuf> {
     socket_dir(CLIPBOARD_SOCKETS)
 }
 
-/// Where the sockets of one vsock channel live.
+/// Where the endpoints of one vsock channel live.
 #[derive(Debug, Clone, Copy)]
 struct SocketDir {
     /// The directory under `$XDG_RUNTIME_DIR`.
+    #[cfg(unix)]
     runtime_subdir: &'static str,
     /// The start of the directory in `/private/tmp` on macOS, followed by the user's UID.
+    #[cfg(unix)]
     macos_prefix: &'static str,
+    /// What follows the pipe prefix on Windows.
+    #[cfg(windows)]
+    pipe_suffix: &'static str,
 }
 
-/// The sockets of the network log.
+/// The endpoints of the network log.
 const NETLOG_SOCKETS: SocketDir = SocketDir {
+    #[cfg(unix)]
     runtime_subdir: "firebrick/netlog",
+    #[cfg(unix)]
     macos_prefix: "fbk-",
+    #[cfg(windows)]
+    pipe_suffix: "-netlog",
 };
 
-/// The sockets of the clipboard.
+/// The endpoints of the clipboard.
 const CLIPBOARD_SOCKETS: SocketDir = SocketDir {
+    #[cfg(unix)]
     runtime_subdir: "firebrick/clipboard",
+    #[cfg(unix)]
     macos_prefix: "fbkc-",
+    #[cfg(windows)]
+    pipe_suffix: "-clipboard",
 };
+
+/// Returns the pipe name of the channel's endpoints.
+#[cfg(windows)]
+fn socket_dir(sockets: SocketDir) -> Option<PathBuf> {
+    pipe_prefix().map(|prefix| with_suffix(&prefix, sockets.pipe_suffix))
+}
+
+/// Returns the start of the names of firebrick's pipes for the current user.
+#[cfg(windows)]
+fn pipe_prefix() -> Option<PathBuf> {
+    let user = win32::Sid::current_user().ok().map(|sid| sid.to_string());
+    pipe_prefix_from(&env_var, user.as_deref())
+}
+
+/// Returns the start of the pipe names for the environment that `var` describes: the value of
+/// `FIREBRICK_PIPE_PREFIX` when it's a local pipe name, which isolates test daemons, and
+/// otherwise `\\.\pipe\firebrick-<user>`, or `None` without a user.
+#[cfg(windows)]
+fn pipe_prefix_from(
+    var: &impl Fn(&str) -> Option<OsString>,
+    user: Option<&str>,
+) -> Option<PathBuf> {
+    const PIPES: &str = r"\\.\pipe\";
+    let is_pipe = |name: &str| {
+        name.get(..PIPES.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(PIPES))
+            && name.len() > PIPES.len()
+    };
+
+    var("FIREBRICK_PIPE_PREFIX")
+        .and_then(|prefix| prefix.into_string().ok())
+        .filter(|prefix| is_pipe(prefix))
+        .map(PathBuf::from)
+        .or_else(|| user.map(|user| PathBuf::from(format!("{PIPES}firebrick-{user}"))))
+}
+
+/// Returns the pipe name `name` with `suffix` appended.
+#[cfg(windows)]
+fn with_suffix(name: &Path, suffix: &str) -> PathBuf {
+    let mut name = name.as_os_str().to_owned();
+    name.push(suffix);
+    name.into()
+}
 
 /// Returns the socket directory of the channel in fbkd's environment.
+#[cfg(unix)]
 fn socket_dir(sockets: SocketDir) -> Option<PathBuf> {
     let uid = nix::unistd::geteuid().as_raw();
     socket_dir_from(&env_var, cfg!(target_os = "macos"), uid, sockets)
@@ -76,6 +174,7 @@ fn socket_dir(sockets: SocketDir) -> Option<PathBuf> {
 /// Returns the socket directory of the channel for the environment that `var` describes, on
 /// macOS when `macos` is set, for the user `uid`. The macOS directory is canonical, because
 /// microsandbox refuses host paths that go through a symlink, such as `/tmp`.
+#[cfg(unix)]
 fn socket_dir_from(
     var: &impl Fn(&str) -> Option<OsString>,
     macos: bool,
@@ -91,11 +190,13 @@ fn socket_dir_from(
 /// the effective user: a directory, not a symlink, owned by the user and without group or
 /// other access. Fails with [`io::ErrorKind::PermissionDenied`] when it isn't, so the caller
 /// never uses a directory that another user created first. Every error names the directory.
+#[cfg(unix)]
 pub fn create_private_dir(dir: &Path) -> io::Result<()> {
     create_private_dir_for(dir, nix::unistd::geteuid().as_raw())
 }
 
 /// Creates the directory like [`create_private_dir`] and checks that it's private to `uid`.
+#[cfg(unix)]
 fn create_private_dir_for(dir: &Path, uid: u32) -> io::Result<()> {
     match fs::DirBuilder::new()
         .recursive(true)
@@ -129,12 +230,14 @@ fn create_private_dir_for(dir: &Path, uid: u32) -> io::Result<()> {
 }
 
 /// Returns the error with what failed for which path in front of its message.
+#[cfg(unix)]
 fn with_path(err: io::Error, action: &str, path: &Path) -> io::Error {
     io::Error::new(err.kind(), format!("{action} {}: {err}", path.display()))
 }
 
 /// Returns `$XDG_RUNTIME_DIR`, falling back to the temp directory, for the environment that
 /// `var` describes.
+#[cfg(unix)]
 fn runtime_dir_from(var: &impl Fn(&str) -> Option<OsString>) -> PathBuf {
     var("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -142,7 +245,8 @@ fn runtime_dir_from(var: &impl Fn(&str) -> Option<OsString>) -> PathBuf {
 }
 
 /// Returns the directory the daemon records the network activity of sandboxes in:
-/// `$XDG_STATE_HOME/firebrick/network`, falling back to `$HOME/.local/state/firebrick/network`.
+/// `$XDG_STATE_HOME/firebrick/network`, falling back to `$HOME/.local/state/firebrick/network`,
+/// or `%LOCALAPPDATA%\firebrick\state\network` on Windows.
 ///
 /// Returns `None` when neither variable is an absolute path, like [`log_dir`].
 pub fn network_log_dir() -> Option<PathBuf> {
@@ -175,13 +279,14 @@ fn missing_dir_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<&'static 
 /// Returns whether a peer on the daemon socket running as `peer_uid` is trusted by a process
 /// running as `own_uid`: only the same user and root are. The daemon applies this to its
 /// clients and the CLI to the daemon. Root is trusted because it can bypass the check anyway,
-/// for example by reading the other process's memory.
+/// for example by reading the other process's memory. [`ipc`] applies it on Unix.
+#[cfg(unix)]
 pub fn is_trusted_peer(peer_uid: u32, own_uid: u32) -> bool {
     peer_uid == own_uid || peer_uid == 0
 }
 
 /// Returns the directory the daemon writes its log files to: `$XDG_STATE_HOME/firebrick`,
-/// falling back to `$HOME/.local/state/firebrick`.
+/// falling back to `$HOME/.local/state/firebrick`, or `%LOCALAPPDATA%\firebrick\state` on Windows.
 ///
 /// Returns `None` when neither variable is an absolute path, so the logs never end up in a
 /// temp directory that other users can create first.
@@ -191,12 +296,13 @@ pub fn log_dir() -> Option<PathBuf> {
 
 /// Returns the log directory for the environment that `var` describes.
 fn log_dir_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
-    base_dir(var, "XDG_STATE_HOME", ".local/state").map(|state| state.join("firebrick"))
+    firebrick_dir(var, STATE)
 }
 
 /// Returns the microsandbox home the daemon uses when `MSB_HOME` isn't set, so it never shares
 /// the runtime, database and sandboxes of a separately installed `msb` in `~/.microsandbox`:
-/// `$XDG_STATE_HOME/firebrick/msb`, falling back to `$HOME/.local/state/firebrick/msb`.
+/// `$XDG_STATE_HOME/firebrick/msb`, falling back to `$HOME/.local/state/firebrick/msb`, or
+/// `%LOCALAPPDATA%\firebrick\state\msb` on Windows.
 ///
 /// Returns `None` when neither variable is an absolute path. The home holds the `msb` binary
 /// the daemon runs, so it must not end up in the current directory, which is often a workspace
@@ -211,16 +317,76 @@ fn msb_home_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     log_dir_from(var).map(|dir| dir.join("msb"))
 }
 
-/// Returns the XDG base directory in `xdg_var`, falling back to `home_subdir` in `$HOME`, with
-/// environment variables looked up through `var`. Empty and relative values are ignored, as
-/// the XDG Base Directory spec requires.
-fn base_dir(
-    var: &impl Fn(&str) -> Option<OsString>,
-    xdg_var: &str,
-    home_subdir: &str,
-) -> Option<PathBuf> {
-    absolute_var(var, xdg_var)
-        .or_else(|| absolute_var(var, "HOME").map(|home| home.join(home_subdir)))
+/// Where one kind of firebrick directory lives.
+#[derive(Debug, Clone, Copy)]
+struct BaseDir {
+    /// The XDG base directory variable, which wins on every platform.
+    xdg_var: &'static str,
+    /// The XDG base directory's default under `$HOME`.
+    #[cfg(unix)]
+    home_subdir: &'static str,
+    /// The known folder variable that holds the directory on Windows.
+    #[cfg(windows)]
+    windows_var: &'static str,
+    /// The firebrick directory under the known folder.
+    #[cfg(windows)]
+    windows_subdir: &'static str,
+}
+
+/// The daemon's persistent data: the secrets and SSH keys.
+const DATA: BaseDir = BaseDir {
+    xdg_var: "XDG_DATA_HOME",
+    #[cfg(unix)]
+    home_subdir: ".local/share",
+    #[cfg(windows)]
+    windows_var: "LOCALAPPDATA",
+    #[cfg(windows)]
+    windows_subdir: r"firebrick\data",
+};
+
+/// The daemon's logs, network records and microsandbox home.
+const STATE: BaseDir = BaseDir {
+    xdg_var: "XDG_STATE_HOME",
+    #[cfg(unix)]
+    home_subdir: ".local/state",
+    #[cfg(windows)]
+    windows_var: "LOCALAPPDATA",
+    #[cfg(windows)]
+    windows_subdir: r"firebrick\state",
+};
+
+/// The CLI's approvals.
+const CONFIG: BaseDir = BaseDir {
+    xdg_var: "XDG_CONFIG_HOME",
+    #[cfg(unix)]
+    home_subdir: ".config",
+    #[cfg(windows)]
+    windows_var: "APPDATA",
+    #[cfg(windows)]
+    windows_subdir: "firebrick",
+};
+
+/// Returns the firebrick directory of the kind `base`, with environment variables looked up
+/// through `var`: `firebrick` in the XDG base directory, falling back to the platform's default
+/// (see [`platform_dir`]). Empty and relative values are ignored, as the XDG Base Directory
+/// spec requires.
+fn firebrick_dir(var: &impl Fn(&str) -> Option<OsString>, base: BaseDir) -> Option<PathBuf> {
+    absolute_var(var, base.xdg_var)
+        .map(|dir| dir.join("firebrick"))
+        .or_else(|| platform_dir(var, base))
+}
+
+/// Returns the firebrick directory under the XDG base directory's default in `$HOME`.
+#[cfg(unix)]
+fn platform_dir(var: &impl Fn(&str) -> Option<OsString>, base: BaseDir) -> Option<PathBuf> {
+    absolute_var(var, "HOME").map(|home| home.join(base.home_subdir).join("firebrick"))
+}
+
+/// Returns the firebrick directory under the known folder, such as `%LOCALAPPDATA%`. Ignores
+/// `HOME`, which Git Bash sets, so `fbk` finds the same daemon from every shell.
+#[cfg(windows)]
+fn platform_dir(var: &impl Fn(&str) -> Option<OsString>, base: BaseDir) -> Option<PathBuf> {
+    absolute_var(var, base.windows_var).map(|dir| dir.join(base.windows_subdir))
 }
 
 /// Returns the value of the environment variable `key` when it's an absolute path.
@@ -249,7 +415,7 @@ pub fn secrets_path() -> Option<PathBuf> {
 
 /// Returns the file `fbk` records the approved mounts and network settings of each workspace
 /// in: `$XDG_CONFIG_HOME/firebrick/approved.yml`, falling back to
-/// `$HOME/.config/firebrick/approved.yml`.
+/// `$HOME/.config/firebrick/approved.yml`, or `%APPDATA%\firebrick\approved.yml` on Windows.
 ///
 /// Returns `None` when neither variable is an absolute path. Sandboxes mount the workspace, so
 /// the file must never end up in the current directory or a temp directory, where an agent
@@ -260,11 +426,11 @@ pub fn approvals_path() -> Option<PathBuf> {
 
 /// Returns the approvals file for the environment that `var` describes.
 fn approvals_path_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
-    base_dir(var, "XDG_CONFIG_HOME", ".config").map(|config| config.join("firebrick/approved.yml"))
+    firebrick_dir(var, CONFIG).map(|config| config.join("approved.yml"))
 }
 
 /// Returns the directory holding the daemon's persistent data: `$XDG_DATA_HOME/firebrick`,
-/// falling back to `$HOME/.local/share/firebrick`.
+/// falling back to `$HOME/.local/share/firebrick`, or `%LOCALAPPDATA%\firebrick\data` on Windows.
 ///
 /// Returns `None` when neither variable is an absolute path, so the secrets and SSH keys never
 /// end up in a temp directory that other users can create first.
@@ -274,29 +440,90 @@ fn data_dir() -> Option<PathBuf> {
 
 /// Returns the data directory for the environment that `var` describes.
 fn data_dir_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
-    base_dir(var, "XDG_DATA_HOME", ".local/share").map(|data| data.join("firebrick"))
+    firebrick_dir(var, DATA)
 }
 
 /// Replaces a file with `content` that only the user can read, without leaving a partial file.
+/// On Windows the file inherits the access list of its directory, which in the user's profile
+/// grants access to the user, administrators and `LocalSystem` only.
 pub fn write_private(path: &Path, content: &str) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
 
     let temp_path = path.with_extension("tmp");
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temp_path)?;
-
-    // The mode only applies to new files, so fix a temp file left over with other permissions.
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    let mut file = open_private(&temp_path)?;
     file.write_all(content.as_bytes())?;
     file.sync_all()?;
 
     fs::rename(&temp_path, path)
+}
+
+/// Creates or truncates the file with mode `0600`. The mode only applies to new files, so this
+/// also fixes a file left over with other permissions.
+#[cfg(unix)]
+fn open_private(path: &Path) -> io::Result<fs::File> {
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    Ok(file)
+}
+
+/// Creates or truncates the file and gives it an access list for the user, the system and the
+/// administrators only, so it's private also outside the user's profile.
+#[cfg(windows)]
+fn open_private(path: &Path) -> io::Result<fs::File> {
+    let file = fs::File::create(path)?;
+    win32::restrict_to_owner(path, &win32::Sid::current_user()?)?;
+    Ok(file)
+}
+
+/// Creates the directory when it's missing and makes it accessible only to the user: mode
+/// `0700` on Unix, and on Windows a protected access list for the user, the system and the
+/// administrators, which the files created in it inherit. Unlike [`create_private_dir`] on Unix,
+/// it takes over a directory the user owns instead of refusing one that isn't private yet.
+pub fn make_private_dir(dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(dir).map_err(|err| {
+        io::Error::new(err.kind(), format!("can't create {}: {err}", dir.display()))
+    })?;
+    restrict_dir(dir).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("can't make {} private: {err}", dir.display()),
+        )
+    })
+}
+
+/// Keeps the processes this one starts from inheriting its stdin, stdout and stderr, so a child
+/// that outlives it, like the `fbkd` that `fbk` starts, doesn't hold the pipes of whatever runs
+/// it open, such as the `ProxyCommand` pipes of `ssh` or a `| tail`. On Windows a child
+/// inherits every inheritable handle of its parent; on Unix it only gets the stdio it's given,
+/// so this does nothing there. It's best effort: a handle that can't be changed, such as a
+/// missing one, is left alone.
+pub fn keep_stdio_from_children() {
+    #[cfg(windows)]
+    {
+        let _ = win32::set_inheritable(&io::stdin(), false);
+        let _ = win32::set_inheritable(&io::stdout(), false);
+        let _ = win32::set_inheritable(&io::stderr(), false);
+    }
+}
+
+/// Gives the directory mode `0700`.
+#[cfg(unix)]
+fn restrict_dir(dir: &Path) -> io::Result<()> {
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+}
+
+/// Gives the directory an access list for the user, the system and the administrators only.
+#[cfg(windows)]
+fn restrict_dir(dir: &Path) -> io::Result<()> {
+    win32::restrict_to_owner(dir, &win32::Sid::current_user()?)
 }
 
 /// Turns the leaf directory of `path` into a DNS label of lowercase ASCII letters, digits and
@@ -345,13 +572,140 @@ mod tests {
     use super::*;
 
     /// Returns a lookup for an environment that holds only `vars`.
-    fn env<'a>(vars: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
+    pub(crate) fn env<'a>(vars: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
         move |key| {
             vars.iter()
                 .find(|(name, _)| *name == key)
                 .map(|(_, value)| OsString::from(value))
         }
     }
+
+    #[test]
+    fn write_private_replaces_the_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config/approved.yml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path.with_extension("tmp"), "left over").unwrap();
+
+        write_private(&path, "first").unwrap();
+        write_private(&path, "second").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
+        assert!(!path.with_extension("tmp").exists());
+    }
+
+    fn label(path: &str) -> String {
+        sanitize_label(Path::new(path))
+    }
+
+    #[test]
+    fn label_uses_leaf_directory() {
+        assert_eq!(label("/home/user/project"), "project");
+    }
+
+    #[test]
+    fn label_is_lowercase_with_runs_replaced_by_one_dash() {
+        assert_eq!(label("/home/user/My.App"), "my-app");
+        assert_eq!(label("/home/user/My_Project.v2--"), "my-project-v2");
+    }
+
+    #[test]
+    fn label_drops_leading_and_trailing_dashes() {
+        assert_eq!(label("/home/user/my project_"), "my-project");
+        assert_eq!(label("/home/user/.config"), "config");
+    }
+
+    #[test]
+    fn empty_label_falls_back_to_sandbox() {
+        assert_eq!(label("/home/user/__"), "sandbox");
+        assert_eq!(label("/"), "sandbox");
+        assert_eq!(label(""), "sandbox");
+    }
+
+    #[test]
+    fn strip_control_keeps_plain_multi_line_text() {
+        let text = "error: no such version\n\tat mise.toml line 2\n";
+
+        assert_eq!(strip_control(text), text);
+    }
+
+    #[test]
+    fn strip_control_removes_c0_controls() {
+        assert_eq!(strip_control("a\rb\x00c\x08"), "abc");
+    }
+
+    #[test]
+    fn strip_control_removes_del() {
+        assert_eq!(strip_control("a\x7fb"), "ab");
+    }
+
+    #[test]
+    fn strip_control_removes_csi_sequences() {
+        assert_eq!(strip_control("\x1b[1;32mok\x1b[0m"), "ok");
+        assert_eq!(strip_control("a\x1b[?25lb"), "ab");
+    }
+
+    #[test]
+    fn strip_control_removes_osc_sequences() {
+        assert_eq!(strip_control("a\x1b]52;c;eA==\x07b"), "ab");
+        assert_eq!(strip_control("a\x1b]0;title\x1b\\b"), "ab");
+    }
+
+    #[test]
+    fn strip_control_removes_two_character_escapes() {
+        assert_eq!(strip_control("a\x1bcb\x1b7\x1b(Bc"), "abc");
+    }
+
+    #[test]
+    fn strip_control_removes_c1_sequences() {
+        assert_eq!(
+            strip_control("a\u{9b}31mb\u{9d}52;c;eA==\u{9c}c\u{85}d"),
+            "abcd"
+        );
+    }
+
+    #[test]
+    fn strip_control_drops_unterminated_sequences_up_to_the_end() {
+        let cases = [
+            ("a\x1b]52;c;eA==", "a"),
+            ("a\x1b]x\nb", "a"),
+            ("a\x1b[31", "a"),
+            ("a\x1b", "a"),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(strip_control(text), expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn strip_control_leaves_no_control_characters() {
+        let parts = [
+            "a", "\x1b", "[", "]", "\x07", "\\", "1;", "(", " ", "\n", "\t", "\r", "\x00", "\x7f",
+            "\u{85}", "\u{9b}", "\u{9c}", "\u{9d}",
+        ];
+        let mut texts = vec![String::new()];
+        for _ in 0..3 {
+            texts = texts
+                .iter()
+                .flat_map(|text| parts.map(|part| format!("{text}{part}")))
+                .collect();
+        }
+        for text in texts {
+            let stripped = strip_control(&text);
+            assert!(
+                !stripped
+                    .chars()
+                    .any(|c| c.is_control() && !matches!(c, '\n' | '\t')),
+                "{text:?} -> {stripped:?}"
+            );
+        }
+    }
+}
+/// The locations and sockets on Unix.
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+    use crate::tests::env;
 
     /// Returns the data, log and microsandbox directories for an environment holding `vars`.
     fn dirs(vars: &[(&str, &str)]) -> [Option<PathBuf>; 3] {
@@ -643,111 +997,195 @@ mod tests {
         );
         assert!(!path.with_extension("tmp").exists());
     }
+}
 
-    fn label(path: &str) -> String {
-        sanitize_label(Path::new(path))
+/// The locations on Windows, where `HOME` doesn't count and the known folders do.
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use crate::tests::env;
+
+    /// Returns the access list of the path in Security Descriptor Definition Language, as
+    /// `icacls /save` writes it, which doesn't depend on the display language.
+    fn sddl(path: &Path) -> String {
+        let out = tempfile::TempDir::new().unwrap();
+        let saved = out.path().join("acl");
+        let status = std::process::Command::new("icacls")
+            .arg(path)
+            .arg("/save")
+            .arg(&saved)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let bytes = fs::read(saved).unwrap();
+        let wide: Vec<u16> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
+            .collect();
+        String::from_utf16_lossy(&wide)
+    }
+
+    /// Asserts that the access list grants access to the user, the system and the
+    /// administrators only, not to the built-in users or everyone.
+    fn assert_private(acl: &str) {
+        let user = win32::Sid::current_user().unwrap().to_string();
+
+        assert!(acl.contains(&user), "{acl}");
+        for other in [";BU)", ";WD)", ";AU)"] {
+            assert!(!acl.contains(other), "{other} in {acl}");
+        }
+    }
+
+    /// Returns a temp directory outside the user's profile, in `C:\`, whose access list it
+    /// inherits, like a directory that `XDG_DATA_HOME` points to outside the profile. The
+    /// profile's temp directory is private already, so it would hide a missing restriction.
+    fn outside_profile() -> tempfile::TempDir {
+        tempfile::TempDir::new_in(r"C:\").unwrap()
     }
 
     #[test]
-    fn label_uses_leaf_directory() {
-        assert_eq!(label("/home/user/project"), "project");
+    fn make_private_dir_protects_a_directory_and_what_is_created_in_it() {
+        let temp = outside_profile();
+        let dir = temp.path().join("firebrick/data");
+
+        make_private_dir(&dir).unwrap();
+        fs::write(dir.join("secrets.yml"), "x").unwrap();
+
+        let acl = sddl(&dir);
+        assert!(acl.contains("D:P"), "not protected: {acl}");
+        assert_private(&acl);
+        assert_private(&sddl(&dir.join("secrets.yml")));
     }
 
     #[test]
-    fn label_is_lowercase_with_runs_replaced_by_one_dash() {
-        assert_eq!(label("/home/user/My.App"), "my-app");
-        assert_eq!(label("/home/user/My_Project.v2--"), "my-project-v2");
+    fn write_private_protects_the_file() {
+        let temp = outside_profile();
+        let path = temp.path().join("approved.yml");
+
+        write_private(&path, "approved").unwrap();
+
+        let acl = sddl(&path);
+        assert!(acl.contains("D:P"), "not protected: {acl}");
+        assert_private(&acl);
+    }
+
+    /// Returns the data, log and microsandbox directories for an environment holding `vars`.
+    fn dirs(vars: &[(&str, &str)]) -> [Option<PathBuf>; 3] {
+        let var = env(vars);
+        [data_dir_from(&var), log_dir_from(&var), msb_home_from(&var)]
     }
 
     #[test]
-    fn label_drops_leading_and_trailing_dashes() {
-        assert_eq!(label("/home/user/my project_"), "my-project");
-        assert_eq!(label("/home/user/.config"), "config");
+    fn dirs_are_under_xdg_dirs() {
+        let vars = [
+            ("XDG_DATA_HOME", r"C:\data"),
+            ("XDG_STATE_HOME", r"C:\state"),
+            ("LOCALAPPDATA", r"C:\Users\me\AppData\Local"),
+        ];
+        let expected = [
+            r"C:\data\firebrick",
+            r"C:\state\firebrick",
+            r"C:\state\firebrick\msb",
+        ];
+        assert_eq!(dirs(&vars), expected.map(|dir| Some(PathBuf::from(dir))));
     }
 
     #[test]
-    fn empty_label_falls_back_to_sandbox() {
-        assert_eq!(label("/home/user/__"), "sandbox");
-        assert_eq!(label("/"), "sandbox");
-        assert_eq!(label(""), "sandbox");
+    fn dirs_fall_back_to_local_app_data_and_ignore_home() {
+        let vars = [
+            ("HOME", r"C:\Users\me"),
+            ("XDG_DATA_HOME", "data"),
+            ("LOCALAPPDATA", r"C:\Users\me\AppData\Local"),
+        ];
+        let expected = [
+            r"C:\Users\me\AppData\Local\firebrick\data",
+            r"C:\Users\me\AppData\Local\firebrick\state",
+            r"C:\Users\me\AppData\Local\firebrick\state\msb",
+        ];
+        assert_eq!(dirs(&vars), expected.map(|dir| Some(PathBuf::from(dir))));
     }
 
     #[test]
-    fn strip_control_keeps_plain_multi_line_text() {
-        let text = "error: no such version\n\tat mise.toml line 2\n";
-
-        assert_eq!(strip_control(text), text);
+    fn dirs_are_none_without_absolute_local_app_data() {
+        for vars in [
+            &[("HOME", r"C:\Users\me")][..],
+            &[("LOCALAPPDATA", "Local")],
+        ] {
+            assert_eq!(dirs(vars), [None, None, None], "{vars:?}");
+            assert_eq!(missing_dir_from(&env(vars)), Some(NO_DATA_DIR), "{vars:?}");
+        }
     }
 
     #[test]
-    fn strip_control_removes_c0_controls() {
-        assert_eq!(strip_control("a\rb\x00c\x08"), "abc");
-    }
-
-    #[test]
-    fn strip_control_removes_del() {
-        assert_eq!(strip_control("a\x7fb"), "ab");
-    }
-
-    #[test]
-    fn strip_control_removes_csi_sequences() {
-        assert_eq!(strip_control("\x1b[1;32mok\x1b[0m"), "ok");
-        assert_eq!(strip_control("a\x1b[?25lb"), "ab");
-    }
-
-    #[test]
-    fn strip_control_removes_osc_sequences() {
-        assert_eq!(strip_control("a\x1b]52;c;eA==\x07b"), "ab");
-        assert_eq!(strip_control("a\x1b]0;title\x1b\\b"), "ab");
-    }
-
-    #[test]
-    fn strip_control_removes_two_character_escapes() {
-        assert_eq!(strip_control("a\x1bcb\x1b7\x1b(Bc"), "abc");
-    }
-
-    #[test]
-    fn strip_control_removes_c1_sequences() {
+    fn approvals_path_falls_back_to_app_data() {
+        let vars = [
+            ("HOME", r"C:\Users\me"),
+            ("APPDATA", r"C:\Users\me\AppData\Roaming"),
+        ];
         assert_eq!(
-            strip_control("a\u{9b}31mb\u{9d}52;c;eA==\u{9c}c\u{85}d"),
-            "abcd"
+            approvals_path_from(&env(&vars)),
+            Some(PathBuf::from(
+                r"C:\Users\me\AppData\Roaming\firebrick\approved.yml"
+            ))
+        );
+        assert_eq!(approvals_path_from(&env(&[("HOME", r"C:\Users\me")])), None);
+    }
+
+    #[test]
+    fn pipes_are_named_after_the_user() {
+        assert_eq!(
+            pipe_prefix_from(&env(&[]), Some("S-1-5-21-1")),
+            Some(PathBuf::from(r"\\.\pipe\firebrick-S-1-5-21-1"))
+        );
+        assert_eq!(pipe_prefix_from(&env(&[]), None), None);
+    }
+
+    #[test]
+    fn pipe_prefix_can_be_overridden_with_another_local_pipe() {
+        let isolated = env(&[("FIREBRICK_PIPE_PREFIX", r"\\.\PIPE\fbk-test")]);
+        assert_eq!(
+            pipe_prefix_from(&isolated, Some("S-1-5-21-1")),
+            Some(PathBuf::from(r"\\.\PIPE\fbk-test"))
+        );
+
+        for prefix in [r"C:\fbk", r"\\server\pipe\fbk", r"\\.\pipe\", ""] {
+            let vars = [("FIREBRICK_PIPE_PREFIX", prefix)];
+            assert_eq!(
+                pipe_prefix_from(&env(&vars), Some("S-1-5-21-1")),
+                Some(PathBuf::from(r"\\.\pipe\firebrick-S-1-5-21-1")),
+                "{prefix:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn channels_and_the_daemon_have_their_own_pipes() {
+        let prefix = Path::new(r"\\.\pipe\firebrick-S-1");
+
+        assert_eq!(
+            with_suffix(prefix, "-fbkd"),
+            PathBuf::from(r"\\.\pipe\firebrick-S-1-fbkd")
+        );
+        assert_eq!(
+            with_suffix(prefix, NETLOG_SOCKETS.pipe_suffix),
+            PathBuf::from(r"\\.\pipe\firebrick-S-1-netlog")
+        );
+        assert_eq!(
+            with_suffix(prefix, CLIPBOARD_SOCKETS.pipe_suffix),
+            PathBuf::from(r"\\.\pipe\firebrick-S-1-clipboard")
         );
     }
 
     #[test]
-    fn strip_control_drops_unterminated_sequences_up_to_the_end() {
-        let cases = [
-            ("a\x1b]52;c;eA==", "a"),
-            ("a\x1b]x\nb", "a"),
-            ("a\x1b[31", "a"),
-            ("a\x1b", "a"),
-        ];
-        for (text, expected) in cases {
-            assert_eq!(strip_control(text), expected, "{text:?}");
-        }
-    }
+    fn socket_path_is_a_pipe_of_the_current_user() {
+        let path = socket_path();
+        let name = path.to_string_lossy();
 
-    #[test]
-    fn strip_control_leaves_no_control_characters() {
-        let parts = [
-            "a", "\x1b", "[", "]", "\x07", "\\", "1;", "(", " ", "\n", "\t", "\r", "\x00", "\x7f",
-            "\u{85}", "\u{9b}", "\u{9c}", "\u{9d}",
-        ];
-        let mut texts = vec![String::new()];
-        for _ in 0..3 {
-            texts = texts
-                .iter()
-                .flat_map(|text| parts.map(|part| format!("{text}{part}")))
-                .collect();
-        }
-        for text in texts {
-            let stripped = strip_control(&text);
-            assert!(
-                !stripped
-                    .chars()
-                    .any(|c| c.is_control() && !matches!(c, '\n' | '\t')),
-                "{text:?} -> {stripped:?}"
-            );
-        }
+        // Local and domain accounts have `S-1-5-` SIDs, Entra ID accounts `S-1-12-1-`.
+        assert!(name.starts_with(r"\\.\pipe\firebrick-S-1-"), "{name}");
+        assert!(name.ends_with("-fbkd"), "{name}");
     }
 }

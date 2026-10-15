@@ -32,11 +32,12 @@ Check that your machine meets these requirements before you download anything.
   When Linux runs inside a VM or a container, the host must expose `/dev/kvm` to
   it, for example through nested virtualization.
 - **macOS**: Apple Silicon. Intel Macs aren't supported.
-- **Windows**: Windows 11 with WSL 2, nested virtualization enabled for WSL, and
-  hardware virtualization enabled in the firmware. Firebrick runs the Linux
-  release inside the WSL distribution; see
-  [Windows: run Firebrick in WSL 2](#windows-run-firebrick-in-wsl-2) for the
-  setup steps.
+- **Windows**: Windows 11 on x64 with hardware virtualization enabled in the
+  firmware and the Windows Hypervisor Platform turned on; see
+  [Windows: run Firebrick natively](#windows-run-firebrick-natively). Windows
+  support is a preview, like microsandbox's. Firebrick also runs the Linux
+  release inside a WSL 2 distribution with nested virtualization; see
+  [Windows: run Firebrick in WSL 2](#windows-run-firebrick-in-wsl-2).
 
 On Linux, or in your WSL distribution, check KVM and glibc before you install:
 
@@ -146,10 +147,40 @@ them. Remove the quarantine flag:
 xattr -d com.apple.quarantine ~/.local/bin/fbk ~/.local/bin/fbkd
 ```
 
+## Windows: run Firebrick natively
+
+`fbk` and `fbkd` run on Windows 11 x64 through the Windows Hypervisor Platform.
+There's no Windows release archive yet, so install them with Cargo:
+
+1. Turn on the Windows Hypervisor Platform from an administrator PowerShell, and
+   restart Windows when it asks you to:
+
+   ```powershell
+   Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform
+   ```
+
+2. Install the Visual Studio Build Tools with the C++ workload, which Rust needs
+   to link the binaries, from an administrator PowerShell:
+
+   ```powershell
+   winget install Microsoft.VisualStudio.2022.BuildTools --override "--passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+   ```
+
+3. Follow [Installing with Cargo](#installing-with-cargo). Cargo installs
+   `fbk.exe` and `fbkd.exe` in `%USERPROFILE%\.cargo\bin`.
+
+On Windows, Firebrick keeps its data and logs in `%LOCALAPPDATA%\firebrick` and
+your approvals in `%APPDATA%\firebrick`; see
+[File locations](/docs/configuration/#file-locations). The generated SSH config
+is included from `%USERPROFILE%\.ssh\config`, so the `.fbk` host names work for
+Windows' OpenSSH and the editors that use it. The clipboard works without extra
+tools, and `~user` in a mount's host path isn't supported. To stop the daemon,
+run `Stop-Process -Name fbkd`.
+
 ## Windows: run Firebrick in WSL 2
 
-There's no Windows release, but the Linux release runs in a WSL 2 distribution
-when WSL exposes KVM to it through nested virtualization. Check the
+The Linux release also runs in a WSL 2 distribution when WSL exposes KVM to it
+through nested virtualization. Check the
 [System requirements](#system-requirements) for Windows first.
 
 1. Enable nested virtualization in `%UserProfile%\.wslconfig` on Windows:

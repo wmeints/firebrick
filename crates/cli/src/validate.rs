@@ -47,6 +47,7 @@ pub(crate) fn spec_error(err: SandboxSpecError) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::symlinked_spec;
     use std::fs;
     use tempfile::TempDir;
@@ -91,6 +92,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn symlinked_spec_returns_error() {
         for content in [Some("name: dev\n"), None] {
             let (dir, _target) = symlinked_spec::workspace(content);

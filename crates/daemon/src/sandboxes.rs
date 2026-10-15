@@ -2391,6 +2391,17 @@ mod tests {
     use super::*;
     use crate::clipboard::HostTools;
     use crate::open::HostOpener;
+    use crate::vsock::test_endpoint_dir;
+
+    /// Returns the host path as an absolute path of the platform: unchanged on Unix, and on the
+    /// `C:` drive on Windows, where a path without a drive isn't absolute.
+    fn host(path: &str) -> String {
+        if cfg!(windows) {
+            format!("C:{path}")
+        } else {
+            path.to_string()
+        }
+    }
 
     /// Returns a manager with a store at `path` that has a secret for `example.com` under each
     /// name.
@@ -2626,9 +2637,12 @@ mod tests {
 
     /// Returns the spec microsandbox would create the sandbox with, with its sockets in `/run`.
     async fn built_spec(settings: &SandboxSettings) -> SandboxSpec {
-        let netlogs = NetLogs::new(Some("/run/fbk/netlog".into()), None);
+        let netlogs = NetLogs::new(
+            Some(test_endpoint_dir(Path::new("/run/fbk"), "netlog")),
+            None,
+        );
         let clipboards = Clipboards::new(
-            Some("/run/fbk/clipboard".into()),
+            Some(test_endpoint_dir(Path::new("/run/fbk"), "clipboard")),
             Arc::new(HostTools::new(None, None)),
         );
 
@@ -2646,7 +2660,7 @@ mod tests {
         let settings = new_settings("", true);
         let spec = built_spec(&settings).await;
         let clipboards = Clipboards::new(
-            Some("/run/fbk/clipboard".into()),
+            Some(test_endpoint_dir(Path::new("/run/fbk"), "clipboard")),
             Arc::new(HostTools::new(None, None)),
         );
 
@@ -2769,11 +2783,11 @@ mod tests {
     #[test]
     fn workspace_mount_path_uses_leaf_name() {
         assert_eq!(
-            workspace_mount_path("/home/user/project").unwrap(),
+            workspace_mount_path(&host("/home/user/project")).unwrap(),
             "/workspaces/project"
         );
         assert_eq!(
-            workspace_mount_path("/home/user/project/").unwrap(),
+            workspace_mount_path(&host("/home/user/project/")).unwrap(),
             "/workspaces/project"
         );
     }
@@ -2801,14 +2815,14 @@ mod tests {
 
     #[test]
     fn check_mounts_accepts_absolute_paths() {
-        let mounts = [mount("/home/user/lib", "/workspaces/lib")];
+        let mounts = [mount(&host("/home/user/lib"), "/workspaces/lib")];
 
         assert_eq!(check_mounts(&mounts, "/workspaces/project"), Ok(()));
     }
 
     #[test]
     fn check_mounts_rejects_the_workspace_guest_path() {
-        let mounts = [mount("/home/user/lib", "/workspaces/project")];
+        let mounts = [mount(&host("/home/user/lib"), "/workspaces/project")];
 
         assert_eq!(
             check_mounts(&mounts, "/workspaces/project"),
@@ -2820,7 +2834,7 @@ mod tests {
 
     #[test]
     fn check_mounts_rejects_the_workspace_guest_path_in_another_form() {
-        let mounts = [mount("/home/user/lib", "/workspaces/project/.")];
+        let mounts = [mount(&host("/home/user/lib"), "/workspaces/project/.")];
 
         assert_eq!(
             check_mounts(&mounts, "/workspaces/project"),
@@ -2832,7 +2846,7 @@ mod tests {
 
     #[test]
     fn check_mounts_rejects_the_docker_data_path() {
-        let mounts = [mount("/home/user/docker", "/var/lib/docker/")];
+        let mounts = [mount(&host("/home/user/docker"), "/var/lib/docker/")];
 
         assert_eq!(
             check_mounts(&mounts, "/workspaces/project"),
@@ -2846,10 +2860,10 @@ mod tests {
     fn check_mounts_rejects_relative_and_invalid_paths() {
         for mounts in [
             [mount("../lib", "/lib")],
-            [mount("/home/user/lib", "lib")],
-            [mount("/home/user/lib", "/")],
-            [mount("/home/user/lib", "/lib/../etc")],
-            [mount("/home/user/lib", "/lib:v1")],
+            [mount(&host("/home/user/lib"), "lib")],
+            [mount(&host("/home/user/lib"), "/")],
+            [mount(&host("/home/user/lib"), "/lib/../etc")],
+            [mount(&host("/home/user/lib"), "/lib:v1")],
         ] {
             assert!(
                 matches!(

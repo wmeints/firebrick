@@ -1,9 +1,10 @@
 # Runtime view
 
 Every command except `validate` starts by connecting to the daemon over
-`$XDG_RUNTIME_DIR/fbkd.sock`. When nobody listens on the socket, the CLI removes
-a stale socket file, spawns `fbkd` and polls the socket for at most 5 seconds.
-The diagrams below show this step once, in
+`$XDG_RUNTIME_DIR/fbkd.sock`, or on Windows the pipe
+`\\.\pipe\firebrick-<SID>-fbkd`. When nobody listens on the socket, the CLI
+removes a stale socket file, spawns `fbkd` and polls the socket for at most 5
+seconds. The diagrams below show this step once, in
 [Running a session](#running-a-session), and leave it out of the others.
 
 Before `fbkd` listens, it exits when the socket already exists, and then makes

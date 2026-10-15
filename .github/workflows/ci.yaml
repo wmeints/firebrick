@@ -89,6 +89,36 @@ jobs:
       - name: Unit tests
         run: cargo test --workspace
 
+  # Builds, lints and unit tests the Windows port (ADR 0050). GitHub's Windows
+  # runners have no Windows Hypervisor Platform, so the vm-tests run on Windows
+  # only locally, with `mise run integration-tests`.
+  windows:
+    name: Windows format, lint and unit tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          # Pin mise itself; it verifies the checksums in mise.lock.
+          version: 2026.9.10
+
+      # A cache of its own: the Windows build shares nothing with the Linux one.
+      # The microsandbox runtime isn't cached, so a cargo command may recompile
+      # microsandbox after the build script installed it (see the check job).
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: windows
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Unit tests
+        run: cargo test --workspace
+
   integration:
     name: Integration tests (microVMs)
     needs: check

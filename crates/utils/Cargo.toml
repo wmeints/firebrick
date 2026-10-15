@@ -5,14 +5,28 @@ authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Shared file locations, naming rules and text helpers for the Firebrick CLI and daemon."
+description = "Shared file locations, local endpoints, naming rules and text helpers for the Firebrick CLI and daemon."
 
 [lints]
 workspace = true
 
 [dependencies]
 console = { version = "0.16.6", default-features = false, features = ["alloc", "ansi-parsing"] }
+tokio = { version = "1.53.2", features = ["net", "time"] }
+
+[target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", default-features = false, features = ["user"] }
+
+[target.'cfg(windows)'.dependencies]
+# The version tokio uses, so the build keeps a single copy (ADR 0050).
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+tokio = { version = "1.53.2", features = ["io-util", "macros", "rt-multi-thread"] }

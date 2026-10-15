@@ -1,4 +1,6 @@
+#[cfg(unix)]
 use std::fs::DirBuilder;
+#[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
@@ -42,10 +44,7 @@ fn use_firebrick_msb_home() -> Result<()> {
         );
     };
     // Private, because the home holds the `msb` binary fbkd runs and the TLS interception CA.
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&home)
+    create_private_home(&home)
         .with_context(|| format!("failed to create the microsandbox home {}", home.display()))?;
     // SAFETY: `main` calls this before it starts the Tokio runtime or the log writer, while the
     // process has a single thread, so nothing reads or writes the environment concurrently.
@@ -55,7 +54,20 @@ fn use_firebrick_msb_home() -> Result<()> {
     Ok(())
 }
 
-/// Sets up logging in `log_dir` and runs the daemon on its unix socket until shutdown, with the
+/// Creates the microsandbox home and the directories above it with mode `0700`.
+#[cfg(unix)]
+fn create_private_home(home: &Path) -> std::io::Result<()> {
+    DirBuilder::new().recursive(true).mode(0o700).create(home)
+}
+
+/// Creates the microsandbox home with an access list for the user, the system and the
+/// administrators only, which everything in it inherits.
+#[cfg(windows)]
+fn create_private_home(home: &Path) -> std::io::Result<()> {
+    firebrick_utils::make_private_dir(home)
+}
+
+/// Sets up logging in `log_dir` and runs the daemon on its endpoint until shutdown, with the
 /// secrets stored in `secrets_path`.
 async fn run(log_dir: &Path, secrets_path: PathBuf) -> Result<()> {
     let _log_guard = init_logging(log_dir)?;
@@ -63,7 +75,7 @@ async fn run(log_dir: &Path, secrets_path: PathBuf) -> Result<()> {
     // Check the socket before touching the runtime, so a second daemon can't replace the
     // runtime under the one that is already serving.
     let socket_path = firebrick_utils::socket_path();
-    if socket_path.exists() {
+    if firebrick_utils::ipc::exists(&socket_path).await {
         bail!(server::ServerError::SocketAlreadyInUse());
     }
 
@@ -77,10 +89,7 @@ async fn run(log_dir: &Path, secrets_path: PathBuf) -> Result<()> {
 
     tracing::info!(path = %log_dir.display(), "writing logs");
     tracing::info!(path = %msb_config.home().display(), "using microsandbox home");
-    tracing::info!(
-        path = socket_path.to_str().unwrap(),
-        "listening on unix socket"
-    );
+    tracing::info!(path = socket_path.to_str().unwrap(), "listening");
     Ok(server::run(&socket_path, SecretStore::new(secrets_path)).await?)
 }
 

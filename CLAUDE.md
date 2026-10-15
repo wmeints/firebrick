@@ -53,6 +53,10 @@ For the website, run these from the repository root:
   against the built site; run `build` first, and `pnpm --dir website exec
   playwright install chromium` once.
 
+On Windows, run the `vm-tests` with `mise run integration-tests`: cargo's job
+object keeps microsandbox from starting VMs, so the task runs the test binaries
+itself (ADR 0050).
+
 `mise.toml` defines tasks for the common commands: `mise run lint`, `mise run
 unit-tests` and `mise run integration-tests`; `mise run registry` starts the
 local image registry on `127.0.0.1:5000`, and `mise run install-dev` installs

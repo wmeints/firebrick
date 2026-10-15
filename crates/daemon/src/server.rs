@@ -37,20 +37,21 @@ use async_trait::async_trait;
 use firebrick_spec::{
     MountSpec, NetworkRule, NetworkSpec, PortMapping, SandboxResourcesSpec, VolumesSpec,
 };
+use firebrick_utils::ipc;
 use std::collections::HashSet;
-use std::fs;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::io;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 use thiserror::Error;
-use tokio::net::{UnixListener, UnixStream};
-use tokio::signal::unix::{SignalKind, signal};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
-use tonic::codegen::tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
-use tonic::codegen::tokio_stream::{Stream, StreamExt};
+use tonic::codegen::tokio_stream::Stream;
+use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Server;
+use tonic::transport::server::Connected;
 use tonic::{Request, Response, Status, Streaming};
 use url::Host;
 
@@ -63,8 +64,6 @@ pub enum ServerError {
     FailedToListen(#[from] tonic::transport::Error),
     #[error("invalid socket path")]
     InvalidSocketPath(#[from] std::io::Error),
-    #[error("can't restrict the socket to its owner")]
-    InsecureSocket(#[source] std::io::Error),
 }
 
 /// gRPC service implementation that manages sandboxes.
@@ -759,74 +758,152 @@ pub async fn run(socket_path: &Path, secrets: SecretStore) -> Result<(), ServerE
     served
 }
 
-/// Serves the gRPC API on the socket with `service` until `shutdown` completes, then removes
-/// the socket.
+/// Serves the gRPC API on the endpoint, a unix socket or a named pipe (see [`ipc`]), with
+/// `service` until `shutdown` completes, then removes the socket. Only clients that run as the
+/// daemon's user or as root get through.
 pub async fn serve(
     socket_path: &Path,
     service: FirebrickServer,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), ServerError> {
-    if socket_path.exists() {
+    if ipc::exists(socket_path).await {
         return Err(ServerError::SocketAlreadyInUse());
     }
 
-    let listener = UnixListener::bind(socket_path).map_err(ServerError::InvalidSocketPath)?;
-    let daemon_uid = restrict_to_owner(socket_path).inspect_err(|_| {
-        let _ = fs::remove_file(socket_path);
-    })?;
-    let incoming = UnixListenerStream::new(listener)
-        .filter(move |conn| conn.as_ref().map_or(true, |s| accept(s, daemon_uid)));
+    let listener = ipc::Listener::bind(socket_path).map_err(bind_error)?;
+    let (tx, rx) = mpsc::channel(16);
+    let accepting = tokio::spawn(accept_loop(listener, tx));
 
     // Dropping the service when the server stops closes the forwards.
-    Server::builder()
+    let served = Server::builder()
         .trace_fn(|req| tracing::info_span!("grpc", path = %req.uri().path()))
         .add_service(SandboxManagementServiceServer::new(service))
-        .serve_with_incoming_shutdown(incoming, shutdown)
-        .await
-        .map_err(ServerError::FailedToListen)?;
+        .serve_with_incoming_shutdown(ReceiverStream::new(rx), shutdown)
+        .await;
 
-    fs::remove_file(socket_path)?;
+    // Stop accepting, so the listener is closed, and on Windows its pipe gone, on return.
+    accepting.abort();
+    let _ = accepting.await;
+    served.map_err(ServerError::FailedToListen)?;
+    ipc::remove(socket_path)?;
 
     Ok(())
 }
 
-/// Gives the socket mode `0600`, whatever the umask, and returns the UID that owns it, which
-/// is the daemon's effective UID.
-fn restrict_to_owner(socket_path: &Path) -> Result<u32, ServerError> {
-    fs::set_permissions(socket_path, fs::Permissions::from_mode(0o600))
-        .and_then(|()| fs::metadata(socket_path))
-        .map(|metadata| metadata.uid())
-        .map_err(ServerError::InsecureSocket)
+/// Turns the error of binding the endpoint into the server's error, telling an endpoint that
+/// another process serves from one that can't be created.
+fn bind_error(err: io::Error) -> ServerError {
+    match err.kind() {
+        io::ErrorKind::AddrInUse => ServerError::SocketAlreadyInUse(),
+        _ => ServerError::InvalidSocketPath(err),
+    }
 }
 
-/// Returns whether a connection may reach the gRPC service, based on its peer credentials.
-/// A rejected connection is closed when the caller drops it.
-fn accept(conn: &UnixStream, daemon_uid: u32) -> bool {
-    match conn.peer_cred() {
-        Ok(peer) if firebrick_utils::is_trusted_peer(peer.uid(), daemon_uid) => true,
-        Ok(peer) => {
-            tracing::warn!(
-                peer_uid = peer.uid(),
-                peer_pid = ?peer.pid(),
-                "rejected connection from another user"
-            );
-            false
-        }
-        Err(err) => {
-            tracing::warn!(error = ?err, "rejected connection with unknown peer credentials");
-            false
+/// Sends each accepted connection to `tx` until it's closed. Connections from other users are
+/// closed and logged.
+async fn accept_loop(mut listener: ipc::Listener, tx: mpsc::Sender<io::Result<Connection>>) {
+    loop {
+        let accepted = tokio::select! {
+            accepted = listener.accept() => accepted,
+            () = tx.closed() => return,
+        };
+
+        let Some(connection) = trusted(accepted) else {
+            continue;
+        };
+
+        if tx.send(Ok(connection)).await.is_err() {
+            return;
         }
     }
 }
 
+/// Returns the accepted connection, or logs why there's none, such as a client of another
+/// user, whose connection is closed when the error is dropped.
+fn trusted(accepted: io::Result<ipc::Stream>) -> Option<Connection> {
+    match accepted {
+        Ok(stream) => Some(Connection(stream)),
+        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+            tracing::warn!(error = %err, "rejected connection from another user");
+            None
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to accept a connection");
+            None
+        }
+    }
+}
+
+/// A client connection of the gRPC server.
+struct Connection(ipc::Stream);
+
+impl Connected for Connection {
+    type ConnectInfo = ();
+
+    fn connect_info(&self) -> Self::ConnectInfo {}
+}
+
+impl AsyncRead for Connection {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Connection {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+}
+
 /// Completes when SIGINT or SIGTERM is received.
+#[cfg(unix)]
 async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
     let mut sigterm = signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => tracing::info!("shutting down"),
         _ = sigterm.recv() => tracing::info!("shutting down"),
     }
+}
+
+/// Completes when Ctrl-C or Ctrl-Break is pressed, or the console closes or Windows shuts down.
+/// `fbk` starts the daemon without a console, so then only a console it's started from by hand
+/// sends these.
+#[cfg(windows)]
+async fn shutdown_signal() {
+    use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_shutdown};
+    let (Ok(mut ctrl_break), Ok(mut close), Ok(mut shutdown)) =
+        (ctrl_break(), ctrl_close(), ctrl_shutdown())
+    else {
+        tracing::warn!("can't listen for console events; only Ctrl-C stops the daemon");
+        let _ = tokio::signal::ctrl_c().await;
+        return;
+    };
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = ctrl_break.recv() => {}
+        _ = close.recv() => {}
+        _ = shutdown.recv() => {}
+    }
+    tracing::info!("shutting down");
 }
 
 /// Converts a microsandbox status to its protobuf status value.
@@ -896,28 +973,38 @@ mod tests {
         .await
     }
 
-    /// Waits until the server accepts connections on the socket.
+    /// Returns an endpoint for the server unique to this test: a socket in the temp directory,
+    /// or a pipe on Windows.
+    fn test_endpoint(name: &str) -> PathBuf {
+        if cfg!(windows) {
+            let pipe = format!(r"\\.\pipe\firebrick-test-{}-{name}", std::process::id());
+            return PathBuf::from(pipe);
+        }
+        temp_path(&format!("{name}.sock"))
+    }
+
+    /// Waits until the server accepts connections on the endpoint.
     async fn wait_for_socket(path: &Path) {
-        while UnixStream::connect(path).await.is_err() {
+        while !ipc::is_served(path).await {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
 
-    /// Connects a gRPC client to the server on the socket.
+    /// Connects a gRPC client to the server on the endpoint.
     async fn client(path: PathBuf) -> SandboxManagementServiceClient<Channel> {
         // The HTTP endpoint isn't used; it only shows up in the authority header.
         let channel = Endpoint::try_from("http://localhost")
             .unwrap()
-            .connect_with_connector(tower::service_fn(move |_: Uri| connect_unix(path.clone())))
+            .connect_with_connector(tower::service_fn(move |_: Uri| connect(path.clone())))
             .await
             .unwrap();
 
         SandboxManagementServiceClient::new(channel)
     }
 
-    /// Connects to the server socket for a gRPC channel.
-    async fn connect_unix(path: PathBuf) -> std::io::Result<TokioIo<UnixStream>> {
-        Ok(TokioIo::new(UnixStream::connect(path).await?))
+    /// Connects to the server's endpoint for a gRPC channel.
+    async fn connect(path: PathBuf) -> std::io::Result<TokioIo<ipc::Stream>> {
+        Ok(TokioIo::new(ipc::connect(&path).await?))
     }
 
     #[test]
@@ -1333,18 +1420,31 @@ mod tests {
 
     #[tokio::test]
     async fn run_fails_when_socket_already_exists() {
-        let path = temp_path("existing.sock");
-        fs::write(&path, b"").unwrap();
+        let path = test_endpoint("existing");
+        let other = ipc::Listener::bind(&path).unwrap();
 
         let result = run(&path, unused_store()).await;
 
-        fs::remove_file(&path).unwrap();
+        drop(other);
+        ipc::remove(&path).unwrap();
+        assert!(matches!(result, Err(ServerError::SocketAlreadyInUse())));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_fails_when_a_stale_socket_file_exists() {
+        let path = temp_path("stale.sock");
+        std::fs::write(&path, b"").unwrap();
+
+        let result = run(&path, unused_store()).await;
+
+        std::fs::remove_file(&path).unwrap();
         assert!(matches!(result, Err(ServerError::SocketAlreadyInUse())));
     }
 
     #[tokio::test]
     async fn serve_removes_socket_on_shutdown() {
-        let path = temp_path("shutdown.sock");
+        let path = test_endpoint("shutdown");
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
         let handle = tokio::spawn(serve_until(path.clone(), rx));
@@ -1352,17 +1452,31 @@ mod tests {
 
         tx.send(()).unwrap();
         handle.await.unwrap().unwrap();
-        assert!(!path.exists());
+        assert!(disappears(&path).await);
     }
 
+    /// Waits up to a second for the endpoint to disappear. On Windows a connection that's still
+    /// closing, such as the probe of [`wait_for_socket`], keeps a pipe instance alive for a few
+    /// milliseconds after `serve` returns.
+    async fn disappears(path: &Path) -> bool {
+        let mut tries = 0;
+        while ipc::exists(path).await && tries < 100 {
+            tries += 1;
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        !ipc::exists(path).await
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn serve_restricts_socket_to_owner() {
-        let path = temp_path("mode.sock");
+        use std::os::unix::fs::PermissionsExt;
+        let path = test_endpoint("mode");
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
         let handle = tokio::spawn(serve_until(path.clone(), rx));
         wait_for_socket(&path).await;
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
 
         tx.send(()).unwrap();
         handle.await.unwrap().unwrap();
@@ -1371,7 +1485,7 @@ mod tests {
 
     #[tokio::test]
     async fn serve_serves_connections_from_the_same_user() {
-        let path = temp_path("same-user.sock");
+        let path = test_endpoint("same-user");
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
         let handle = tokio::spawn(serve_until(path.clone(), rx));
@@ -1386,6 +1500,7 @@ mod tests {
         assert!(result.is_ok(), "request failed: {result:?}");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn run_fails_when_socket_directory_does_not_exist() {
         let path = temp_path("missing-dir").join("firebrick.sock");
@@ -1394,6 +1509,16 @@ mod tests {
 
         assert!(matches!(result, Err(ServerError::InvalidSocketPath(_))));
         assert!(!path.exists());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn run_fails_for_a_pipe_name_that_is_too_long() {
+        let path = test_endpoint(&"a".repeat(300));
+
+        let result = run(&path, unused_store()).await;
+
+        assert!(matches!(result, Err(ServerError::InvalidSocketPath(_))));
     }
 
     #[tokio::test]

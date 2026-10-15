@@ -127,7 +127,7 @@ impl Approvals {
     /// Returns the approvals of the workspace stored in the file at `path`. They're stored under
     /// the canonical workspace path, so a symlink to the workspace shares them.
     pub fn at(path: PathBuf, workspace: &Path) -> Result<Self> {
-        let workspace = fs::canonicalize(workspace)
+        let workspace = dunce::canonicalize(workspace)
             .with_context(|| format!("failed to resolve workspace {}", workspace.display()))?;
 
         Ok(Self { path, workspace })
@@ -257,12 +257,9 @@ impl Approver {
             + Send
             + 'static,
     {
-        let path = self.path.ok_or_else(|| {
-            anyhow!(
-                "can't find the firebrick config directory: set HOME or XDG_CONFIG_HOME to an \
-                 absolute path"
-            )
-        })?;
+        let path = self
+            .path
+            .ok_or_else(|| anyhow!(firebrick_utils::NO_CONFIG_DIR))?;
         let workspace = workspace.to_path_buf();
         let assume_yes = self.assume_yes;
 
@@ -507,6 +504,7 @@ impl<R: BufRead, W: Write> Prompt<R, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
@@ -601,6 +599,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn workspace_is_stored_under_its_canonical_path() {
         let fixture = Fixture::new();
         let link = fixture.config.path().join("link");
@@ -615,6 +614,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn approvals_file_is_private() {
         let fixture = Fixture::new();
 
@@ -720,7 +720,7 @@ mod tests {
 
     /// Writes an approvals file whose entry for the fixture's workspace has the fields.
     fn write_entry(fixture: &Fixture, fields: &str) {
-        let workspace = fs::canonicalize(fixture.workspace.path()).unwrap();
+        let workspace = dunce::canonicalize(fixture.workspace.path()).unwrap();
         fs::create_dir_all(fixture.path().parent().unwrap()).unwrap();
         let content = format!("workspaces:\n  {}:\n{fields}", workspace.display());
         fs::write(fixture.path(), content).unwrap();
@@ -856,7 +856,7 @@ mod tests {
     #[test]
     fn approvals_file_without_the_clipboard_loads_with_it_off() {
         let fixture = Fixture::new();
-        let workspace = fs::canonicalize(fixture.workspace.path()).unwrap();
+        let workspace = dunce::canonicalize(fixture.workspace.path()).unwrap();
         fs::create_dir_all(fixture.path().parent().unwrap()).unwrap();
         let content = format!(
             "workspaces:\n  {}:\n    mounts: []\n    network:\n      enforce: true\n",

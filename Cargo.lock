@@ -1986,6 +1986,8 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "crossterm_winapi",
+ "dunce",
  "firebrick-proto",
  "firebrick-spec",
  "firebrick-utils",
@@ -2013,6 +2015,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
+ "dunce",
  "firebrick-proto",
  "firebrick-spec",
  "firebrick-utils",
@@ -2065,6 +2068,8 @@ dependencies = [
  "console",
  "nix 0.31.3",
  "tempfile",
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

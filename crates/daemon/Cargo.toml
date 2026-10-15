@@ -62,3 +62,6 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 tower = "0.5.3"
 tempfile = "3.27.0"
+# Canonical temp paths without the `\\?\` prefix on Windows, which microsandbox refuses in
+# mounts (ADR 0051).
+dunce = "1.0.5"

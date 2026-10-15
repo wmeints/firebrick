@@ -67,7 +67,17 @@ check_rust() {
   run_check unit-tests cargo test --workspace
   if grep -qE ' crates/[^/]+/' <<<"$(grep -vE ' crates/(cli|proto)/' <<<"$rust")" ||
     grep -qE 'Cargo\.(toml|lock)$|\.cargo/config\.toml$' <<<"$rust"; then
-    run_check integration-tests cargo test -p firebrick-daemon --features vm-tests
+    run_check integration-tests integration_tests
+  fi
+}
+
+# Runs the vm-tests. On Windows a script runs the test binaries, because cargo's
+# job object keeps microsandbox from starting VMs (ADR 0050).
+integration_tests() {
+  if [ "${OS:-}" = Windows_NT ]; then
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/vm-tests.ps1
+  else
+    cargo test -p firebrick-daemon --features vm-tests
   fi
 }
 

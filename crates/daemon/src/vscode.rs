@@ -68,9 +68,15 @@ pub fn config_root() -> Option<PathBuf> {
 }
 
 /// Returns `$XDG_CONFIG_HOME`, or `~/.config` when it isn't set.
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn platform_config_root() -> Option<PathBuf> {
     settings_file::xdg_config_home()
+}
+
+/// Returns `%APPDATA%`.
+#[cfg(windows)]
+fn platform_config_root() -> Option<PathBuf> {
+    settings_file::app_data()
 }
 
 /// Returns `~/Library/Application Support`.
@@ -352,6 +358,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn keeps_a_symlinked_settings_file_a_symlink() {
         let (root, settings) = vscode_root();
         let target = root.path().join("dotfiles-settings.json");
@@ -409,6 +416,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn leaves_dangling_settings_symlink_alone() {
         let (root, settings) = vscode_root();
         let target = root.path().join("dotfiles/settings.json");

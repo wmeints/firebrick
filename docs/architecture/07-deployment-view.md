@@ -74,16 +74,20 @@ on crates.io. `cargo install` skips pre-releases unless asked for one with
 
 The Linux binaries are built on Ubuntu 22.04, so they need glibc 2.35 or newer.
 
-Windows has no release: the CLI and daemon talk over a unix socket and rely on
-unix signals. See
-[ADR 0001](decisions/0001-release-through-github-releases-and-ghcr.md). Windows
-users run the Linux release in WSL 2 with nested virtualization, which exposes
-`/dev/kvm` to the distribution.
+Windows has no release archive yet. `fbk` and `fbkd` build and run natively on
+Windows 11 x64, where they talk over named pipes
+([ADR 0050](decisions/0050-talk-over-named-pipes-on-windows.md)), so Windows
+users install them with `cargo install firebrick-cli firebrick-daemon`, which
+needs the Visual Studio Build Tools with the C++ workload and `protoc`. They can
+also still run the Linux release in WSL 2 with nested virtualization, which
+exposes `/dev/kvm` to the distribution.
 
 ## Host requirements
 
 `fbkd` runs sandboxes through the microsandbox runtime (`msb` and `libkrunfw`),
-which needs KVM on Linux or Apple Silicon on macOS. `fbkd` embeds the runtime
+which needs KVM on Linux, Apple Silicon on macOS, or the Windows Hypervisor
+Platform (WHP) on Windows 11, where microsandbox's support is a preview. On
+Windows the runtime is `msb.exe` and `libkrunfw.dll`. `fbkd` embeds the runtime
 that matches the `microsandbox` crate it's built with (currently `0.7.6`). On
 startup it extracts that runtime when none is installed, and replaces an
 installed runtime with another version. See
@@ -100,6 +104,16 @@ installed runtime with another version. See
   `MSB_HOME` isn't set. The home holds the `msb` binary `fbkd` runs, so it must
   not land in the current directory or a shared temp directory. `fbkd` creates
   it with mode `0700`.
+- On Windows the home falls back to `%LOCALAPPDATA%\firebrick\state\msb`
+  instead, and `HOME` doesn't count, because Git Bash sets it. Instead of mode
+  `0700`, `fbkd` gives the directory a protected access list for the user,
+  `LocalSystem` and the administrators only. The data and config directories
+  follow the same rules
+  ([ADR 0051](decisions/0051-follow-windows-conventions-for-host-paths-and-tools.md)).
+- On Windows the daemon's endpoint is the pipe `\\.\pipe\firebrick-<SID>-fbkd`.
+  A `FIREBRICK_PIPE_PREFIX` naming another local pipe replaces
+  `\\.\pipe\firebrick-<SID>`, which isolates test daemons like `XDG_RUNTIME_DIR`
+  does on Unix.
 - A non-empty `MSB_HOME` environment variable overrides the home. The cargo
   commands in the repository and the `smoke-test` skill use it to isolate
   development builds. `MSB_PATH` and `MSB_LIBKRUNFW_PATH` point `fbkd` at a
@@ -191,6 +205,15 @@ change. Cargo dates a build script run to when the run started, so a runtime the
 script installed looks changed to the next cargo command, which recompiles
 `microsandbox` and every crate that depends on it. Without the cached runtime,
 every step of a job recompiled them.
+
+The `windows` job of `ci.yaml` checks the format, runs clippy and runs the unit
+tests on `windows-latest`, with a cache of its own and without the cached
+runtime. GitHub's Windows runners have no Windows Hypervisor Platform, so the
+`vm-tests` run on Windows only on a developer's machine, with `mise run
+integration-tests`. It runs `scripts/vm-tests.ps1`, which builds the tests with
+cargo and runs their binaries itself, because cargo's job object keeps
+microsandbox from starting VMs
+([ADR 0050](decisions/0050-talk-over-named-pipes-on-windows.md)).
 
 ### Supply chain
 

@@ -5,13 +5,15 @@
 
 use std::fs;
 use std::io::{self, ErrorKind, Write};
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 /// Writes a temporary file next to `path` and renames it over the file, so a failed write
 /// leaves the old content in place. A symlinked file (dotfiles) stays a symlink, because the
 /// rename replaces the file it points to. An existing file keeps its permissions; a new one is
-/// created with `new_mode`, minus the umask.
+/// created with `new_mode`, minus the umask, or on Windows with the access list it inherits
+/// from its directory.
 pub(crate) fn write(path: &Path, content: &str, new_mode: u32) -> io::Result<()> {
     let target = match fs::canonicalize(path) {
         Ok(target) => target,
@@ -32,14 +34,16 @@ pub(crate) fn write(path: &Path, content: &str, new_mode: u32) -> io::Result<()>
     result
 }
 
-/// Writes `content` to `path`, creating it with `mode` when it doesn't exist.
+/// Writes `content` to `path`, creating it with `mode` on Unix when it doesn't exist.
 fn write_new(path: &Path, content: &str, mode: u32) -> io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(mode)
-        .open(path)?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(mode);
+    #[cfg(windows)]
+    let _ = mode;
+
+    let mut file = options.open(path)?;
     file.write_all(content.as_bytes())?;
     // Flush before the rename, so a power loss can't leave the renamed file empty.
     file.sync_all()
@@ -71,6 +75,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn replaces_target_of_symlink() {
         let dir = TempDir::new().unwrap();
         let target = dir.path().join("target");

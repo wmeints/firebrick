@@ -462,12 +462,15 @@ fn ensure_not_listening_on_any_address(port: u16) -> io::Result<()> {
     Ok(())
 }
 
-/// Binds a socket to the address with `SO_REUSEADDR`, without listening, and closes it.
+/// Binds a socket to the address with `SO_REUSEADDR`, without listening, and closes it. On
+/// Windows `SO_REUSEADDR` lets a bind succeed even next to an active listener, so the probe
+/// binds without it there, which fails next to a listener just the same.
 fn probe_bind(address: SocketAddr) -> io::Result<()> {
     let socket = match address {
         SocketAddr::V4(_) => TcpSocket::new_v4()?,
         SocketAddr::V6(_) => TcpSocket::new_v6()?,
     };
+    #[cfg(unix)]
     socket.set_reuseaddr(true)?;
 
     socket.bind(address)

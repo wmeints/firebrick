@@ -28,6 +28,9 @@ run = "cargo test --workspace"
 [tasks.integration-tests]
 description = "Run the integration tests that boot real microsandbox VMs"
 run = "cargo test -p firebrick-daemon --features vm-tests"
+# Cargo's job object keeps microsandbox from starting VMs on Windows, so the
+# script runs the test binaries itself (ADR 0050).
+run_windows = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/vm-tests.ps1"
 
 [tasks.registry]
 description = "Make sure the local image registry serves on 127.0.0.1:5000"
