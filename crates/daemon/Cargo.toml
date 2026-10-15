@@ -30,6 +30,10 @@ required-features = ["vm-tests"]
 [[test]]
 name = "host_tools"
 
+# The same scenarios with a stub `powershell.exe`, on Windows.
+[[test]]
+name = "host_tools_windows"
+
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }

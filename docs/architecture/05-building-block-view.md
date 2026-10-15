@@ -609,8 +609,12 @@ C4Component
   runs `HostTools::new` against stub tools on a `PATH` of its own, in a test
   binary of its own, because a process spawned in the unit tests can briefly
   hold the port of a listener that a `forward` test just closed. Its stubs are
-  shell scripts, so it runs on Unix only; on Windows the unit tests only check
-  the PowerShell commands, because the real clipboard can't be stubbed.
+  shell scripts, so it runs on Unix only; `tests/host_tools_windows.rs` runs the
+  same scenarios on Windows against a stub `powershell.exe` that Windows
+  PowerShell compiles from C# once per run. The Unix scenarios of a missing tool
+  or display, a copy tool that leaves a child behind, and `osascript` have no
+  Windows counterpart, because PowerShell is part of Windows, which always has a
+  desktop, and PowerShell doesn't fork.
 - `vsock` - The listeners behind the vsock routes of `netlog` and `clipboard`.
   `Listeners<S>` keeps one listener per sandbox for a channel, with the state
   `S` it shares with the channel, such as the network record. It knows the
