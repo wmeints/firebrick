@@ -6,6 +6,68 @@ request, and the release workflow copies the section into the GitHub release,
 above the generated list of pull requests. Each section starts with a `##
 vX.Y.Z - YYYY-MM-DD` heading.
 
+## v0.8.0 - 2026-10-15
+
+This release runs `fbk` and `fbkd` natively on Windows, shares the host
+clipboard with a sandbox when you opt in, and adds `fbk upgrade` and network
+presets to keep sandboxes current and enforced networks easy to set up. It also
+closes several paths where a workspace or guest output could reach the host.
+
+> **Windows support is experimental for now.** It builds on microsandbox's
+> preview support for the Windows Hypervisor Platform, and the Windows
+> integration tests don't run in CI, so expect rough edges. You can still run
+> the Linux release in WSL 2.
+
+### Breaking changes
+
+- `fbk init` no longer pins `image` in the new `.firebrick.yml`, so new
+  sandboxes follow the release's `firebrick-base` image. Existing specs keep
+  their `image`; remove it or point it at the new version to pick up updates.
+  (#174)
+
+### Features
+
+- `fbk` and `fbkd` run natively on Windows 11 x64 through the Windows Hypervisor
+  Platform (experimental, see above). The daemon keeps its data in
+  `%LOCALAPPDATA%\firebrick`, and the generated SSH config works with Windows'
+  OpenSSH. (#211)
+- The release has an `x86_64-pc-windows-msvc` zip archive with `fbk.exe` and
+  `fbkd.exe`, so Windows users no longer build from source. The binaries run
+  without the Visual C++ Redistributable. (#215)
+- `clipboard: true` in `.firebrick.yml` shares the host clipboard with the
+  sandbox, both ways: programs can paste text and PNG images with `wl-paste` or
+  `xclip`, and copy with `wl-copy` or `xclip -i`. It's off by default and needs
+  your approval like `mounts` and `network`. (#193, #195)
+- `fbk upgrade [NAME]` recreates a sandbox from the latest version of its image
+  and keeps its name, workspace, mounts, ports, network rules and secrets.
+  Docker data in the sandbox isn't carried over. (#172)
+- `fbk start`, `fbk run`, `fbk network` and `fbk port` warn when a sandbox runs
+  an older `firebrick-base` image, and point to `fbk upgrade`. (#174)
+- `fbk network presets show` and `fbk network presets apply` add grouped allow
+  rules for coding agents and toolchains, such as `claude`, `copilot`, `github`,
+  `node`, `python` and `rust`, to an enforced network. (#173)
+- `fbk start` shows the progress of `mise install` instead of staying silent
+  while the tools install. (#171)
+
+### Fixes
+
+- Ctrl+C in a sandbox terminal now stops forked processes, such as the JVM of
+  `mvn quarkus:dev`, and `exit` ends the session. (#167)
+- `fbk ls` no longer shows a paused sandbox as running on a busy host, and `fbk
+  network` and `fbk upgrade` no longer recreate a paused sandbox. A sandbox
+  whose runtime doesn't answer is listed as `Unknown`. (#209)
+- Escape sequences from guest output and from `.firebrick.yml` diagnostics are
+  removed whole, so they can't change the host terminal or clipboard, and `fbkd`
+  rejects invalid image references in the spec. (#182, #208)
+- `fbkd` rejects sandbox names that aren't a single path component before it
+  uses them in host paths. (#207)
+- `fbk` refuses a `.firebrick.yml` that is a symlink or not a regular file
+  instead of reading or writing through it. (#205)
+- `fbkd` writes `~/.ssh/config` atomically, so an interrupted write can't leave
+  it truncated. (#204)
+- On macOS, `fbkd` keeps its network log sockets in a private directory. (#183)
+- The bundled `rustls` is updated to fix RUSTSEC-2026-0346 to 0349. (#210)
+
 ## v0.7.0 - 2026-10-11
 
 This release shows which domains and IP addresses an agent contacts, so you can
