@@ -442,7 +442,7 @@ fn build_start_request(spec: SandboxSpec, workspace: &Path) -> Result<StartSandb
     let mounts = resolve_mounts(
         spec.mounts.unwrap_or_default(),
         workspace,
-        std::env::var_os(HOME_VAR),
+        std::env::var_os(firebrick_utils::HOME_VAR),
     )?;
 
     Ok(StartSandboxRequest {
@@ -509,14 +509,6 @@ fn resolve_host_path(
     Ok(canonical)
 }
 
-/// The environment variable that holds the user's home directory.
-#[cfg(unix)]
-const HOME_VAR: &str = "HOME";
-
-/// The environment variable that holds the user's home directory.
-#[cfg(windows)]
-const HOME_VAR: &str = "USERPROFILE";
-
 /// The characters that end the `~user` at the start of a host path.
 #[cfg(unix)]
 const SEPARATORS: &[char] = &['/'];
@@ -531,9 +523,12 @@ fn expand_tilde(host: &str, rest: &str, home: Option<&std::ffi::OsStr>) -> Resul
     let (user, tail) = rest.split_once(SEPARATORS).unwrap_or((rest, ""));
 
     let home = if user.is_empty() {
-        PathBuf::from(
-            home.with_context(|| format!("can't expand ~ in {host}: ${HOME_VAR} isn't set"))?,
-        )
+        PathBuf::from(home.with_context(|| {
+            format!(
+                "can't expand ~ in {host}: ${} isn't set",
+                firebrick_utils::HOME_VAR
+            )
+        })?)
     } else {
         user_home(host, user)?
     };
@@ -2016,7 +2011,7 @@ mod tests {
     fn host_path_needs_home_for_tilde() {
         let error = resolve_host_path("~/datasets", Path::new("/elsewhere"), None).unwrap_err();
 
-        let missing = format!("${HOME_VAR} isn't set");
+        let missing = format!("${} isn't set", firebrick_utils::HOME_VAR);
         assert!(error.to_string().contains(&missing), "{error}");
     }
 

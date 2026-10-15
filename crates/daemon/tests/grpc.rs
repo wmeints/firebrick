@@ -175,7 +175,7 @@ impl TestDaemon {
         STALE_SWEEP.get_or_init(sweep_stale_sandboxes).await;
 
         let socket_path = daemon_endpoint(name);
-        let _ = ipc::remove(&socket_path);
+        let _ = ipc::remove(&socket_path).await;
 
         let (tx, rx) = oneshot::channel();
         let opener = Arc::new(RecordingOpener::default());
@@ -379,9 +379,9 @@ async fn remove_stale_sandbox(sb: &SandboxHandle) {
 fn remove_stale_host_files() {
     let dirs = [
         Some(std::env::temp_dir()),
-        firebrick_utils::netlog_socket_dir(),
+        firebrick_utils::netlog_socket_dir().ok().flatten(),
         firebrick_utils::network_log_dir(),
-        firebrick_utils::clipboard_socket_dir(),
+        firebrick_utils::clipboard_socket_dir().ok().flatten(),
     ];
 
     for dir in dirs.iter().flatten() {
@@ -412,9 +412,9 @@ async fn remove_sandbox(name: &str) {
     }
 
     let _ = std::fs::remove_dir_all(workspace_path(name));
-    let _ = ipc::remove(&netlog_socket(name));
+    let _ = ipc::remove(&netlog_socket(name)).await;
     let _ = std::fs::remove_file(netlog_record(name));
-    let _ = ipc::remove(&clipboard_socket(name));
+    let _ = ipc::remove(&clipboard_socket(name)).await;
 }
 
 async fn sandbox_status(
@@ -3648,6 +3648,7 @@ async fn forward_port_fails_for_a_stored_port_that_is_still_busy() {
 /// Returns the host socket fbkd listens on for the sandbox's network log, a pipe on Windows.
 fn netlog_socket(name: &str) -> PathBuf {
     let dir = firebrick_utils::netlog_socket_dir()
+        .expect("can't name the network log endpoints")
         .expect("set XDG_RUNTIME_DIR to an absolute path for the network log tests on Linux");
     ipc::endpoint(&dir, name).expect("the sandbox name is too long for an endpoint")
 }
@@ -3889,6 +3890,7 @@ async fn list_network_activity_returns_the_recorded_events_with_the_policy() {
 /// Returns the host socket fbkd listens on for the sandbox's clipboard, a pipe on Windows.
 fn clipboard_socket(name: &str) -> PathBuf {
     let dir = firebrick_utils::clipboard_socket_dir()
+        .expect("can't name the clipboard endpoints")
         .expect("set XDG_RUNTIME_DIR to an absolute path for the clipboard tests on Linux");
     ipc::endpoint(&dir, name).expect("the sandbox name is too long for an endpoint")
 }

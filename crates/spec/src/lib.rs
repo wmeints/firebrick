@@ -794,11 +794,10 @@ fn open_checked(path: &Path, checked: &fs::Metadata) -> std::io::Result<Option<f
 /// a symlink swapped in after the check is never followed.
 #[cfg(windows)]
 fn open_checked(path: &Path, _checked: &fs::Metadata) -> std::io::Result<Option<fs::File>> {
-    /// `FILE_FLAG_OPEN_REPARSE_POINT` from the Win32 API.
-    const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
     let file = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(OPEN_REPARSE_POINT)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)?;
     let opened = file.metadata()?;
 

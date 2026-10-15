@@ -44,6 +44,8 @@ nix = { version = "0.31.3", default-features = false, features = ["user"] }
 [target.'cfg(windows)'.dependencies]
 # The console mode calls of crossterm, for VT input and output in `fbk run` (ADR 0051).
 crossterm_winapi = "0.9.1"
+# The Win32 constants for console modes and process creation flags; the version tokio uses.
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_System_Threading"] }
 
 [dev-dependencies]
 indicatif = { version = "0.18.6", features = ["in_memory"] }

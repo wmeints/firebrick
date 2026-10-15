@@ -20,6 +20,12 @@ $tests = $build |
         $_.target.kind -contains 'test' } |
     ForEach-Object { $_.executable }
 
+# Without test binaries nothing would boot a VM, and the run would pass anyway.
+if (-not $tests) {
+    Write-Output 'vm-tests failed: cargo built no test binaries for firebrick-daemon'
+    exit 1
+}
+
 # The `[env]` of .cargo/config.toml only reaches binaries that cargo runs, so
 # set it here the same way: an MSB_HOME set in the environment takes precedence.
 if (-not $env:MSB_HOME) { $env:MSB_HOME = '/tmp/firebrick-msb' }

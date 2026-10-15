@@ -107,8 +107,8 @@ pub async fn exists(path: &Path) -> bool {
 
 /// Removes a stale endpoint. Succeeds when there's none, and on Windows, where a pipe
 /// disappears with its server, it does nothing.
-pub fn remove(path: &Path) -> io::Result<()> {
-    sys::remove(path)
+pub async fn remove(path: &Path) -> io::Result<()> {
+    sys::remove(path).await
 }
 
 /// Returns the endpoint named `name` among the endpoints in `dir`, or `None` when `name` isn't a
@@ -223,8 +223,10 @@ mod tests {
 
         assert!(!is_served(&path).await);
         assert!(!exists(&path).await);
-        assert!(connect(&path).await.is_err());
-        remove(&path).unwrap();
+        let err = connect(&path).await.err().unwrap();
+        // `fbk` starts the daemon only on this kind, so it must be what a missing endpoint gives.
+        assert_eq!(err.kind(), io::ErrorKind::NotFound, "{err}");
+        remove(&path).await.unwrap();
     }
 
     #[tokio::test]
@@ -232,7 +234,7 @@ mod tests {
         let (_temp, path) = test_endpoint("rebind");
         drop(Listener::bind(&path).unwrap());
 
-        remove(&path).unwrap();
+        remove(&path).await.unwrap();
 
         assert!(!exists(&path).await);
         assert!(Listener::bind(&path).is_ok());
@@ -253,5 +255,27 @@ mod tests {
 
         assert!(endpoint(&dir, "short").is_some());
         assert_eq!(endpoint(&dir, &"a".repeat(300)), None);
+    }
+
+    /// Sandboxes keep the endpoints of their vsock routes from when they were created, so the
+    /// names must not change.
+    #[cfg(unix)]
+    #[test]
+    fn endpoint_is_a_socket_named_after_the_sandbox_in_the_directory() {
+        assert_eq!(
+            endpoint(Path::new("/run/user/1000/firebrick/netlog"), "sb"),
+            Some(PathBuf::from("/run/user/1000/firebrick/netlog/sb.sock"))
+        );
+    }
+
+    /// Sandboxes keep the endpoints of their vsock routes from when they were created, so the
+    /// names must not change.
+    #[cfg(windows)]
+    #[test]
+    fn endpoint_is_the_pipe_name_with_the_sandbox_appended() {
+        assert_eq!(
+            endpoint(Path::new(r"\\.\pipe\firebrick-S-1-5-21-1-netlog"), "sb"),
+            Some(PathBuf::from(r"\\.\pipe\firebrick-S-1-5-21-1-netlog-sb"))
+        );
     }
 }

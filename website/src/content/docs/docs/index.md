@@ -46,9 +46,9 @@ Firebrick consists of two executables:
 
 The CLI and daemon talk gRPC over a unix socket (`$XDG_RUNTIME_DIR/fbkd.sock`,
 or `fbkd.sock` in the temp directory when `XDG_RUNTIME_DIR` isn't set), or on
-Windows over a named pipe that only your user can open. The daemon mounts the
-working directory read/write in the sandbox at `/workspaces/<leaf>`, where
-`<leaf>` is the name of the directory.
+Windows over a named pipe that only your user and the system can open. The
+daemon mounts the working directory read/write in the sandbox at
+`/workspaces/<leaf>`, where `<leaf>` is the name of the directory.
 
 `fbkd` embeds the microsandbox runtime and installs it in its own microsandbox
 home, `~/.local/state/firebrick/msb` (or `$XDG_STATE_HOME/firebrick/msb`), on

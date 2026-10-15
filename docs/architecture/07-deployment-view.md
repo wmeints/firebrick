@@ -113,7 +113,9 @@ installed runtime with another version. See
 - On Windows the daemon's endpoint is the pipe `\\.\pipe\firebrick-<SID>-fbkd`.
   A `FIREBRICK_PIPE_PREFIX` naming another local pipe replaces
   `\\.\pipe\firebrick-<SID>`, which isolates test daemons like `XDG_RUNTIME_DIR`
-  does on Unix.
+  does on Unix. Any other value is an error, so a typo never reaches the user's
+  own daemon, and so is a SID that can't be read: `fbk` and `fbkd` never fall
+  back to a pipe name that every user shares.
 - A non-empty `MSB_HOME` environment variable overrides the home. The cargo
   commands in the repository and the `smoke-test` skill use it to isolate
   development builds. `MSB_PATH` and `MSB_LIBKRUNFW_PATH` point `fbkd` at a

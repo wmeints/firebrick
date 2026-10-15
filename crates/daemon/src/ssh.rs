@@ -48,7 +48,8 @@ pub fn ensure_keys() -> Result<()> {
     let dir = ssh_dir()?;
 
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    make_private(&dir)?;
+    // Win32-OpenSSH requires the access list that the keys inherit from the directory.
+    firebrick_utils::make_private_dir(&dir)?;
 
     let client_key = load_or_create_key(&dir.join(CLIENT_KEY_FILE))?;
     write_file(
@@ -120,20 +121,13 @@ pub fn sync_config(hostnames: &[String]) -> Result<()> {
     atomic_file::write(&config_path, &config, 0o600)
         .with_context(|| format!("failed to write {}", config_path.display()))?;
 
-    let home = std::env::var_os(HOME_VAR).with_context(|| format!("{HOME_VAR} is not set"))?;
+    let home_var = firebrick_utils::HOME_VAR;
+    let home = std::env::var_os(home_var).with_context(|| format!("{home_var} is not set"))?;
     ensure_include(
         &PathBuf::from(home).join(".ssh").join("config"),
         &config_path,
     )
 }
-
-/// The environment variable that holds the user's home directory, which holds `.ssh`.
-#[cfg(unix)]
-const HOME_VAR: &str = "HOME";
-
-/// The environment variable that holds the user's home directory, which holds `.ssh`.
-#[cfg(windows)]
-const HOME_VAR: &str = "USERPROFILE";
 
 /// Returns the path as it goes into an SSH config. On Windows that's with forward slashes,
 /// which Win32-OpenSSH accepts and which aren't escapes inside quotes.
@@ -145,12 +139,6 @@ fn config_path(path: &Path) -> String {
     } else {
         path
     }
-}
-
-/// Makes the directory accessible only to the user: mode `0700`, or on Windows an access list
-/// that the keys in it inherit, which Win32-OpenSSH requires of a private key.
-fn make_private(dir: &Path) -> std::io::Result<()> {
-    firebrick_utils::make_private_dir(dir)
 }
 
 /// Renders a host block per sandbox that tunnels through `fbk ssh-proxy`.
@@ -206,7 +194,7 @@ fn read_user_config(path: &Path) -> Result<String> {
         Err(err) if err.kind() == ErrorKind::NotFound => {
             if let Some(dir) = path.parent() {
                 fs::create_dir_all(dir)?;
-                make_private(dir)?;
+                firebrick_utils::make_private_dir(dir)?;
             }
             Ok(String::new())
         }

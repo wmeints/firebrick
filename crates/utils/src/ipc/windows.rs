@@ -43,12 +43,20 @@ impl Listener {
 
     /// Waits for a client on the free instance, puts a new free instance in its place, and
     /// checks that the client is trusted. The instance is only replaced once a client
-    /// connected, so a cancelled call loses nothing.
+    /// connected, so a cancelled call loses nothing. When the client is gone before it's
+    /// accepted, or no new instance can be created, the client is disconnected and the instance
+    /// waits for the next one, so a failure that persists can't make every call return at once.
     pub async fn accept(&mut self) -> io::Result<Stream> {
-        let connected = self.next.connect().await;
-        let next = win32::create_pipe(&self.path, &self.owner, false)?;
+        let next = match self.next.connect().await {
+            Ok(()) => win32::create_pipe(&self.path, &self.owner, false),
+            Err(err) => Err(err),
+        };
+        let next = next.inspect_err(|_| {
+            // The instance is free again for the next client; a disconnect error leaves it
+            // as it was, which the next `connect` reports.
+            let _ = self.next.disconnect();
+        })?;
         let pipe = std::mem::replace(&mut self.next, next);
-        connected?;
 
         check_peer(win32::pipe_client_pid(&pipe)?, &self.owner, "client")?;
         Ok(Stream::new(pipe))
@@ -92,7 +100,7 @@ pub async fn exists(path: &Path) -> bool {
 }
 
 /// Does nothing: a pipe disappears with its last server instance.
-pub fn remove(_path: &Path) -> io::Result<()> {
+pub async fn remove(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 

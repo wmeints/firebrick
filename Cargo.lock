@@ -2005,6 +2005,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2038,6 +2039,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2059,6 +2061,7 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "thiserror",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

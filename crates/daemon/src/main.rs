@@ -74,7 +74,7 @@ async fn run(log_dir: &Path, secrets_path: PathBuf) -> Result<()> {
 
     // Check the socket before touching the runtime, so a second daemon can't replace the
     // runtime under the one that is already serving.
-    let socket_path = firebrick_utils::socket_path();
+    let socket_path = firebrick_utils::socket_path().context("can't name the daemon's endpoint")?;
     if firebrick_utils::ipc::exists(&socket_path).await {
         bail!(server::ServerError::SocketAlreadyInUse());
     }
@@ -89,7 +89,7 @@ async fn run(log_dir: &Path, secrets_path: PathBuf) -> Result<()> {
 
     tracing::info!(path = %log_dir.display(), "writing logs");
     tracing::info!(path = %msb_config.home().display(), "using microsandbox home");
-    tracing::info!(path = socket_path.to_str().unwrap(), "listening");
+    tracing::info!(path = %socket_path.display(), "listening");
     Ok(server::run(&socket_path, SecretStore::new(secrets_path)).await?)
 }
 

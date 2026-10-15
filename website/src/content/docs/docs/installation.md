@@ -150,7 +150,9 @@ xattr -d com.apple.quarantine ~/.local/bin/fbk ~/.local/bin/fbkd
 ## Windows: run Firebrick natively
 
 `fbk` and `fbkd` run on Windows 11 x64 through the Windows Hypervisor Platform.
-There's no Windows release archive yet, so install them with Cargo:
+There's no Windows release archive yet, and the releases on crates.io up to
+0.7.0 don't run on Windows, so build them from source until a release with
+Windows support is out:
 
 1. Turn on the Windows Hypervisor Platform from an administrator PowerShell, and
    restart Windows when it asks you to:
@@ -166,7 +168,7 @@ There's no Windows release archive yet, so install them with Cargo:
    winget install Microsoft.VisualStudio.2022.BuildTools --override "--passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
    ```
 
-3. Follow [Installing with Cargo](#installing-with-cargo). Cargo installs
+3. Follow [Building from source](#building-from-source). Cargo installs
    `fbk.exe` and `fbkd.exe` in `%USERPROFILE%\.cargo\bin`.
 
 On Windows, Firebrick keeps its data and logs in `%LOCALAPPDATA%\firebrick` and
@@ -174,8 +176,14 @@ your approvals in `%APPDATA%\firebrick`; see
 [File locations](/docs/configuration/#file-locations). The generated SSH config
 is included from `%USERPROFILE%\.ssh\config`, so the `.fbk` host names work for
 Windows' OpenSSH and the editors that use it. The clipboard works without extra
-tools, and `~user` in a mount's host path isn't supported. To stop the daemon,
-run `Stop-Process -Name fbkd`.
+tools, and `~user` in a mount's host path isn't supported.
+
+`fbk` starts the daemon without a console, so nothing can ask it to stop
+cleanly. `Stop-Process -Name fbkd` ends it at once: running sandboxes keep
+running, but a network or image upgrade that's still in progress is cut off, and
+the last few seconds of network activity aren't recorded. Stop it when no `fbk`
+command is running. Windows can't replace or remove a running program, so stop
+the daemon before you upgrade or uninstall Firebrick with Cargo.
 
 ## Windows: run Firebrick in WSL 2
 

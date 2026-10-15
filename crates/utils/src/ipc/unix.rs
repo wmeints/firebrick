@@ -45,12 +45,12 @@ pub async fn is_served(path: &Path) -> bool {
 
 /// Whether the socket file exists, live or stale.
 pub async fn exists(path: &Path) -> bool {
-    path.exists()
+    tokio::fs::try_exists(path).await.unwrap_or(false)
 }
 
 /// Removes the socket file, succeeding when there's none.
-pub fn remove(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
+pub async fn remove(path: &Path) -> io::Result<()> {
+    match tokio::fs::remove_file(path).await {
         Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
         _ => Ok(()),
     }

@@ -27,12 +27,16 @@ pub const MAX_CONNECTIONS: usize = 4;
 /// isn't a single path component and the file would end up elsewhere. fbkd checks names when a
 /// request comes in; this keeps a name that slipped through inside the directory.
 pub fn sandbox_file(dir: &Path, sandbox: &str, extension: &str) -> Option<PathBuf> {
-    if Path::new(sandbox).file_name() != Some(OsStr::new(sandbox)) {
-        tracing::error!("refusing to name a file after the invalid sandbox name {sandbox:?}");
-        return None;
-    }
+    is_single_component(sandbox).then(|| dir.join(format!("{sandbox}.{extension}")))
+}
 
-    Some(dir.join(format!("{sandbox}.{extension}")))
+/// Whether the sandbox name is a single path component, logging an error when it isn't.
+fn is_single_component(sandbox: &str) -> bool {
+    let single = Path::new(sandbox).file_name() == Some(OsStr::new(sandbox));
+    if !single {
+        tracing::error!("refusing to name a file after the invalid sandbox name {sandbox:?}");
+    }
+    single
 }
 
 /// Returns the endpoint of the sandbox in the directory, or `None` when there's no directory,
@@ -40,7 +44,9 @@ pub fn sandbox_file(dir: &Path, sandbox: &str, extension: &str) -> Option<PathBu
 /// a pipe, since microsandbox would then refuse to boot the sandbox.
 fn socket_path(dir: Option<&Path>, sandbox: &str) -> Option<PathBuf> {
     let dir = dir?;
-    sandbox_file(dir, sandbox, "sock")?;
+    if !is_single_component(sandbox) {
+        return None;
+    }
 
     ipc::endpoint(dir, sandbox)
 }
@@ -60,14 +66,22 @@ const NO_ENDPOINT_DIR: &str = "XDG_RUNTIME_DIR isn't an absolute path";
 
 /// Why there's no endpoint directory.
 #[cfg(windows)]
-const NO_ENDPOINT_DIR: &str = "the current user's SID can't be read to name the pipes";
+const NO_ENDPOINT_DIR: &str = "there's no pipe name for them";
 
 /// Returns the socket directory when it's private to the user, creating it when it's missing.
-/// Logs a warning that sandboxes get no `channel` when there's no directory or it isn't private.
-fn private_dir(dir: Option<PathBuf>, channel: &str) -> Option<PathBuf> {
-    let Some(dir) = dir else {
-        tracing::warn!("{NO_ENDPOINT_DIR}, so sandboxes get no {channel}");
-        return None;
+/// Logs a warning that sandboxes get no `channel` when there's no directory, it can't be named,
+/// or it isn't private.
+fn private_dir(dir: io::Result<Option<PathBuf>>, channel: &str) -> Option<PathBuf> {
+    let dir = match dir {
+        Ok(Some(dir)) => dir,
+        Ok(None) => {
+            tracing::warn!("{NO_ENDPOINT_DIR}, so sandboxes get no {channel}");
+            return None;
+        }
+        Err(err) => {
+            tracing::warn!("sandboxes get no {channel}: {err}");
+            return None;
+        }
     };
 
     match ipc::prepare_dir(&dir) {
@@ -101,7 +115,7 @@ async fn bind(dir: &Path, path: &Path) -> io::Result<ipc::Listener> {
         ));
     }
 
-    ipc::remove(path)?;
+    ipc::remove(path).await?;
 
     ipc::Listener::bind(path)
 }
@@ -203,8 +217,12 @@ impl<S: Send + Sync + 'static> Listeners<S> {
 
     /// Creates a registry like [`Listeners::new`] with the sockets in `socket_dir` when it's
     /// private to the user, creating it when it's missing. Leaves out a directory that is
-    /// missing or isn't private, with a warning.
-    pub fn private(channel: &'static str, port: u32, socket_dir: Option<PathBuf>) -> Self {
+    /// missing, can't be named or isn't private, with a warning.
+    pub fn private(
+        channel: &'static str,
+        port: u32,
+        socket_dir: io::Result<Option<PathBuf>>,
+    ) -> Self {
         Self::new(channel, port, private_dir(socket_dir, channel))
     }
 
@@ -337,7 +355,7 @@ impl<S: Send + Sync + 'static> Listeners<S> {
         }
 
         if let Some(path) = self.socket_path(sandbox)
-            && let Err(err) = ipc::remove(&path)
+            && let Err(err) = ipc::remove(&path).await
         {
             tracing::warn!("failed to remove {}: {err}", path.display());
         }
@@ -516,9 +534,12 @@ mod tests {
         std::fs::create_dir(&open).unwrap();
         std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        assert_eq!(private_dir(Some(private.clone()), "test"), Some(private));
-        assert_eq!(private_dir(Some(open), "test"), None);
-        assert_eq!(private_dir(None, "test"), None);
+        assert_eq!(
+            private_dir(Ok(Some(private.clone())), "test"),
+            Some(private)
+        );
+        assert_eq!(private_dir(Ok(Some(open)), "test"), None);
+        assert_eq!(private_dir(Ok(None), "test"), None);
     }
 
     #[tokio::test]

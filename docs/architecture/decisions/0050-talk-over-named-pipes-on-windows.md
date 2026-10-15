@@ -49,7 +49,13 @@ On Windows:
   because vsock routes are fixed when a sandbox is created. A
   `FIREBRICK_PIPE_PREFIX` that names a local pipe replaces the
   `\\.\pipe\firebrick-<SID>` prefix, so test daemons don't collide with the
-  user's own, the way `XDG_RUNTIME_DIR` isolates them on Unix.
+  user's own, the way `XDG_RUNTIME_DIR` isolates them on Unix. Another value, or
+  a SID that can't be read, is an error rather than a fallback to a name all
+  users share.
+- `fbk` starts a daemon only when connecting fails because the endpoint doesn't
+  exist, or on Unix only a stale socket file is left. Any other error, such as a
+  failed peer check or a pipe that stays busy, ends the command, so `fbk` never
+  removes a live daemon's socket or starts a second daemon.
 - `Listener::bind` creates the first instance with
   `FILE_FLAG_FIRST_PIPE_INSTANCE`, so it fails with `AddrInUse` when anyone
   already serves the name. Every instance rejects remote clients and has a

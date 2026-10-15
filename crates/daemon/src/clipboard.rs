@@ -1028,8 +1028,7 @@ fn hide_console(_command: &mut tokio::process::Command) {}
 /// Windows would otherwise open a console window for each console program fbkd runs.
 #[cfg(windows)]
 fn hide_console(command: &mut tokio::process::Command) {
-    /// `CREATE_NO_WINDOW` from the Win32 API.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
     command.creation_flags(CREATE_NO_WINDOW);
 }
 
@@ -1295,29 +1294,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn answers_invalid_to_unknown_or_unfinished_requests() {
+    async fn answers_invalid_to_unknown_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let clipboards = clipboards(dir.path(), FakeClipboard::with(Some(b"text"), None));
+        clipboards.listen("sb", true).await.unwrap();
+
+        assert_eq!(ask(&clipboards, "sb", b"primary\n").await, b"invalid\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn answers_invalid_to_unfinished_requests() {
         let dir = tempfile::tempdir().unwrap();
         let clipboards = clipboards(dir.path(), FakeClipboard::with(Some(b"text"), None));
         clipboards.listen("sb", true).await.unwrap();
 
         let answers = [
-            ask(&clipboards, "sb", b"primary\n").await,
             ask(&clipboards, "sb", b"text").await,
             ask(&clipboards, "sb", b"").await,
         ];
 
-        assert_eq!(answers, [b"invalid\n", UNFINISHED, UNFINISHED]);
+        assert_eq!(answers, [b"invalid\n"; 2]);
     }
 
-    /// The answer to a request that ends before its line does.
-    #[cfg(unix)]
-    const UNFINISHED: &[u8] = b"invalid\n";
-
-    /// The answer to a request that ends before its line does. A named pipe can't be half-closed,
-    /// so on Windows the request isn't seen to end, and fbkd closes the connection after
-    /// [`REQUEST_TIMEOUT`] without an answer.
+    /// A named pipe can't be half-closed, so on Windows a request that ends before its line
+    /// isn't seen to end. fbkd closes it after [`REQUEST_TIMEOUT`] without an answer, and keeps
+    /// answering other requests.
     #[cfg(windows)]
-    const UNFINISHED: &[u8] = b"";
+    #[tokio::test]
+    async fn closes_unfinished_requests_after_the_request_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let clipboards = clipboards(dir.path(), FakeClipboard::with(Some(b"text"), None));
+        clipboards.listen("sb", true).await.unwrap();
+        let started = Instant::now();
+
+        let answer = ask(&clipboards, "sb", b"text").await;
+
+        assert_eq!(answer, b"");
+        assert!(
+            started.elapsed() >= REQUEST_TIMEOUT,
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(ask(&clipboards, "sb", b"types\n").await, b"ok 5\ntext\n");
+    }
 
     #[tokio::test]
     async fn sends_no_content_for_a_long_request() {

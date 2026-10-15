@@ -112,10 +112,13 @@ pub async fn attach(
 /// Writes session output to stdout until the session reports its exit code.
 async fn copy_output(mut responses: Streaming<AttachResponse>) -> Result<i32> {
     let mut stdout = std::io::stdout();
+    let mut text = ConsoleText::default();
 
     while let Some(response) = responses.message().await? {
         match response.message {
-            Some(attach_response::Message::Output(data)) => write_flushed(&mut stdout, &data)?,
+            Some(attach_response::Message::Output(data)) => {
+                write_flushed(&mut stdout, &text.convert(&data))?;
+            }
             Some(attach_response::Message::ExitCode(code)) => return Ok(code),
             None => {}
         }
@@ -124,24 +127,66 @@ async fn copy_output(mut responses: Streaming<AttachResponse>) -> Result<i32> {
     bail!("session ended without an exit code")
 }
 
-/// Writes data to the output and flushes it, so the terminal shows it right away. A byte the
-/// output refuses as invalid UTF-8, as the Windows console does, is written as `U+FFFD`
-/// instead of ending the session.
-fn write_flushed(output: &mut impl Write, mut data: &[u8]) -> std::io::Result<()> {
-    while !data.is_empty() {
-        match output.write(data) {
-            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
-            Ok(written) => data = &data[written..],
-            Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
-                output.write_all(char::REPLACEMENT_CHARACTER.to_string().as_bytes())?;
-                data = &data[1..];
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(err) => return Err(err),
+/// Writes data to the output and flushes it, so the terminal shows it right away.
+fn write_flushed(output: &mut impl Write, data: &[u8]) -> std::io::Result<()> {
+    output.write_all(data)?;
+    output.flush()
+}
+
+/// Turns the guest's terminal output into what the local terminal takes. The Windows console
+/// refuses bytes that aren't UTF-8, also when stdout's buffer flushes them later, so there each
+/// invalid sequence becomes `U+FFFD`, and a character split across two chunks is held back
+/// until its rest arrives. Unix terminals take the bytes as they are.
+#[derive(Default)]
+struct ConsoleText {
+    /// The start of a character whose rest is in the next chunk.
+    pending: Vec<u8>,
+}
+
+impl ConsoleText {
+    /// Returns the chunk as the local terminal takes it.
+    fn convert(&mut self, data: &[u8]) -> Vec<u8> {
+        if cfg!(windows) {
+            self.sanitize(data)
+        } else {
+            data.to_vec()
         }
     }
 
-    output.flush()
+    /// Returns the bytes held back and the chunk as valid UTF-8, with `U+FFFD` for every
+    /// invalid sequence. Holds back an incomplete character at the end.
+    fn sanitize(&mut self, data: &[u8]) -> Vec<u8> {
+        let mut input = std::mem::take(&mut self.pending);
+        input.extend_from_slice(data);
+        let mut output = Vec::with_capacity(input.len());
+        let mut chunks = input.utf8_chunks().peekable();
+
+        while let Some(chunk) = chunks.next() {
+            output.extend_from_slice(chunk.valid().as_bytes());
+            let last = chunks.peek().is_none();
+            self.hold_or_replace(chunk.invalid(), last, &mut output);
+        }
+
+        output
+    }
+
+    /// Holds back the invalid bytes when they're the `last` ones and may be the start of a
+    /// character, and otherwise writes `U+FFFD` for them to the output.
+    fn hold_or_replace(&mut self, invalid: &[u8], last: bool, output: &mut Vec<u8>) {
+        if last && is_incomplete(invalid) {
+            self.pending = invalid.to_vec();
+        } else if !invalid.is_empty() {
+            output.extend_from_slice("\u{fffd}".as_bytes());
+        }
+    }
+}
+
+/// Whether the bytes are the start of a UTF-8 character whose rest is missing.
+fn is_incomplete(bytes: &[u8]) -> bool {
+    !bytes.is_empty()
+        && std::str::from_utf8(bytes)
+            .err()
+            .is_some_and(|err| err.error_len().is_none())
 }
 
 /// Sends stdin to the session from a plain thread. A tokio stdin reader would keep the runtime
@@ -228,17 +273,17 @@ fn window_size() -> AttachResize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::LineWriter;
 
-    /// An output that, like the Windows console, writes the valid UTF-8 at the start of the data
-    /// and refuses data that starts with a byte that isn't.
+    /// An output that, like the Windows console, refuses to write anything that isn't UTF-8.
     #[derive(Default)]
     struct Console(Vec<u8>);
 
     impl Write for Console {
         fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-            let valid = valid_utf8_prefix(data)?;
-            self.0.extend_from_slice(&data[..valid]);
-            Ok(valid)
+            std::str::from_utf8(data).map_err(|_| std::io::ErrorKind::InvalidData)?;
+            self.0.extend_from_slice(data);
+            Ok(data.len())
         }
 
         fn flush(&mut self) -> std::io::Result<()> {
@@ -246,55 +291,67 @@ mod tests {
         }
     }
 
-    /// Returns how many bytes at the start of the data the Windows console writes: the valid
-    /// UTF-8, or the first byte of an incomplete character, which it buffers. Fails when the data
-    /// starts with an invalid byte.
-    fn valid_utf8_prefix(data: &[u8]) -> std::io::Result<usize> {
-        match std::str::from_utf8(data) {
-            Ok(text) => Ok(text.len()),
-            Err(err) if err.valid_up_to() == 0 && err.error_len().is_some() => {
-                Err(std::io::ErrorKind::InvalidData.into())
-            }
-            Err(err) => Ok(err.valid_up_to().max(data.len().min(1))),
+    /// Writes the chunks to a console behind a line buffer, like stdout, after `convert`
+    /// turned them into what the console takes, and returns what the console shows.
+    fn show(
+        chunks: &[&[u8]],
+        convert: impl Fn(&mut ConsoleText, &[u8]) -> Vec<u8>,
+    ) -> std::io::Result<String> {
+        let mut stdout = LineWriter::new(Console::default());
+        let mut text = ConsoleText::default();
+        for chunk in chunks {
+            write_flushed(&mut stdout, &convert(&mut text, chunk))?;
         }
-    }
-
-    /// An output that accepts nothing.
-    struct Closed;
-
-    impl Write for Closed {
-        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            Ok(0)
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+        let console = stdout.into_inner().map_err(|err| err.into_error())?;
+        Ok(String::from_utf8(console.0).unwrap())
     }
 
     #[test]
-    fn write_flushed_writes_utf8_unchanged() {
-        let mut console = Console::default();
+    fn a_buffered_console_refuses_invalid_bytes_when_it_flushes_them() {
+        let raw = show(&[b"a\xff"], |_, chunk| chunk.to_vec());
 
-        write_flushed(&mut console, "héllo\x1b[0m".as_bytes()).unwrap();
-
-        assert_eq!(console.0, "héllo\x1b[0m".as_bytes());
+        assert_eq!(raw.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[test]
-    fn write_flushed_replaces_invalid_bytes_instead_of_failing() {
-        let mut console = Console::default();
+    fn utf8_output_reaches_a_buffered_console_unchanged() {
+        let shown = show(
+            &["héllo\x1b[0m\n".as_bytes(), b"next"],
+            ConsoleText::sanitize,
+        );
 
-        write_flushed(&mut console, b"a\xffb\xfe").unwrap();
-
-        assert_eq!(String::from_utf8(console.0).unwrap(), "a\u{fffd}b\u{fffd}");
+        assert_eq!(shown.unwrap(), "héllo\x1b[0m\nnext");
     }
 
     #[test]
-    fn write_flushed_fails_on_an_output_that_writes_nothing() {
-        let err = write_flushed(&mut Closed, b"x").unwrap_err();
+    fn invalid_bytes_reach_a_buffered_console_as_replacement_characters() {
+        let shown = show(&[b"a\xffb\n", b"\xfe"], ConsoleText::sanitize);
 
-        assert_eq!(err.kind(), std::io::ErrorKind::WriteZero);
+        assert_eq!(shown.unwrap(), "a\u{fffd}b\n\u{fffd}");
+    }
+
+    #[test]
+    fn a_character_split_across_chunks_is_held_back_until_it_is_complete() {
+        let mut text = ConsoleText::default();
+
+        assert_eq!(text.sanitize(b"h\xc3"), b"h");
+        assert_eq!(text.sanitize(b"\xa9!"), "é!".as_bytes());
+    }
+
+    #[test]
+    fn an_unfinished_character_followed_by_another_byte_is_replaced() {
+        let mut text = ConsoleText::default();
+
+        assert_eq!(text.sanitize(b"\xc3"), b"");
+        assert_eq!(text.sanitize(b"x"), "\u{fffd}x".as_bytes());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_terminals_get_the_bytes_as_they_are() {
+        let mut text = ConsoleText::default();
+
+        assert_eq!(text.convert(b"a\xff"), b"a\xff");
     }
 
     #[test]

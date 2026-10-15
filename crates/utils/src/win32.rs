@@ -16,8 +16,8 @@ use windows_sys::Win32::Foundation::{
     HANDLE, HANDLE_FLAG_INHERIT, LocalFree, SetHandleInformation,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT,
-    SetNamedSecurityInfoW,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    SE_FILE_OBJECT, SetNamedSecurityInfoW,
 };
 use windows_sys::Win32::Security::{
     DACL_SECURITY_INFORMATION, GetLengthSid, GetSecurityDescriptorDacl, GetTokenInformation,
@@ -28,9 +28,11 @@ use windows_sys::Win32::System::Pipes::{GetNamedPipeClientProcessId, GetNamedPip
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows_sys::core::PWSTR;
 
-/// The string form of the `LocalSystem` account's SID, Windows' counterpart of root.
-const LOCAL_SYSTEM: &str = "S-1-5-18";
+/// The binary SID of the `LocalSystem` account, `S-1-5-18`, Windows' counterpart of root:
+/// revision 1, one sub-authority, the NT authority 5 and the sub-authority 18.
+const LOCAL_SYSTEM: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0];
 
 /// A security identifier (SID) of a user, in its binary form.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,29 +65,43 @@ impl Sid {
 
     /// Whether this is the `LocalSystem` account.
     pub fn is_local_system(&self) -> bool {
-        self.to_string() == LOCAL_SYSTEM
+        self.0 == LOCAL_SYSTEM
+    }
+}
+
+impl Sid {
+    /// Returns the SID in its string form, such as
+    /// `S-1-5-21-1004336348-1177238915-682003330-512`, as Windows writes it.
+    pub fn string(&self) -> io::Result<String> {
+        let mut text: PWSTR = ptr::null_mut();
+        // SAFETY: `self.0` holds a whole SID, copied with the length `GetLengthSid` reported, and
+        // `text` is a valid out pointer. Windows only reads the SID.
+        // HUMAN-APPROVED: Win32 FFI to write a SID the way Windows does, for pipe names and
+        // access lists.
+        if unsafe { ConvertSidToStringSidW(self.0.as_ptr().cast_mut().cast(), &mut text) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: Windows allocated `text` with `LocalAlloc` as a NUL-terminated UTF-16 string.
+        // It's read up to the NUL and freed exactly once, after the copy.
+        // HUMAN-APPROVED: Win32 FFI to copy the SID string and free Windows' allocation.
+        let string = unsafe {
+            let len = (0..).take_while(|&i| *text.add(i) != 0).count();
+            let string = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
+            LocalFree(text.cast());
+            string
+        };
+        Ok(string)
     }
 }
 
 impl fmt::Display for Sid {
-    /// Writes the SID in its string form, such as `S-1-5-21-1004336348-1177238915-682003330-512`:
-    /// the revision, the identifier authority and the sub-authorities, from a binary SID made
-    /// of a revision byte, a sub-authority count, a 48-bit big-endian authority and 32-bit
-    /// little-endian sub-authorities.
+    /// Writes the SID's string form, or its bytes in hex when Windows can't convert it, for log
+    /// and error messages.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (Some(&revision), Some(authority)) = (self.0.first(), self.0.get(2..8)) else {
-            return f.write_str("S-?");
-        };
-        let authority = authority
-            .iter()
-            .fold(0u64, |value, &byte| (value << 8) | u64::from(byte));
-
-        write!(f, "S-{revision}-{authority}")?;
-        for sub in self.0.get(8..).unwrap_or_default().as_chunks::<4>().0 {
-            write!(f, "-{}", u32::from_le_bytes(*sub))?;
+        match self.string() {
+            Ok(string) => f.write_str(&string),
+            Err(_) => write!(f, "SID {:02x?}", self.0),
         }
-
-        Ok(())
     }
 }
 
@@ -182,7 +198,8 @@ pub fn pipe_client_pid(pipe: &impl AsRawHandle) -> io::Result<u32> {
 /// Creates an instance of the pipe that rejects remote clients and whose access list grants
 /// access only to `owner` and `LocalSystem`. With `first`, fails when the pipe exists already.
 pub fn create_pipe(path: &Path, owner: &Sid, first: bool) -> io::Result<NamedPipeServer> {
-    let descriptor = SecurityDescriptor::from_sddl(&format!("D:P(A;;GA;;;{owner})(A;;GA;;;SY)"))?;
+    let descriptor =
+        SecurityDescriptor::from_sddl(&format!("D:P(A;;GA;;;{})(A;;GA;;;SY)", owner.string()?))?;
     let mut attributes = SECURITY_ATTRIBUTES {
         nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).map_err(io::Error::other)?,
         lpSecurityDescriptor: descriptor.0,
@@ -245,6 +262,7 @@ impl SecurityDescriptor {
 /// accepts keys with this list, and the administrators can take any file anyway.
 pub fn restrict_to_owner(path: &Path, owner: &Sid) -> io::Result<()> {
     let inherit = if path.is_dir() { "OICI" } else { "" };
+    let owner = owner.string()?;
     let descriptor = SecurityDescriptor::from_sddl(&format!(
         "D:P(A;{inherit};FA;;;{owner})(A;{inherit};FA;;;SY)(A;{inherit};FA;;;BA)"
     ))?;
@@ -304,7 +322,15 @@ mod tests {
         bytes.extend(21u32.to_le_bytes());
         bytes.extend(1_004_336_348u32.to_le_bytes());
 
-        assert_eq!(Sid(bytes).to_string(), "S-1-5-21-1004336348");
+        assert_eq!(Sid(bytes).string().unwrap(), "S-1-5-21-1004336348");
+    }
+
+    #[test]
+    fn sid_with_a_large_authority_is_written_in_hex_like_windows_does() {
+        let mut bytes = vec![1, 1, 1, 0, 0, 0, 0, 0];
+        bytes.extend(7u32.to_le_bytes());
+
+        assert_eq!(Sid(bytes).string().unwrap(), "S-1-0x10000000000-7");
     }
 
     #[test]
@@ -321,7 +347,7 @@ mod tests {
 
         assert_eq!(Sid::of_process(std::process::id()).unwrap(), user);
         // Local and domain accounts have `S-1-5-` SIDs, Entra ID accounts `S-1-12-1-`.
-        assert!(user.to_string().starts_with("S-1-"), "{user}");
+        assert!(user.string().unwrap().starts_with("S-1-"), "{user}");
         assert!(!user.is_local_system());
     }
 
@@ -362,6 +388,9 @@ mod tests {
 
     #[test]
     fn of_process_fails_for_a_process_that_does_not_exist() {
-        assert!(Sid::of_process(u32::MAX - 3).is_err());
+        let err = Sid::of_process(u32::MAX - 3).unwrap_err();
+
+        // `ERROR_INVALID_PARAMETER`, which `OpenProcess` reports for an unknown process ID.
+        assert_eq!(err.raw_os_error(), Some(87), "{err}");
     }
 }

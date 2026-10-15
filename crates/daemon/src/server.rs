@@ -766,10 +766,7 @@ pub async fn serve(
     service: FirebrickServer,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), ServerError> {
-    if ipc::exists(socket_path).await {
-        return Err(ServerError::SocketAlreadyInUse());
-    }
-
+    // Fails with `AddrInUse` for an endpoint that exists, also a stale socket file on Unix.
     let listener = ipc::Listener::bind(socket_path).map_err(bind_error)?;
     let (tx, rx) = mpsc::channel(16);
     let accepting = tokio::spawn(accept_loop(listener, tx));
@@ -783,12 +780,18 @@ pub async fn serve(
 
     // Stop accepting, so the listener is closed, and on Windows its pipe gone, on return.
     accepting.abort();
-    let _ = accepting.await;
+    if let Some(err) = crate::vsock::panicked(accepting.await) {
+        tracing::error!("accepting connections failed: {err}");
+    }
     served.map_err(ServerError::FailedToListen)?;
-    ipc::remove(socket_path)?;
+    ipc::remove(socket_path).await?;
 
     Ok(())
 }
+
+/// How long accepting waits after it failed for another reason than a client of another user,
+/// so an error that persists, such as running out of file descriptors, doesn't spin.
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// Turns the error of binding the endpoint into the server's error, telling an endpoint that
 /// another process serves from one that can't be created.
@@ -808,30 +811,31 @@ async fn accept_loop(mut listener: ipc::Listener, tx: mpsc::Sender<io::Result<Co
             () = tx.closed() => return,
         };
 
-        let Some(connection) = trusted(accepted) else {
-            continue;
+        let stream = match accepted {
+            Ok(stream) => stream,
+            Err(err) => {
+                not_accepted(&err).await;
+                continue;
+            }
         };
 
-        if tx.send(Ok(connection)).await.is_err() {
+        if tx.send(Ok(Connection(stream))).await.is_err() {
             return;
         }
     }
 }
 
-/// Returns the accepted connection, or logs why there's none, such as a client of another
-/// user, whose connection is closed when the error is dropped.
-fn trusted(accepted: io::Result<ipc::Stream>) -> Option<Connection> {
-    match accepted {
-        Ok(stream) => Some(Connection(stream)),
-        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
-            tracing::warn!(error = %err, "rejected connection from another user");
-            None
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "failed to accept a connection");
-            None
-        }
+/// Logs why a connection wasn't accepted. A client of another user is rejected, and its
+/// connection closed when the error is dropped; after any other error accepting waits for
+/// [`ACCEPT_RETRY_DELAY`].
+async fn not_accepted(err: &io::Error) {
+    if err.kind() == io::ErrorKind::PermissionDenied {
+        tracing::warn!(error = %err, "rejected connection from another user");
+        return;
     }
+
+    tracing::warn!(error = %err, "failed to accept a connection");
+    tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
 }
 
 /// A client connection of the gRPC server.
@@ -888,22 +892,56 @@ async fn shutdown_signal() {
 /// sends these.
 #[cfg(windows)]
 async fn shutdown_signal() {
-    use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_shutdown};
-    let (Ok(mut ctrl_break), Ok(mut close), Ok(mut shutdown)) =
-        (ctrl_break(), ctrl_close(), ctrl_shutdown())
-    else {
-        tracing::warn!("can't listen for console events; only Ctrl-C stops the daemon");
-        let _ = tokio::signal::ctrl_c().await;
-        return;
-    };
-
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = ctrl_break.recv() => {}
-        _ = close.recv() => {}
-        _ = shutdown.recv() => {}
+        () = ctrl_c() => {}
+        () = ctrl_break() => {}
+        () = console_close() => {}
+        () = windows_shutdown() => {}
     }
     tracing::info!("shutting down");
+}
+
+/// Completes when Ctrl-C is pressed.
+#[cfg(windows)]
+async fn ctrl_c() {
+    if let Err(err) = tokio::signal::ctrl_c().await {
+        not_listening("Ctrl-C", &err).await;
+    }
+}
+
+/// Completes when Ctrl-Break is pressed.
+#[cfg(windows)]
+async fn ctrl_break() {
+    match tokio::signal::windows::ctrl_break() {
+        Ok(mut signal) => drop(signal.recv().await),
+        Err(err) => not_listening("Ctrl-Break", &err).await,
+    }
+}
+
+/// Completes when the console closes.
+#[cfg(windows)]
+async fn console_close() {
+    match tokio::signal::windows::ctrl_close() {
+        Ok(mut signal) => drop(signal.recv().await),
+        Err(err) => not_listening("the console closing", &err).await,
+    }
+}
+
+/// Completes when Windows shuts down.
+#[cfg(windows)]
+async fn windows_shutdown() {
+    match tokio::signal::windows::ctrl_shutdown() {
+        Ok(mut signal) => drop(signal.recv().await),
+        Err(err) => not_listening("Windows shutting down", &err).await,
+    }
+}
+
+/// Logs that the daemon can't listen for the console event and never completes, so a handler
+/// that can't be registered doesn't count as the event.
+#[cfg(windows)]
+async fn not_listening(event: &str, err: &io::Error) {
+    tracing::warn!("can't listen for {event}, which won't stop the daemon: {err}");
+    std::future::pending::<()>().await;
 }
 
 /// Converts a microsandbox status to its protobuf status value.
@@ -1426,7 +1464,7 @@ mod tests {
         let result = run(&path, unused_store()).await;
 
         drop(other);
-        ipc::remove(&path).unwrap();
+        ipc::remove(&path).await.unwrap();
         assert!(matches!(result, Err(ServerError::SocketAlreadyInUse())));
     }
 

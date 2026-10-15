@@ -58,6 +58,10 @@ url = "2.5.8"
 serde_json = "1.0.152"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
 
+[target.'cfg(windows)'.dependencies]
+# `CREATE_NO_WINDOW` for the host tools fbkd runs; the version tokio uses.
+windows-sys = { version = "0.61.2", features = ["Win32_System_Threading"] }
+
 [dev-dependencies]
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 tower = "0.5.3"

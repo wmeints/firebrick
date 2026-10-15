@@ -45,20 +45,31 @@ pub const NO_CONFIG_DIR: &str =
 pub const NO_CONFIG_DIR: &str = "can't find the firebrick config directory: set APPDATA or \
                                  XDG_CONFIG_HOME to an absolute path";
 
-/// Returns the daemon's endpoint (see [`ipc`]): the unix socket `$XDG_RUNTIME_DIR/fbkd.sock`,
-/// falling back to the temp directory.
+/// The environment variable that holds the user's home directory, which `~` in a mount and
+/// `~/.ssh` resolve against.
 #[cfg(unix)]
-pub fn socket_path() -> PathBuf {
-    runtime_dir_from(&env_var).join("fbkd.sock")
+pub const HOME_VAR: &str = "HOME";
+
+/// The environment variable that holds the user's home directory, which `~` in a mount and
+/// `~/.ssh` resolve against.
+#[cfg(windows)]
+pub const HOME_VAR: &str = "USERPROFILE";
+
+/// Returns the daemon's endpoint (see [`ipc`]): the unix socket `$XDG_RUNTIME_DIR/fbkd.sock`,
+/// falling back to the temp directory. It never fails on Unix.
+#[cfg(unix)]
+pub fn socket_path() -> io::Result<PathBuf> {
+    Ok(runtime_dir_from(&env_var).join("fbkd.sock"))
 }
 
 /// Returns the daemon's endpoint (see [`ipc`]): the named pipe `<prefix>-fbkd`, where the prefix
 /// is `\\.\pipe\firebrick-<SID of the user>` unless `FIREBRICK_PIPE_PREFIX` names another pipe.
 /// The name is predictable, so it's [`ipc`] that keeps other users from serving or using it.
+/// Fails when the user's SID can't be read or `FIREBRICK_PIPE_PREFIX` isn't a local pipe name,
+/// instead of falling back to a name that every user shares.
 #[cfg(windows)]
-pub fn socket_path() -> PathBuf {
-    let prefix = pipe_prefix().unwrap_or_else(|| PathBuf::from(r"\\.\pipe\firebrick"));
-    with_suffix(&prefix, "-fbkd")
+pub fn socket_path() -> io::Result<PathBuf> {
+    Ok(with_suffix(pipe_prefix()?, "-fbkd"))
 }
 
 /// Returns the directory of the endpoints that sandboxes report their network activity to (see
@@ -69,8 +80,9 @@ pub fn socket_path() -> PathBuf {
 /// Returns `None` on Linux when `XDG_RUNTIME_DIR` isn't an absolute path. Unlike
 /// [`socket_path`], it never falls back to the temp directory, whose path on macOS is too long
 /// for the sockets of long sandbox names. The macOS directory is in the shared `/tmp`, where
-/// another user could create it first, so check it with [`ipc::prepare_dir`] before use.
-pub fn netlog_socket_dir() -> Option<PathBuf> {
+/// another user could create it first, so check it with [`ipc::prepare_dir`] before use. Fails
+/// on Windows like [`socket_path`].
+pub fn netlog_socket_dir() -> io::Result<Option<PathBuf>> {
     socket_dir(NETLOG_SOCKETS)
 }
 
@@ -82,8 +94,9 @@ pub fn netlog_socket_dir() -> Option<PathBuf> {
 /// Like [`netlog_socket_dir`], it never falls back to the temp directory and returns `None` on
 /// Linux without an absolute `XDG_RUNTIME_DIR`. The macOS directory sits next to the network
 /// log's instead of inside it, so the sockets of 63-character sandbox names still fit in a unix
-/// socket address. Check it with [`ipc::prepare_dir`] before use.
-pub fn clipboard_socket_dir() -> Option<PathBuf> {
+/// socket address. Check it with [`ipc::prepare_dir`] before use. Fails on Windows like
+/// [`socket_path`].
+pub fn clipboard_socket_dir() -> io::Result<Option<PathBuf>> {
     socket_dir(CLIPBOARD_SOCKETS)
 }
 
@@ -123,52 +136,76 @@ const CLIPBOARD_SOCKETS: SocketDir = SocketDir {
 
 /// Returns the pipe name of the channel's endpoints.
 #[cfg(windows)]
-fn socket_dir(sockets: SocketDir) -> Option<PathBuf> {
-    pipe_prefix().map(|prefix| with_suffix(&prefix, sockets.pipe_suffix))
+fn socket_dir(sockets: SocketDir) -> io::Result<Option<PathBuf>> {
+    Ok(Some(with_suffix(pipe_prefix()?, sockets.pipe_suffix)))
 }
+
+/// The start of every local pipe name.
+#[cfg(windows)]
+const PIPES: &str = r"\\.\pipe\";
 
 /// Returns the start of the names of firebrick's pipes for the current user.
 #[cfg(windows)]
-fn pipe_prefix() -> Option<PathBuf> {
-    let user = win32::Sid::current_user().ok().map(|sid| sid.to_string());
-    pipe_prefix_from(&env_var, user.as_deref())
+fn pipe_prefix() -> io::Result<PathBuf> {
+    pipe_prefix_from(&env_var, || {
+        let sid = win32::Sid::current_user().map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("can't read your user's SID to name firebrick's pipes: {err}"),
+            )
+        })?;
+        sid.string()
+    })
 }
 
 /// Returns the start of the pipe names for the environment that `var` describes: the value of
-/// `FIREBRICK_PIPE_PREFIX` when it's a local pipe name, which isolates test daemons, and
-/// otherwise `\\.\pipe\firebrick-<user>`, or `None` without a user.
+/// `FIREBRICK_PIPE_PREFIX`, which isolates test daemons, or `\\.\pipe\firebrick-<user>` with
+/// the SID string that `user` returns. Fails when `FIREBRICK_PIPE_PREFIX` is set but isn't a
+/// local pipe name, so a typo never sends `fbk` to the user's real daemon.
 #[cfg(windows)]
 fn pipe_prefix_from(
     var: &impl Fn(&str) -> Option<OsString>,
-    user: Option<&str>,
-) -> Option<PathBuf> {
-    const PIPES: &str = r"\\.\pipe\";
-    let is_pipe = |name: &str| {
-        name.get(..PIPES.len())
-            .is_some_and(|start| start.eq_ignore_ascii_case(PIPES))
-            && name.len() > PIPES.len()
+    user: impl FnOnce() -> io::Result<String>,
+) -> io::Result<PathBuf> {
+    let Some(prefix) = var("FIREBRICK_PIPE_PREFIX").filter(|prefix| !prefix.is_empty()) else {
+        return Ok(PathBuf::from(format!("{PIPES}firebrick-{}", user()?)));
     };
 
-    var("FIREBRICK_PIPE_PREFIX")
-        .and_then(|prefix| prefix.into_string().ok())
-        .filter(|prefix| is_pipe(prefix))
-        .map(PathBuf::from)
-        .or_else(|| user.map(|user| PathBuf::from(format!("{PIPES}firebrick-{user}"))))
+    let name = prefix.to_string_lossy();
+    let is_pipe = name
+        .get(..PIPES.len())
+        .is_some_and(|start| start.eq_ignore_ascii_case(PIPES))
+        && name.len() > PIPES.len();
+    if !is_pipe {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "FIREBRICK_PIPE_PREFIX must be a local pipe name such as {PIPES}fbk-test, not {name}"
+            ),
+        ));
+    }
+
+    Ok(PathBuf::from(prefix))
 }
 
 /// Returns the pipe name `name` with `suffix` appended.
 #[cfg(windows)]
-fn with_suffix(name: &Path, suffix: &str) -> PathBuf {
-    let mut name = name.as_os_str().to_owned();
+fn with_suffix(name: PathBuf, suffix: &str) -> PathBuf {
+    let mut name = name.into_os_string();
     name.push(suffix);
     name.into()
 }
 
 /// Returns the socket directory of the channel in fbkd's environment.
 #[cfg(unix)]
-fn socket_dir(sockets: SocketDir) -> Option<PathBuf> {
+fn socket_dir(sockets: SocketDir) -> io::Result<Option<PathBuf>> {
     let uid = nix::unistd::geteuid().as_raw();
-    socket_dir_from(&env_var, cfg!(target_os = "macos"), uid, sockets)
+    Ok(socket_dir_from(
+        &env_var,
+        cfg!(target_os = "macos"),
+        uid,
+        sockets,
+    ))
 }
 
 /// Returns the socket directory of the channel for the environment that `var` describes, on
@@ -581,17 +618,29 @@ mod tests {
     }
 
     #[test]
-    fn write_private_replaces_the_file() {
+    fn write_private_replaces_the_file_with_a_private_one() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("config/approved.yml");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path.with_extension("tmp"), "left over").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            path.with_extension("tmp"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
 
         write_private(&path, "first").unwrap();
         write_private(&path, "second").unwrap();
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "second");
         assert!(!path.with_extension("tmp").exists());
+        // On Windows, `windows_tests::write_private_protects_the_file` checks the access list.
+        #[cfg(unix)]
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     fn label(path: &str) -> String {
@@ -974,29 +1023,6 @@ mod unix_tests {
         let var = env(&[("XDG_CONFIG_HOME", "config"), ("HOME", "home")]);
         assert_eq!(approvals_path_from(&var), None);
     }
-
-    #[test]
-    fn write_private_replaces_the_file_with_a_private_one() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("config/approved.yml");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path.with_extension("tmp"), "left over").unwrap();
-        fs::set_permissions(
-            path.with_extension("tmp"),
-            fs::Permissions::from_mode(0o644),
-        )
-        .unwrap();
-
-        write_private(&path, "first").unwrap();
-        write_private(&path, "second").unwrap();
-
-        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert!(!path.with_extension("tmp").exists());
-    }
 }
 
 /// The locations on Windows, where `HOME` doesn't count and the known folders do.
@@ -1031,7 +1057,7 @@ mod windows_tests {
     /// Asserts that the access list grants access to the user, the system and the
     /// administrators only, not to the built-in users or everyone.
     fn assert_private(acl: &str) {
-        let user = win32::Sid::current_user().unwrap().to_string();
+        let user = win32::Sid::current_user().unwrap().string().unwrap();
 
         assert!(acl.contains(&user), "{acl}");
         for other in [";BU)", ";WD)", ";AU)"] {
@@ -1134,58 +1160,65 @@ mod windows_tests {
         assert_eq!(approvals_path_from(&env(&[("HOME", r"C:\Users\me")])), None);
     }
 
+    /// Returns the SID string `S-1-5-21-1`, standing in for the current user.
+    fn user() -> io::Result<String> {
+        Ok("S-1-5-21-1".to_string())
+    }
+
     #[test]
     fn pipes_are_named_after_the_user() {
         assert_eq!(
-            pipe_prefix_from(&env(&[]), Some("S-1-5-21-1")),
-            Some(PathBuf::from(r"\\.\pipe\firebrick-S-1-5-21-1"))
+            pipe_prefix_from(&env(&[]), user).unwrap(),
+            PathBuf::from(r"\\.\pipe\firebrick-S-1-5-21-1")
         );
-        assert_eq!(pipe_prefix_from(&env(&[]), None), None);
+    }
+
+    #[test]
+    fn pipe_prefix_fails_without_a_user_instead_of_sharing_a_name() {
+        let no_user = || Err(io::Error::from(io::ErrorKind::PermissionDenied));
+
+        let err = pipe_prefix_from(&env(&[]), no_user).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
     }
 
     #[test]
     fn pipe_prefix_can_be_overridden_with_another_local_pipe() {
         let isolated = env(&[("FIREBRICK_PIPE_PREFIX", r"\\.\PIPE\fbk-test")]);
-        assert_eq!(
-            pipe_prefix_from(&isolated, Some("S-1-5-21-1")),
-            Some(PathBuf::from(r"\\.\PIPE\fbk-test"))
-        );
 
-        for prefix in [r"C:\fbk", r"\\server\pipe\fbk", r"\\.\pipe\", ""] {
+        assert_eq!(
+            pipe_prefix_from(&isolated, user).unwrap(),
+            PathBuf::from(r"\\.\PIPE\fbk-test")
+        );
+        let unset = env(&[("FIREBRICK_PIPE_PREFIX", "")]);
+        assert_eq!(
+            pipe_prefix_from(&unset, user).unwrap(),
+            PathBuf::from(r"\\.\pipe\firebrick-S-1-5-21-1")
+        );
+    }
+
+    #[test]
+    fn pipe_prefix_refuses_an_override_that_is_no_local_pipe() {
+        for prefix in [r"C:\fbk", r"\\server\pipe\fbk", r"\\.\pipe\", "fbk-smoke"] {
             let vars = [("FIREBRICK_PIPE_PREFIX", prefix)];
-            assert_eq!(
-                pipe_prefix_from(&env(&vars), Some("S-1-5-21-1")),
-                Some(PathBuf::from(r"\\.\pipe\firebrick-S-1-5-21-1")),
-                "{prefix:?}"
-            );
+
+            let err = pipe_prefix_from(&env(&vars), user).unwrap_err();
+
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{prefix:?}");
+            assert!(err.to_string().contains(prefix), "{err}");
         }
     }
 
     #[test]
-    fn channels_and_the_daemon_have_their_own_pipes() {
-        let prefix = Path::new(r"\\.\pipe\firebrick-S-1");
-
-        assert_eq!(
-            with_suffix(prefix, "-fbkd"),
-            PathBuf::from(r"\\.\pipe\firebrick-S-1-fbkd")
-        );
-        assert_eq!(
-            with_suffix(prefix, NETLOG_SOCKETS.pipe_suffix),
-            PathBuf::from(r"\\.\pipe\firebrick-S-1-netlog")
-        );
-        assert_eq!(
-            with_suffix(prefix, CLIPBOARD_SOCKETS.pipe_suffix),
-            PathBuf::from(r"\\.\pipe\firebrick-S-1-clipboard")
-        );
-    }
-
-    #[test]
-    fn socket_path_is_a_pipe_of_the_current_user() {
-        let path = socket_path();
-        let name = path.to_string_lossy();
+    fn the_daemon_and_each_channel_have_a_pipe_of_the_current_user() {
+        let daemon = socket_path().unwrap().to_string_lossy().into_owned();
+        let netlog = netlog_socket_dir().unwrap().unwrap();
+        let clipboard = clipboard_socket_dir().unwrap().unwrap();
+        let prefix = daemon.strip_suffix("-fbkd").unwrap();
 
         // Local and domain accounts have `S-1-5-` SIDs, Entra ID accounts `S-1-12-1-`.
-        assert!(name.starts_with(r"\\.\pipe\firebrick-S-1-"), "{name}");
-        assert!(name.ends_with("-fbkd"), "{name}");
+        assert!(prefix.starts_with(r"\\.\pipe\firebrick-S-1-"), "{daemon}");
+        assert_eq!(netlog, PathBuf::from(format!("{prefix}-netlog")));
+        assert_eq!(clipboard, PathBuf::from(format!("{prefix}-clipboard")));
     }
 }

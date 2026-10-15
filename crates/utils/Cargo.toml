@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 console = { version = "0.16.6", default-features = false, features = ["alloc", "ansi-parsing"] }
-tokio = { version = "1.53.2", features = ["net", "time"] }
+tokio = { version = "1.53.2", features = ["fs", "net", "time"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", default-features = false, features = ["user"] }
