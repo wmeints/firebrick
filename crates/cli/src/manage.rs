@@ -429,6 +429,10 @@ async fn start_existing_sandbox(
                 format_status(status).to_lowercase()
             )
         }
+        // Only a listing reports an unknown status; GetSandbox fails instead.
+        SandboxStatus::Unknown => {
+            bail!("couldn't tell whether sandbox {name} is paused; try again")
+        }
     }
 }
 
@@ -998,6 +1002,7 @@ fn format_status(status: SandboxStatus) -> String {
         SandboxStatus::Paused => "Paused",
         SandboxStatus::Stopping => "Stopping",
         SandboxStatus::Crashed => "Crashed",
+        SandboxStatus::Unknown => "Unknown",
     };
 
     status_text.to_string()
@@ -1181,6 +1186,15 @@ mod tests {
              │ long_project_name │ Stopped │          │\n\
              └───────────────────┴─────────┴──────────┘\n"
         );
+    }
+
+    #[test]
+    fn table_shows_a_sandbox_whose_pause_state_is_unknown() {
+        let sandboxes = [summary("dev", SandboxStatus::Unknown, "dev.fbk")];
+
+        let table = render_sandbox_table(&sandboxes).unwrap();
+
+        assert!(table.contains("│ dev  │ Unknown │ dev.fbk  │"), "{table}");
     }
 
     #[test]

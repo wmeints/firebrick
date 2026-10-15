@@ -82,6 +82,16 @@ build on it when `Cargo.lock` has a newer version.
   status becomes `Paused`; `resume()` continues the same processes
   (`$M/sandbox/pause.rs`). firebrick never pauses sandboxes itself, but `msb`
   can, so code that stops or recreates a sandbox has to expect `Paused`.
+- The database never stores `Paused`. `Sandbox::get` and `Sandbox::list_with`
+  ask the runtime of a `Running` sandbox for its pause state with a 250 ms
+  timeout and report `Running` when it doesn't answer (`projected_status` in
+  `$M/sandbox/pause.rs`), so `status_snapshot()` can't be trusted to tell a
+  paused sandbox apart on a busy host. `SandboxHandle::pause_state()` asks
+  without a timeout; `current_status` in `sandboxes.rs` uses it.
+- A failed request to a runtime's control endpoint closes microsandbox's shared
+  session to it, and the next caller on that session fails with `ClientError {
+  kind: Closed, delivery: NotSent }`. Only the request after that opens a new
+  session, so retry such an error.
 - `Sandbox::list_with` rejects an empty cursor. Only call `.cursor(..)` with the
   cursor of the previous page.
 - `Sandbox::list_with` reads a page of rows and then reloads each sandbox

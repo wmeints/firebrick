@@ -944,16 +944,17 @@ async fn not_listening(event: &str, err: &io::Error) {
     std::future::pending::<()>().await;
 }
 
-/// Converts a microsandbox status to its protobuf status value.
-fn map_sandbox_status(s: microsandbox::sandbox::SandboxStatus) -> i32 {
+/// Converts a microsandbox status to its protobuf status value, and a missing one to `Unknown`.
+fn map_sandbox_status(s: Option<microsandbox::sandbox::SandboxStatus>) -> i32 {
     let status = match s {
-        microsandbox::sandbox::SandboxStatus::Running => SandboxStatus::Running,
-        microsandbox::sandbox::SandboxStatus::Stopped => SandboxStatus::Stopped,
-        microsandbox::sandbox::SandboxStatus::Created => SandboxStatus::Stopped,
-        microsandbox::sandbox::SandboxStatus::Starting => SandboxStatus::Starting,
-        microsandbox::sandbox::SandboxStatus::Paused => SandboxStatus::Paused,
-        microsandbox::sandbox::SandboxStatus::Draining => SandboxStatus::Stopping,
-        microsandbox::sandbox::SandboxStatus::Crashed => SandboxStatus::Crashed,
+        Some(microsandbox::sandbox::SandboxStatus::Running) => SandboxStatus::Running,
+        Some(microsandbox::sandbox::SandboxStatus::Stopped) => SandboxStatus::Stopped,
+        Some(microsandbox::sandbox::SandboxStatus::Created) => SandboxStatus::Stopped,
+        Some(microsandbox::sandbox::SandboxStatus::Starting) => SandboxStatus::Starting,
+        Some(microsandbox::sandbox::SandboxStatus::Paused) => SandboxStatus::Paused,
+        Some(microsandbox::sandbox::SandboxStatus::Draining) => SandboxStatus::Stopping,
+        Some(microsandbox::sandbox::SandboxStatus::Crashed) => SandboxStatus::Crashed,
+        None => SandboxStatus::Unknown,
     };
 
     status.into()
@@ -1048,13 +1049,14 @@ mod tests {
     #[test]
     fn map_sandbox_status_maps_every_variant() {
         let cases = [
-            (MsbStatus::Running, SandboxStatus::Running),
-            (MsbStatus::Stopped, SandboxStatus::Stopped),
-            (MsbStatus::Created, SandboxStatus::Stopped),
-            (MsbStatus::Starting, SandboxStatus::Starting),
-            (MsbStatus::Paused, SandboxStatus::Paused),
-            (MsbStatus::Draining, SandboxStatus::Stopping),
-            (MsbStatus::Crashed, SandboxStatus::Crashed),
+            (Some(MsbStatus::Running), SandboxStatus::Running),
+            (Some(MsbStatus::Stopped), SandboxStatus::Stopped),
+            (Some(MsbStatus::Created), SandboxStatus::Stopped),
+            (Some(MsbStatus::Starting), SandboxStatus::Starting),
+            (Some(MsbStatus::Paused), SandboxStatus::Paused),
+            (Some(MsbStatus::Draining), SandboxStatus::Stopping),
+            (Some(MsbStatus::Crashed), SandboxStatus::Crashed),
+            (None, SandboxStatus::Unknown),
         ];
 
         for (input, expected) in cases {
@@ -1064,7 +1066,7 @@ mod tests {
 
     #[test]
     fn map_sandbox_status_produces_valid_proto_values() {
-        let value = map_sandbox_status(MsbStatus::Draining);
+        let value = map_sandbox_status(Some(MsbStatus::Draining));
         assert_eq!(SandboxStatus::try_from(value), Ok(SandboxStatus::Stopping));
     }
 
