@@ -51,3 +51,4 @@
 - [ADR 0049 - Pin the base image digest and the apt signing keys](decisions/0049-pin-the-base-image-digest-and-apt-signing-keys.md)
 - [ADR 0050 - Talk over named pipes on Windows](decisions/0050-talk-over-named-pipes-on-windows.md)
 - [ADR 0051 - Follow Windows conventions for host paths and tools](decisions/0051-follow-windows-conventions-for-host-paths-and-tools.md)
+- [ADR 0052 - Validate image references with oci-spec](decisions/0052-validate-image-references-with-oci-spec.md)

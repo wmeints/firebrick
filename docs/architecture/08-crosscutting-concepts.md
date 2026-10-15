@@ -212,6 +212,28 @@ then only ASCII letters, digits, `.`, `-` and `_`.
 Every name microsandbox accepts passes, so existing specs and sandboxes keep
 working.
 
+## Keeping spec text off the terminal
+
+`.firebrick.yml` is attacker-controlled, and serde_yaml decodes `\e`, `\a` and
+`\x..` escapes in double-quoted scalars, so a key or value can hold any control
+character. Spec text reaches the terminal and `fbkd.log` in two ways, and both
+are closed (ADR 0044, ADR 0052):
+
+- `SandboxSpecError::diagnostic` passes the YAML error message, which quotes
+  keys and values such as an unknown field, through
+  `firebrick_utils::strip_control`. `fbk validate` and every command that
+  reports an invalid spec print that diagnostic.
+- `image` must be an OCI reference. `firebrick_spec::validate_image` parses it
+  with `oci_spec::distribution::Reference`, the type microsandbox pulls images
+  with, so a reference passes exactly when microsandbox accepts it, and none
+  holds whitespace or a control character. The spec checks it while it parses,
+  and `server` checks the image of every `StartSandbox` and `UpgradeSandbox`
+  request with `INVALID_ARGUMENT` before it reaches a status message, such as
+  `image ... doesn't exist`, or a log line. An empty image means the default
+  image, in the spec and in a request. The error names the image escaped with
+  `{:?}` and the reason oci-spec gives, such as `invalid checksum digest
+  length`.
+
 ## Securing the daemon socket
 
 Any process that can use the daemon socket can start sandboxes, read workspace

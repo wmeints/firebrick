@@ -296,6 +296,9 @@ C4Component
   Every request that names a sandbox, including the scope of a secret, has its
   name checked with `firebrick_spec::validate_sandbox_name` first (see
   [Validating sandbox names](08-crosscutting-concepts.md#validating-sandbox-names)).
+  A `StartSandbox` or `UpgradeSandbox` request with an image that isn't an OCI
+  reference fails with `INVALID_ARGUMENT` (see
+  [Keeping spec text off the terminal](08-crosscutting-concepts.md#keeping-spec-text-off-the-terminal)).
   `ListNetworkActivity` turns a sandbox's record into one entry per DNS name and
   per connection address and protocol, sorted by last seen, newest first, and
   evaluates the sandbox's current rules for each with `network::allows_host`:

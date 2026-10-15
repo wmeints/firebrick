@@ -91,6 +91,20 @@ mod tests {
     }
 
     #[test]
+    fn report_strips_escape_sequences_from_spec_text() {
+        let dir = write_spec("name: dev\n\"bogus\\e]0;pwned\\a\": 1\n");
+
+        let err = load_spec(&dir.path().join(SPEC_FILE_NAME)).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .starts_with(".firebrick.yml:2:1: error: unknown field `bogus`, expected one of"),
+            "{err:?}"
+        );
+        assert!(!err.to_string().contains(char::is_control));
+    }
+
+    #[test]
     fn symlinked_spec_returns_error() {
         for content in [Some("name: dev\n"), None] {
             assert_refuses_symlinked_spec(content);
