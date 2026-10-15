@@ -10,3 +10,8 @@ MSB_HOME = "/tmp/firebrick-msb"
 # Keep the VS Code-family and Zed settings that the in-process daemon of the
 # `vm-tests` syncs out of the user's own, on Linux and macOS.
 FIREBRICK_EDITOR_CONFIG_ROOT = { value = "/tmp/firebrick-test/config", force = true }
+
+# Link the C runtime statically on Windows, so the release binaries run without
+# the Visual C++ Redistributable, like microsandbox's own `msb.exe` (ADR 0053).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -30,12 +30,18 @@ jobs:
           # Build on the oldest supported Ubuntu so the binaries need glibc 2.35 at most.
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
+            archive: tar.gz
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04-arm
+            archive: tar.gz
           # microsandbox only supports Apple Silicon on macOS.
           - target: aarch64-apple-darwin
             runner: macos-latest
-          # Windows is left out: fbk and fbkd depend on unix sockets and signals.
+            archive: tar.gz
+          # A zip, because Windows extracts it without extra tools.
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: zip
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,23 +71,31 @@ jobs:
         run: cargo build --release --locked --bin fbk --bin fbkd
 
       # The CLI starts fbkd from its own directory, so both binaries ship side by side.
+      # On Windows the binaries end in .exe, and Git Bash provides sha256sum and the runner 7z.
       - name: Package
+        shell: bash
         env:
           NAME: firebrick-${{ env.TAG }}-${{ matrix.target }}
+          ARCHIVE: firebrick-${{ env.TAG }}-${{ matrix.target }}.${{ matrix.archive }}
         run: |
           mkdir "$NAME"
-          cp target/release/fbk target/release/fbkd "$NAME/"
-          tar -czf "$NAME.tar.gz" "$NAME"
-          if [ "$RUNNER_OS" = macOS ]; then
-            shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp target/release/fbk.exe target/release/fbkd.exe "$NAME/"
+            7z a -tzip "$ARCHIVE" "$NAME"
           else
-            sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+            cp target/release/fbk target/release/fbkd "$NAME/"
+            tar -czf "$ARCHIVE" "$NAME"
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          else
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
           fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: firebrick-${{ matrix.target }}
-          path: firebrick-${{ env.TAG }}-${{ matrix.target }}.tar.gz*
+          path: firebrick-${{ env.TAG }}-${{ matrix.target }}.${{ matrix.archive }}*
           if-no-files-found: error
 
   image:

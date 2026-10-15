@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted. The Windows exclusion is superseded by
+[ADR 0053](0053-release-a-windows-zip-archive.md).
 
 ## Context
 
