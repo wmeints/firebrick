@@ -1054,15 +1054,27 @@ mod windows_tests {
         String::from_utf16_lossy(&wide)
     }
 
-    /// Asserts that the access list grants access to the user, the system and the
-    /// administrators only, not to the built-in users or everyone.
+    /// Asserts that the access list grants access to the user, the system (`SY`) and the
+    /// administrators (`BA`) only, and to nobody else, such as the built-in users or everyone.
     fn assert_private(acl: &str) {
         let user = win32::Sid::current_user().unwrap().string().unwrap();
+        // The trustee is the last field of each `(A;flags;rights;;;trustee)` entry.
+        let mut trustees: Vec<&str> = acl
+            .split('(')
+            .skip(1)
+            .filter_map(|entry| entry.split(')').next()?.rsplit(';').next())
+            .collect();
+        trustees.sort_unstable();
 
-        assert!(acl.contains(&user), "{acl}");
-        for other in [";BU)", ";WD)", ";AU)"] {
-            assert!(!acl.contains(other), "{other} in {acl}");
-        }
+        let mut expected = ["BA", "SY", user_trustee(&user)];
+        expected.sort_unstable();
+        assert_eq!(trustees, expected, "{acl}");
+    }
+
+    /// Returns how SDDL names the user as a trustee: by SID, or as `LA` for the built-in local
+    /// administrator account (RID 500), which CI runners use.
+    fn user_trustee(user: &str) -> &str {
+        if user.ends_with("-500") { "LA" } else { user }
     }
 
     /// Returns a temp directory outside the user's profile, in `C:\`, whose access list it
