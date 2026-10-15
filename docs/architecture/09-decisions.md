@@ -52,3 +52,4 @@
 - [ADR 0050 - Talk over named pipes on Windows](decisions/0050-talk-over-named-pipes-on-windows.md)
 - [ADR 0051 - Follow Windows conventions for host paths and tools](decisions/0051-follow-windows-conventions-for-host-paths-and-tools.md)
 - [ADR 0052 - Validate image references with oci-spec](decisions/0052-validate-image-references-with-oci-spec.md)
+- [ADR 0053 - Release a Windows zip archive](decisions/0053-release-a-windows-zip-archive.md)

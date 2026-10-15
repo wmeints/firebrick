@@ -11,11 +11,12 @@ merge commit with the new version, such as `v0.4.0`, and calls
 exists already. Pushing a tag by hand runs `release.yaml` as well.
 `release.yaml` publishes:
 
-- A `firebrick-<tag>-<target>.tar.gz` archive per target, with a `.sha256`
-  checksum, attached to a GitHub release. The release notes are the tag's
-  section of `CHANGELOG.md`, followed by GitHub's generated list of pull
-  requests. Each archive holds one directory with the `fbk` and `fbkd` binaries
-  side by side, because the CLI starts the daemon from its own directory.
+- A `firebrick-<tag>-<target>.tar.gz` archive per target, a `.zip` for Windows,
+  with a `.sha256` checksum, attached to a GitHub release. The release notes are
+  the tag's section of `CHANGELOG.md`, followed by GitHub's generated list of
+  pull requests. Each archive holds one directory with the `fbk` and `fbkd`
+  binaries side by side, because the CLI starts the daemon from its own
+  directory.
 - The `ghcr.io/wmeints/firebrick-base:<tag>` image, built from the `Dockerfile`
   for `linux/amd64` and `linux/arm64`. The image is pushed only after every
   archive has built. GHCR makes a package private when it's first published, so
@@ -71,16 +72,19 @@ on crates.io. `cargo install` skips pre-releases unless asked for one with
 | `x86_64-unknown-linux-gnu`  | `ubuntu-22.04`     |
 | `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm` |
 | `aarch64-apple-darwin`      | `macos-latest`     |
+| `x86_64-pc-windows-msvc`    | `windows-latest`   |
 
 The Linux binaries are built on Ubuntu 22.04, so they need glibc 2.35 or newer.
 
-Windows has no release archive yet. `fbk` and `fbkd` build and run natively on
-Windows 11 x64, where they talk over named pipes
-([ADR 0050](decisions/0050-talk-over-named-pipes-on-windows.md)), so Windows
-users install them with `cargo install firebrick-cli firebrick-daemon`, which
-needs the Visual Studio Build Tools with the C++ workload and `protoc`. They can
-also still run the Linux release in WSL 2 with nested virtualization, which
-exposes `/dev/kvm` to the distribution.
+`fbk` and `fbkd` run natively on Windows 11 x64, where they talk over named
+pipes ([ADR 0050](decisions/0050-talk-over-named-pipes-on-windows.md)). The
+Windows build links the C runtime statically, so it runs without the Microsoft
+Visual C++ Redistributable, and its archive is a `.zip`
+([ADR 0053](decisions/0053-release-a-windows-zip-archive.md)). The standard
+runner builds and packages it, but can't boot VMs, so no release check runs the
+Windows binaries against a sandbox. Windows users can also still run the Linux
+release in WSL 2 with nested virtualization, which exposes `/dev/kvm` to the
+distribution.
 
 ## Host requirements
 

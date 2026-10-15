@@ -5,11 +5,10 @@ and trust boundaries these risks belong to.
 
 - **Windows support is a preview:** `fbk` and `fbkd` run natively on Windows 11
   with WHP ([ADR 0050](decisions/0050-talk-over-named-pipes-on-windows.md)), but
-  microsandbox's Windows support is a preview, and there's no Windows release
-  archive yet
-  ([ADR 0001](decisions/0001-release-through-github-releases-and-ghcr.md)). CI
-  can't boot VMs on Windows, so only a developer's machine runs the `vm-tests`
-  there.
+  microsandbox's Windows support is a preview. CI can't boot VMs on Windows, so
+  only a developer's machine runs the `vm-tests` there, and the release ships a
+  Windows archive that no workflow has started a sandbox with
+  ([ADR 0053](decisions/0053-release-a-windows-zip-archive.md)).
 - **Windows vsock pipes can be taken first:** pipe names are one machine-wide
   namespace. While `fbkd` doesn't serve a sandbox's network log or clipboard
   pipe, for example while it's stopped, another local user can create that pipe.

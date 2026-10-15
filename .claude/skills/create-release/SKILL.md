@@ -208,10 +208,10 @@ git rev-parse <next>^{commit}      # the merge commit
 gh release view <next> --json url,assets,body
 ```
 
-The release must have a `.tar.gz` and a `.sha256` for each target in the
-deployment view (`docs/architecture/07-deployment-view.md`), and its body must
-start with the `CHANGELOG.md` section. Each of the five workspace crates must
-have the version on crates.io:
+The release must have a `.tar.gz` (a `.zip` for Windows) and a `.sha256` for
+each target in the deployment view (`docs/architecture/07-deployment-view.md`),
+and its body must start with the `CHANGELOG.md` section. Each of the five
+workspace crates must have the version on crates.io:
 
 ```bash
 for crate in firebrick-proto firebrick-spec firebrick-utils firebrick-cli firebrick-daemon; do
