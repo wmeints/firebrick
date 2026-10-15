@@ -11,10 +11,13 @@ archive per platform with the `fbk` and `fbkd` binaries:
 | Linux x86_64          | `x86_64-unknown-linux-gnu`  |
 | Linux ARM64           | `aarch64-unknown-linux-gnu` |
 | macOS (Apple Silicon) | `aarch64-apple-darwin`      |
+| Windows 11 x64        | `x86_64-pc-windows-msvc`    |
 
-The steps below install both binaries in `~/.local/bin`, which doesn't need root
-permissions. Keep `fbk` and `fbkd` in the same directory, because the CLI starts
-the daemon from its own directory. To build them with Cargo instead, see
+The Windows archive is a `.zip`; see
+[Windows: run Firebrick natively](#windows-run-firebrick-natively) to install
+it. The steps below install both binaries in `~/.local/bin`, which doesn't need
+root permissions. Keep `fbk` and `fbkd` in the same directory, because the CLI
+starts the daemon from its own directory. To build them with Cargo instead, see
 [Installing with Cargo](#installing-with-cargo).
 
 ## System requirements
@@ -65,7 +68,7 @@ first and run them in that shell.
 Set the release to install and pick the target for your machine:
 
 ```sh
-VERSION=v0.7.0
+VERSION=v0.8.0
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)  TARGET=x86_64-unknown-linux-gnu ;;
   Linux-aarch64) TARGET=aarch64-unknown-linux-gnu ;;
@@ -131,7 +134,7 @@ fbk --version
 fbk ls
 ```
 
-`fbk --version` prints the installed version, for example `fbk 0.7.0`.
+`fbk --version` prints the installed version, for example `fbk 0.8.0`.
 
 `fbk ls` starts `fbkd`, which installs the microsandbox runtime in
 `~/.local/state/firebrick/msb`, and lists your sandboxes (none yet). An error
@@ -150,9 +153,7 @@ xattr -d com.apple.quarantine ~/.local/bin/fbk ~/.local/bin/fbkd
 ## Windows: run Firebrick natively
 
 `fbk` and `fbkd` run on Windows 11 x64 through the Windows Hypervisor Platform.
-There's no Windows release archive yet, and the releases on crates.io up to
-0.7.0 don't run on Windows, so build them from source until a release with
-Windows support is out:
+Windows support is experimental. Run these steps in PowerShell:
 
 1. Turn on the Windows Hypervisor Platform from an administrator PowerShell, and
    restart Windows when it asks you to:
@@ -161,15 +162,52 @@ Windows support is out:
    Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform
    ```
 
-2. Install the Visual Studio Build Tools with the C++ workload, which Rust needs
-   to link the binaries, from an administrator PowerShell:
+2. Download the archive and its checksum, and verify the archive:
 
    ```powershell
-   winget install Microsoft.VisualStudio.2022.BuildTools --override "--passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+   $Version = "v0.8.0"
+   $Name = "firebrick-$Version-x86_64-pc-windows-msvc"
+   $Base = "https://github.com/wmeints/firebrick/releases/download/$Version"
+   Invoke-WebRequest "$Base/$Name.zip" -OutFile "$Name.zip"
+   Invoke-WebRequest "$Base/$Name.zip.sha256" -OutFile "$Name.zip.sha256"
+   $Expected = (Get-Content "$Name.zip.sha256").Split(" ")[0]
+   if ((Get-FileHash "$Name.zip").Hash -ne $Expected) { throw "Checksum mismatch" }
    ```
 
-3. Follow [Building from source](#building-from-source). Cargo installs
-   `fbk.exe` and `fbkd.exe` in `%USERPROFILE%\.cargo\bin`.
+3. Extract the archive and copy both binaries to
+   `%LOCALAPPDATA%\Programs\firebrick`:
+
+   ```powershell
+   Expand-Archive "$Name.zip" -DestinationPath .
+   $Dir = "$env:LOCALAPPDATA\Programs\firebrick"
+   New-Item -ItemType Directory -Force $Dir | Out-Null
+   Copy-Item "$Name\fbk.exe", "$Name\fbkd.exe" $Dir
+   ```
+
+4. Add the directory to your `PATH`, unless it's there already, and open a new
+   terminal:
+
+   ```powershell
+   $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+   if (";$UserPath;" -notlike "*;$Dir;*") {
+     [Environment]::SetEnvironmentVariable("Path", "$UserPath;$Dir", "User")
+   }
+   ```
+
+5. Verify the installation with `fbk --version` and `fbk ls`, as in
+   [Verify the installation](#3-verify-the-installation).
+
+The binaries aren't signed. When you download the archive through a browser
+instead, unblock it with `Unblock-File "$Name.zip"` before you extract it, or
+SmartScreen may refuse to start `fbkd`. To build the binaries from source
+instead, install the Visual Studio Build Tools with the C++ workload, which Rust
+needs to link them, from an administrator PowerShell, then follow
+[Building from source](#building-from-source). Cargo installs `fbk.exe` and
+`fbkd.exe` in `%USERPROFILE%\.cargo\bin`.
+
+```powershell
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
 
 On Windows, Firebrick keeps its data and logs in `%LOCALAPPDATA%\firebrick` and
 your approvals in `%APPDATA%\firebrick`; see
@@ -183,7 +221,7 @@ cleanly. `Stop-Process -Name fbkd` ends it at once: running sandboxes keep
 running, but a network or image upgrade that's still in progress is cut off, and
 the last few seconds of network activity aren't recorded. Stop it when no `fbk`
 command is running. Windows can't replace or remove a running program, so stop
-the daemon before you upgrade or uninstall Firebrick with Cargo.
+the daemon before you upgrade or uninstall Firebrick.
 
 ## Windows: run Firebrick in WSL 2
 
@@ -232,6 +270,11 @@ To uninstall, stop the daemon and remove the binaries:
 pkill -TERM -x fbkd
 rm ~/.local/bin/fbk ~/.local/bin/fbkd
 ```
+
+On Windows, stop the daemon with `Stop-Process -Name fbkd` instead, then repeat
+steps 2 and 3 of
+[Windows: run Firebrick natively](#windows-run-firebrick-natively) to upgrade,
+or remove `%LOCALAPPDATA%\Programs\firebrick` to uninstall.
 
 ## Installing with Cargo
 
