@@ -64,26 +64,35 @@ pub trait Opener: Send + Sync {
     fn open(&self, url: &str) -> io::Result<()>;
 }
 
-/// Opens URLs in the user's default browser with `xdg-open` on Linux and `open` on macOS.
+/// Opens URLs in the user's default browser with `xdg-open` on Linux, `open` on macOS and the
+/// URL protocol handler of `url.dll` on Windows.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HostOpener;
 
 impl Opener for HostOpener {
     fn open(&self, url: &str) -> io::Result<()> {
-        let program = if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        };
+        let (program, args) = open_command(std::env::consts::OS);
 
         // Tokio reaps the dropped child in the background, so it doesn't stay behind as a zombie.
         tokio::process::Command::new(program)
+            .args(args)
             .arg(url)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .map(drop)
+    }
+}
+
+/// Returns the program and the arguments before the URL that open a URL on the operating
+/// system `os`, as in [`std::env::consts::OS`]. Windows opens it through `rundll32` rather than
+/// `cmd /c start`, because `cmd` would run the `&` and `^` of a query string as commands.
+fn open_command(os: &str) -> (&'static str, &'static [&'static str]) {
+    match os {
+        "macos" => ("open", &[]),
+        "windows" => ("rundll32.exe", &["url.dll,FileProtocolHandler"]),
+        _ => ("xdg-open", &[]),
     }
 }
 
@@ -519,6 +528,16 @@ mod tests {
     use super::*;
     use crate::forward::{Connector, GuestIo};
     use async_trait::async_trait;
+
+    #[test]
+    fn open_command_uses_the_platforms_url_opener_without_a_shell() {
+        assert_eq!(open_command("linux"), ("xdg-open", &[][..]));
+        assert_eq!(open_command("macos"), ("open", &[][..]));
+        assert_eq!(
+            open_command("windows"),
+            ("rundll32.exe", &["url.dll,FileProtocolHandler"][..])
+        );
+    }
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 

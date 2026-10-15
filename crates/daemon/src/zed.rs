@@ -85,9 +85,16 @@ pub fn config_root() -> Option<PathBuf> {
 }
 
 /// Returns `$XDG_CONFIG_HOME`, or `~/.config` when it isn't set.
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn platform_config_root() -> Option<PathBuf> {
     settings_file::xdg_config_home()
+}
+
+/// Returns `%APPDATA%`, which holds Zed's `Zed` directory on Windows. Paths there aren't case
+/// sensitive, so [`ZED_DIR`] finds it.
+#[cfg(windows)]
+fn platform_config_root() -> Option<PathBuf> {
+    settings_file::app_data()
 }
 
 /// Returns `~/.config`, which Zed uses on macOS regardless of `$XDG_CONFIG_HOME`.

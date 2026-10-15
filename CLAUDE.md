@@ -53,6 +53,10 @@ For the website, run these from the repository root:
   against the built site; run `build` first, and `pnpm --dir website exec
   playwright install chromium` once.
 
+On Windows, run the `vm-tests` with `mise run integration-tests`: cargo's job
+object keeps microsandbox from starting VMs, so the task runs the test binaries
+itself (ADR 0050).
+
 `mise.toml` defines tasks for the common commands: `mise run lint`, `mise run
 unit-tests` and `mise run integration-tests`; `mise run registry` starts the
 local image registry on `127.0.0.1:5000`, and `mise run install-dev` installs
@@ -218,8 +222,10 @@ These checks enforce the rules above, so don't try to bypass them:
   when the files it checks, or the workflow itself, changed (ADR 0036):
   `.github/workflows/ci.yaml` runs the Rust format check, clippy, the unit tests
   and the `vm-tests` integration tests for changes to `crates/`, the `Cargo`
-  files, `.cargo/`, `clippy.toml`, `mise.toml` or `mise.lock`; `markdown.yaml`
-  runs `dprint check` for Markdown, `dprint.json`, `mise.toml` or `mise.lock`
+  files, `.cargo/`, `clippy.toml`, `mise.toml` or `mise.lock`, and its `windows`
+  job runs the format check, clippy and the unit tests on `windows-latest`,
+  without the `vm-tests`, because the runner has no WHP; `markdown.yaml` runs
+  `dprint check` for Markdown, `dprint.json`, `mise.toml` or `mise.lock`
   changes; `actionlint.yaml` runs `actionlint` for workflow, `mise.toml` or
   `mise.lock` changes. A website-only or docs-only pull request runs no `CI`
   jobs.

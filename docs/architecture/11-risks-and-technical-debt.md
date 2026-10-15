@@ -3,14 +3,27 @@
 The [threat model](concepts/threat-model.md) describes the assets, adversaries
 and trust boundaries these risks belong to.
 
-- **No native Windows support:** the constraints require the application to work
-  on Windows, but the CLI and daemon talk over a unix socket and rely on unix
-  signals, so they don't compile for Windows and no Windows release exists
-  ([ADR 0001](decisions/0001-release-through-github-releases-and-ghcr.md)).
-  Porting needs a cross-platform transport, such as named pipes, and
-  microsandbox's Windows support is still in preview. Until then, Windows users
-  run the Linux release in WSL 2 with nested virtualization, and editors on
-  Windows can't reach the sandboxes' SSH hosts.
+- **Windows support is a preview:** `fbk` and `fbkd` run natively on Windows 11
+  with WHP ([ADR 0050](decisions/0050-talk-over-named-pipes-on-windows.md)), but
+  microsandbox's Windows support is a preview, and there's no Windows release
+  archive yet
+  ([ADR 0001](decisions/0001-release-through-github-releases-and-ghcr.md)). CI
+  can't boot VMs on Windows, so only a developer's machine runs the `vm-tests`
+  there.
+- **Windows vsock pipes can be taken first:** pipe names are one machine-wide
+  namespace. While `fbkd` doesn't serve a sandbox's network log or clipboard
+  pipe, for example while it's stopped, another local user can create that pipe.
+  `fbkd` then fails to bind it and logs a warning, but the guest's connections,
+  which microsandbox opens without checking the server, reach the other user's
+  process, which could read the network events or answer clipboard requests.
+  `fbk` and `fbkd` check each other, so the daemon's own pipe isn't affected.
+- **No half-close on Windows pipes:** a clipboard request that ends without its
+  line gets no `invalid` answer on Windows; `fbkd` closes it after the request
+  timeout.
+- **Windows forwards don't use `SO_EXCLUSIVEADDRUSE`:** another process can bind
+  the same loopback port as a port forward with `SO_REUSEADDR` and take over its
+  connections on Windows. `fbkd` only checks for an existing listener before it
+  binds.
 - **Secrets in plaintext at rest:** the secret values are stored in plaintext in
   `secrets.yml` and in microsandbox's database, readable by every process that
   runs as the user. When the host may be compromised, rotate the secrets at

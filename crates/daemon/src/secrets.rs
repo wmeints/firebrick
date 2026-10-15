@@ -13,7 +13,6 @@ use std::collections::HashSet;
 use std::fmt;
 use std::fs;
 use std::io::{self, ErrorKind};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use thiserror::Error;
@@ -377,12 +376,10 @@ pub async fn remove_from_sandbox(handle: &SandboxHandle, name: &str) -> Microsan
 }
 
 /// Makes the microsandbox database readable by the user only, because microsandbox stores
-/// the secret values in it.
+/// the secret values in it: mode `0700`, or on Windows an access list for the user, the system
+/// and the administrators.
 pub fn protect_database(msb_home: &Path) -> io::Result<()> {
-    let dir = msb_home.join("db");
-
-    fs::create_dir_all(&dir)?;
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+    firebrick_utils::make_private_dir(&msb_home.join("db"))
 }
 
 /// Returns where in the file a parse error is, without the error message.
@@ -396,6 +393,8 @@ fn parse_error_position(err: &serde_yaml::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     fn secret(name: &str, hosts: &[&str]) -> Result<Secret, SecretError> {
         Secret::new(
@@ -405,6 +404,7 @@ mod tests {
         )
     }
 
+    #[cfg(unix)]
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
@@ -537,6 +537,7 @@ mod tests {
 
         let names: Vec<_> = store.load().unwrap().into_iter().map(|s| s.name).collect();
         assert_eq!(names, ["GH_TOKEN", "X"]);
+        #[cfg(unix)]
         assert_eq!(mode(&path), 0o600);
     }
 
@@ -564,6 +565,7 @@ mod tests {
 
         let names: Vec<_> = store.load().unwrap().into_iter().map(|s| s.name).collect();
         assert_eq!(names, ["B"]);
+        #[cfg(unix)]
         assert_eq!(mode(&path), 0o600);
     }
 
@@ -786,6 +788,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn protect_database_makes_directory_private() {
         let home = tempfile::tempdir().unwrap();
         fs::create_dir(home.path().join("db")).unwrap();

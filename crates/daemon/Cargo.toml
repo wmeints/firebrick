@@ -30,6 +30,10 @@ required-features = ["vm-tests"]
 [[test]]
 name = "host_tools"
 
+# The same scenarios with a stub `powershell.exe`, on Windows.
+[[test]]
+name = "host_tools_windows"
+
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
@@ -58,7 +62,14 @@ url = "2.5.8"
 serde_json = "1.0.152"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
 
+[target.'cfg(windows)'.dependencies]
+# `CREATE_NO_WINDOW` for the host tools fbkd runs; the version tokio uses.
+windows-sys = { version = "0.61.2", features = ["Win32_System_Threading"] }
+
 [dev-dependencies]
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 tower = "0.5.3"
 tempfile = "3.27.0"
+# Canonical temp paths without the `\\?\` prefix on Windows, which microsandbox refuses in
+# mounts (ADR 0051).
+dunce = "1.0.5"

@@ -23,6 +23,7 @@ use firebrick_daemon::clipboard::{self, Cause, Clipboards, HostClipboard, HostEr
 use firebrick_daemon::open::{self, Opener};
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{mise, netlog, sandboxes, server};
+use firebrick_utils::ipc;
 use hyper_util::rt::TokioIo;
 use microsandbox::Sandbox;
 use microsandbox::sandbox::{
@@ -30,7 +31,7 @@ use microsandbox::sandbox::{
 };
 use microsandbox::snapshot::{Snapshot, SnapshotHandle};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, UnixStream};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OnceCell, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
@@ -173,9 +174,8 @@ impl TestDaemon {
         init_logging();
         STALE_SWEEP.get_or_init(sweep_stale_sandboxes).await;
 
-        let socket_path =
-            std::env::temp_dir().join(format!("fbk-it-{}-{}.sock", std::process::id(), name));
-        let _ = std::fs::remove_file(&socket_path);
+        let socket_path = daemon_endpoint(name);
+        let _ = ipc::remove(&socket_path).await;
 
         let (tx, rx) = oneshot::channel();
         let opener = Arc::new(RecordingOpener::default());
@@ -218,7 +218,7 @@ impl TestDaemon {
         // The HTTP endpoint isn't used; it only shows up in the authority header.
         let channel = Endpoint::try_from("http://localhost")
             .unwrap()
-            .connect_with_connector(service_fn(move |_: Uri| connect_unix(path.clone())))
+            .connect_with_connector(service_fn(move |_: Uri| connect(path.clone())))
             .await
             .expect("failed to connect to test daemon");
 
@@ -260,14 +260,14 @@ async fn serve_until(
 }
 
 /// Connects to the daemon socket for a gRPC channel.
-async fn connect_unix(path: PathBuf) -> std::io::Result<TokioIo<UnixStream>> {
-    Ok(TokioIo::new(UnixStream::connect(path).await?))
+async fn connect(path: PathBuf) -> std::io::Result<TokioIo<ipc::Stream>> {
+    Ok(TokioIo::new(ipc::connect(&path).await?))
 }
 
 async fn wait_for_socket(path: &Path) {
     let deadline = Instant::now() + Duration::from_secs(5);
 
-    while UnixStream::connect(path).await.is_err() {
+    while !ipc::is_served(path).await {
         assert!(Instant::now() < deadline, "daemon did not start listening");
         sleep(Duration::from_millis(10)).await;
     }
@@ -299,13 +299,35 @@ fn sandbox_pid(name: &str) -> Option<u32> {
     pid.parse().ok()
 }
 
+/// Returns the endpoint of the test daemon `name`: a socket in the temp directory, or a pipe on
+/// Windows.
+fn daemon_endpoint(name: &str) -> PathBuf {
+    let file = format!("fbk-it-{}-{}", std::process::id(), name);
+    if cfg!(windows) {
+        return PathBuf::from(format!(r"\\.\pipe\{file}"));
+    }
+    std::env::temp_dir().join(format!("{file}.sock"))
+}
+
 /// Whether a process with the id still runs. `kill -0` works on both Linux and macOS.
+#[cfg(unix)]
 fn process_is_alive(pid: u32) -> bool {
     std::process::Command::new("kill")
         .args(["-0", &pid.to_string()])
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+/// Whether a process with the id still runs, by whether `tasklist` lists it. Its CSV quotes the
+/// PID, which no message for a missing process does, in any language.
+#[cfg(windows)]
+fn process_is_alive(pid: u32) -> bool {
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\"")))
 }
 
 /// Removes the sandboxes, and their host directories, of test processes that no longer run.
@@ -357,9 +379,9 @@ async fn remove_stale_sandbox(sb: &SandboxHandle) {
 fn remove_stale_host_files() {
     let dirs = [
         Some(std::env::temp_dir()),
-        firebrick_utils::netlog_socket_dir(),
+        firebrick_utils::netlog_socket_dir().ok().flatten(),
         firebrick_utils::network_log_dir(),
-        firebrick_utils::clipboard_socket_dir(),
+        firebrick_utils::clipboard_socket_dir().ok().flatten(),
     ];
 
     for dir in dirs.iter().flatten() {
@@ -390,9 +412,9 @@ async fn remove_sandbox(name: &str) {
     }
 
     let _ = std::fs::remove_dir_all(workspace_path(name));
-    let _ = std::fs::remove_file(netlog_socket(name));
+    let _ = ipc::remove(&netlog_socket(name)).await;
     let _ = std::fs::remove_file(netlog_record(name));
-    let _ = std::fs::remove_file(clipboard_socket(name));
+    let _ = ipc::remove(&clipboard_socket(name)).await;
 }
 
 async fn sandbox_status(
@@ -437,7 +459,7 @@ async fn wait_for_status(
 /// temp directory goes through the `/var` symlink, and microsandbox refuses to bind mount a
 /// host path that goes through a symlink.
 fn test_temp_dir() -> PathBuf {
-    std::fs::canonicalize(std::env::temp_dir()).expect("failed to resolve the temp directory")
+    dunce::canonicalize(std::env::temp_dir()).expect("failed to resolve the temp directory")
 }
 
 /// Returns the host directory used as the workspace of a test sandbox. It's named after the
@@ -543,7 +565,15 @@ fn sandbox_pid_parses_the_pid_of_test_sandboxes_only() {
 
 #[test]
 fn process_is_alive_tells_live_from_dead_processes() {
-    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let (program, args): (&str, &[&str]) = if cfg!(windows) {
+        ("cmd", &["/C", "exit"])
+    } else {
+        ("true", &[])
+    };
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .spawn()
+        .unwrap();
     let pid = child.id();
     child.wait().unwrap();
 
@@ -618,7 +648,7 @@ async fn get_sandbox_returns_name_status_workspace_path_and_image() {
     );
     assert_eq!(
         Path::new(&sandbox.workspace_host_path),
-        std::fs::canonicalize(workspace_path(name)).unwrap()
+        dunce::canonicalize(workspace_path(name)).unwrap()
     );
     assert_eq!(
         sandbox_spec(name).await.labels.get(sandboxes::IMAGE_LABEL),
@@ -2524,7 +2554,7 @@ async fn network_snapshot_paths(name: &str) -> Vec<PathBuf> {
         .await
         .iter()
         .filter_map(|snapshot| snapshot.path().ok())
-        .filter_map(|path| std::fs::canonicalize(path).ok())
+        .filter_map(|path| dunce::canonicalize(path).ok())
         .collect()
 }
 
@@ -2535,7 +2565,7 @@ fn resolve_kept_snapshot(message: &str) -> String {
     const KEPT: &str = "; the sandbox was kept as snapshot ";
 
     match message.split_once(KEPT) {
-        Some((head, path)) => match std::fs::canonicalize(path) {
+        Some((head, path)) => match dunce::canonicalize(path) {
             Ok(path) => format!("{head}{KEPT}{}", path.display()),
             Err(_) => message.to_string(),
         },
@@ -3615,11 +3645,12 @@ async fn forward_port_fails_for_a_stored_port_that_is_still_busy() {
     assert_eq!(status.code(), Code::FailedPrecondition, "{status:?}");
 }
 
-/// Returns the host socket fbkd listens on for the sandbox's network log.
+/// Returns the host socket fbkd listens on for the sandbox's network log, a pipe on Windows.
 fn netlog_socket(name: &str) -> PathBuf {
-    firebrick_utils::netlog_socket_dir()
-        .expect("set XDG_RUNTIME_DIR to an absolute path for the network log tests on Linux")
-        .join(format!("{name}.sock"))
+    let dir = firebrick_utils::netlog_socket_dir()
+        .expect("can't name the network log endpoints")
+        .expect("set XDG_RUNTIME_DIR to an absolute path for the network log tests on Linux");
+    ipc::endpoint(&dir, name).expect("the sandbox name is too long for an endpoint")
 }
 
 /// Returns the file fbkd records the sandbox's network activity in.
@@ -3640,7 +3671,7 @@ async fn has_netlog_route(name: &str) -> bool {
 
 /// Writes the lines to the sandbox's network log socket, as the logger in the guest does.
 async fn write_netlog_lines(name: &str, lines: &[&str]) {
-    let mut stream = UnixStream::connect(netlog_socket(name))
+    let mut stream = ipc::connect(&netlog_socket(name))
         .await
         .expect("fbkd doesn't listen on the network log socket");
 
@@ -3755,7 +3786,7 @@ async fn update_network_adds_the_network_log_route_to_a_sandbox_without_one() {
     let activity_before = list_network_activity(&mut client, name).await;
     let updated = update_network(&mut client, name, allow_policy(true, &["example.com"])).await;
     let routed_after = has_netlog_route(name).await;
-    let listening = UnixStream::connect(netlog_socket(name)).await.is_ok();
+    let listening = ipc::is_served(&netlog_socket(name)).await;
     let activity_after = list_network_activity(&mut client, name).await;
 
     daemon.stop().await;
@@ -3856,11 +3887,12 @@ async fn list_network_activity_returns_the_recorded_events_with_the_policy() {
     assert!(!tcp.allowed, "no IP rule allows 93.184.215.14");
 }
 
-/// Returns the host socket fbkd listens on for the sandbox's clipboard.
+/// Returns the host socket fbkd listens on for the sandbox's clipboard, a pipe on Windows.
 fn clipboard_socket(name: &str) -> PathBuf {
-    firebrick_utils::clipboard_socket_dir()
-        .expect("set XDG_RUNTIME_DIR to an absolute path for the clipboard tests on Linux")
-        .join(format!("{name}.sock"))
+    let dir = firebrick_utils::clipboard_socket_dir()
+        .expect("can't name the clipboard endpoints")
+        .expect("set XDG_RUNTIME_DIR to an absolute path for the clipboard tests on Linux");
+    ipc::endpoint(&dir, name).expect("the sandbox name is too long for an endpoint")
 }
 
 /// Whether the sandbox has a stream route from the clipboard port to its socket.
