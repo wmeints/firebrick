@@ -22,13 +22,13 @@ exists already. Pushing a tag by hand runs `release.yaml` as well.
   archive has built. GHCR makes a package private when it's first published, so
   make `firebrick-base` public once in its package settings before sandboxes can
   pull it without logging in.
-- The five workspace crates on crates.io, at the tag's version, so users can run
-  `cargo install firebrick-cli firebrick-daemon`. The `publish` job publishes
-  them once the archives and the image succeed, and `cargo publish` orders them
-  by their dependencies: `firebrick-proto`, `firebrick-spec`, `firebrick-utils`,
-  then `firebrick-cli` and `firebrick-daemon`. It skips the crates whose version
-  is on crates.io already, so rerunning the job after a partial publish
-  publishes only the rest.
+- The six workspace crates on crates.io, at the tag's version, so users can run
+  `cargo install firebrick`, which installs `fbk` and `fbkd` (ADR 0054). The
+  `publish` job publishes them once the archives and the image succeed, and
+  `cargo publish` orders them by their dependencies: `firebrick-proto`,
+  `firebrick-spec`, `firebrick-utils`, `firebrick-cli` and `firebrick-daemon`,
+  then `firebrick`. It skips the crates whose version is on crates.io already,
+  so rerunning the job after a partial publish publishes only the rest.
 
 The jobs run in this order: `package` for each target, then `image`, then
 `publish`, then `release`, which creates the GitHub release. A failed job stops
@@ -200,8 +200,8 @@ doesn't block a merge.
 The `check` job of `ci.yaml` runs clippy and then the unit tests; there's no
 separate build step, because both compile every target. The `integration` job
 restores the dependencies the `check` job cached (`Swatinem/rust-cache` with a
-shared key) and compiles only `firebrick-daemon` again, for its `vm-tests`
-feature.
+shared key) and compiles only `firebrick-daemon` and `firebrick` again, for
+their `vm-tests` feature.
 
 Both jobs restore the microsandbox runtime in `/tmp/firebrick-msb/bin` and
 `/tmp/firebrick-msb/lib` from an `actions/cache` entry keyed on `Cargo.lock`,
@@ -264,9 +264,12 @@ maintainer with admin access applies them in this order:
    names a missing environment creates it without reviewers and runs without
    approval.
 2. crates.io: for each crate (`firebrick-spec`, `firebrick-utils`,
-   `firebrick-proto`, `firebrick-cli`, `firebrick-daemon`), set the environment
-   `release` on both Trusted Publishing configurations, `tag-release.yaml` and
-   `release.yaml`.
+   `firebrick-proto`, `firebrick-cli`, `firebrick-daemon`, `firebrick`), set the
+   environment `release` on both Trusted Publishing configurations,
+   `tag-release.yaml` and `release.yaml`. crates.io only lets you configure
+   Trusted Publishing for a crate that exists, so publish a new crate, such as
+   `firebrick` in its first release, once by hand with an API token, then add
+   its configurations.
 3. Repository → Settings → Actions → General: enable "Require actions to be
    pinned to a full-length commit SHA".
 4. Repository → Settings → Rules: set the "Protect main branch" ruleset, which

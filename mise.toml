@@ -27,7 +27,7 @@ run = "cargo test --workspace"
 
 [tasks.integration-tests]
 description = "Run the integration tests that boot real microsandbox VMs"
-run = "cargo test -p firebrick-daemon --features vm-tests"
+run = "cargo test -p firebrick-daemon -p firebrick --features vm-tests"
 # Cargo's job object keeps microsandbox from starting VMs on Windows, so the
 # script runs the test binaries itself (ADR 0050).
 run_windows = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/vm-tests.ps1"
@@ -52,8 +52,7 @@ fi
 description = "Install fbk and fbkd, and push the firebrick-base image to the local registry"
 depends = ["registry"]
 run = [
-  "cargo install --locked --path crates/cli",
-  "cargo install --locked --path crates/daemon",
+  "cargo install --locked --path crates/firebrick",
   "docker build -t localhost:5000/firebrick-base:dev .",
   "docker push localhost:5000/firebrick-base:dev",
 ]

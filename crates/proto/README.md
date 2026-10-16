@@ -10,9 +10,8 @@ project directory shared from the host.
 [`proto/daemon.v1.proto`](https://github.com/wmeints/firebrick/blob/main/crates/proto/proto/daemon.v1.proto),
 shared by `fbk` and `fbkd`.
 
-This crate is a building block of Firebrick. It is published so that
-`firebrick-cli` and `firebrick-daemon` can be installed from crates.io; it is
-not meant as a general-purpose library.
+This crate is a building block of Firebrick. It is published so that `firebrick`
+can be installed from crates.io; it is not meant as a general-purpose library.
 
 ## Documentation
 

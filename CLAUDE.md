@@ -26,8 +26,8 @@ safe inside a microVM-based sandbox.
 
 - `cargo build` - compiles all crates into the required executables.
 - `cargo test --workspace` - runs the unit tests.
-- `cargo test -p firebrick-daemon --features vm-tests` - runs the integration
-  tests that boot real microsandbox VMs.
+- `cargo test -p firebrick-daemon -p firebrick --features vm-tests` - runs the
+  integration tests that boot real microsandbox VMs.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` - runs
   the linter, including the `vm-tests` integration tests.
 - `cargo fmt --all` - formats the code; `cargo fmt --all --check` verifies it.
@@ -145,9 +145,9 @@ A change is done when:
    pass.
 2. When `website/` changed, its `format:check`, `lint`, `check`, `test`, `build`
    and `test:e2e` scripts pass.
-3. `cargo test -p firebrick-daemon --features vm-tests` passes when a crate
-   other than `crates/cli`, `crates/proto`, a `Cargo.toml`, `Cargo.lock` or
-   `.cargo/config.toml` changed.
+3. `cargo test -p firebrick-daemon -p firebrick --features vm-tests` passes when
+   a crate other than `crates/cli`, `crates/proto`, a `Cargo.toml`, `Cargo.lock`
+   or `.cargo/config.toml` changed.
 4. The [Architecture Docs](docs/architecture/01-introduction-and-goals.md)
    describe the new behavior, and a decision record exists in
    `docs/architecture/decisions/` for new dependencies or architectural choices.

@@ -5,16 +5,16 @@ Firebrick is a sandbox that runs coding agents inside microVMs, built on
 away from your host. Each project gets its own lightweight VM with only the
 project directory shared from the host.
 
-`firebrick-daemon` provides the `fbkd` binary that manages the microsandbox VMs.
-The `fbk` CLI starts it from its own directory, so both binaries must be
-installed side by side.
+`firebrick-daemon` is the library behind the `fbkd` binary that manages the
+microsandbox VMs, which the `firebrick` crate installs. The `fbk` CLI starts it
+from its own directory, so both binaries must be installed side by side.
 
 ## Installation
 
-Install both binaries, because the CLI starts the daemon:
+Install the `firebrick` crate, which puts both binaries side by side:
 
 ```sh
-cargo install firebrick-cli firebrick-daemon
+cargo install firebrick
 ```
 
 ## Documentation

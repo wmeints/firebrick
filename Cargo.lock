@@ -1979,6 +1979,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
+name = "firebrick"
+version = "0.8.0"
+dependencies = [
+ "anyhow",
+ "dunce",
+ "firebrick-cli",
+ "firebrick-daemon",
+ "firebrick-utils",
+ "hyper-util",
+ "tokio",
+ "tonic",
+ "tower",
+]
+
+[[package]]
 name = "firebrick-cli"
 version = "0.8.0"
 dependencies = [

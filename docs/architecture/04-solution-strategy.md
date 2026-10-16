@@ -76,16 +76,18 @@ The application has two executables:
   stop, list, remove and validate sandboxes, run commands in them and tunnel SSH
   connections to them.
 
-Both executables live in a single Cargo workspace. Each crate has its own folder
-under `crates/`:
+Both executables live in a single Cargo workspace. The `firebrick` crate builds
+them from the `app::main` entry points of the CLI and daemon libraries. Each
+crate has its own folder under `crates/`:
 
-| Crate              | Folder          | Purpose                                                                      |
-| ------------------ | --------------- | ---------------------------------------------------------------------------- |
-| `firebrick-cli`    | `crates/cli`    | The `fbk` executable: commands, daemon client, terminal sessions, SSH proxy. |
-| `firebrick-daemon` | `crates/daemon` | The `fbkd` executable: gRPC server, sandbox lifecycle, SSH provisioning.     |
-| `firebrick-proto`  | `crates/proto`  | Generated gRPC client and server code for the daemon API.                    |
-| `firebrick-spec`   | `crates/spec`   | Parses and validates the `.firebrick.yml` sandbox spec.                      |
-| `firebrick-utils`  | `crates/utils`  | Shared helpers, such as the paths of the daemon socket, logs and SSH files.  |
+| Crate              | Folder             | Purpose                                                                     |
+| ------------------ | ------------------ | --------------------------------------------------------------------------- |
+| `firebrick`        | `crates/firebrick` | The `fbk` and `fbkd` binaries, which call the CLI and daemon libraries.     |
+| `firebrick-cli`    | `crates/cli`       | The `fbk` library: commands, daemon client, terminal sessions, SSH proxy.   |
+| `firebrick-daemon` | `crates/daemon`    | The `fbkd` library: gRPC server, sandbox lifecycle, SSH provisioning.       |
+| `firebrick-proto`  | `crates/proto`     | Generated gRPC client and server code for the daemon API.                   |
+| `firebrick-spec`   | `crates/spec`      | Parses and validates the `.firebrick.yml` sandbox spec.                     |
+| `firebrick-utils`  | `crates/utils`     | Shared helpers, such as the paths of the daemon socket, logs and SSH files. |
 
 The gRPC contract shared by the CLI and the daemon lives in
 `crates/proto/proto/daemon.v1.proto`. The `firebrick-proto` crate generates the

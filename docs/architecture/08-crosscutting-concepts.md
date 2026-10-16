@@ -47,13 +47,15 @@ sandbox that another process removes in between fails the whole listing with
 `SandboxNotFound`. `sandboxes::list_all` then starts the listing over, up to
 five times, before `fbkd` reports the error.
 
-The `vm-tests` in `crates/daemon/tests/grpc.rs` run the daemon in-process and
-install a `tracing` subscriber that writes through libtest's output capture, at
-level `info` unless `RUST_LOG` says otherwise. A failing test prints the
-daemon's log lines, including the original error behind a generic status, next
-to its panic message; a passing test prints nothing extra. The tests use the
-current-thread runtime, so the daemon logs on the test's own thread and its
-lines end up under the right test.
+The `vm-tests` in `crates/daemon/tests/grpc.rs` run the daemon in-process, while
+`crates/firebrick/tests/msb_home.rs` runs the `fbkd` binary, because only the
+`firebrick` crate's tests can find it. The in-process tests install a `tracing`
+subscriber that writes through libtest's output capture, at level `info` unless
+`RUST_LOG` says otherwise. A failing test prints the daemon's log lines,
+including the original error behind a generic status, next to its panic message;
+a passing test prints nothing extra. The tests use the current-thread runtime,
+so the daemon logs on the test's own thread and its lines end up under the right
+test.
 
 Concurrent test runs share the microsandbox home `/tmp/firebrick-msb`, so every
 sandbox a test creates is named `fbk-it-<pid>-<test>` after the test process id,

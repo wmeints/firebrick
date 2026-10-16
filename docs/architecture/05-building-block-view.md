@@ -27,17 +27,21 @@ The CLI and daemon speak gRPC (`crates/proto/proto/daemon.v1.proto`) over the
 unix socket `$XDG_RUNTIME_DIR/fbkd.sock`, or on Windows over the named pipe
 `\\.\pipe\firebrick-<SID>-fbkd`, through `firebrick_utils::ipc` (see
 [ADR 0050](decisions/0050-talk-over-named-pipes-on-windows.md)). The workspace
-is a Cargo workspace with five crates: `firebrick-cli`, `firebrick-daemon`,
-`firebrick-proto`, `firebrick-spec` and `firebrick-utils`. The `firebrick-proto`
-crate generates the gRPC client and server code from the proto file, and the CLI
-and daemon both depend on it.
+is a Cargo workspace with six crates: `firebrick`, `firebrick-cli`,
+`firebrick-daemon`, `firebrick-proto`, `firebrick-spec` and `firebrick-utils`.
+The `firebrick` crate owns the `fbk` and `fbkd` binaries, which only call the
+`app::main` entry points of the `firebrick-cli` and `firebrick-daemon`
+libraries, so `cargo install firebrick` installs both (see
+[ADR 0054](decisions/0054-install-both-binaries-with-a-firebrick-crate.md)). The
+`firebrick-proto` crate generates the gRPC client and server code from the proto
+file, and the CLI and daemon both depend on it.
 
 ## Level 2 - CLI
 
 ```mermaid
 C4Component
     Container_Boundary(cli, "fbk (crates/cli)") {
-        Component(main, "main", "Clap", "Commands")
+        Component(main, "app", "Clap", "Commands")
         Component(manage, "manage", "Rust", "Sandbox lifecycle")
         Component(session, "session", "crossterm", "Terminal sessions")
         Component(ssh, "ssh", "Rust", "SSH proxy")
@@ -209,7 +213,7 @@ C4Component
 ```mermaid
 C4Component
     Container_Boundary(daemon, "fbkd (crates/daemon)") {
-        Component(main, "main", "Rust", "Entrypoint")
+        Component(main, "app", "Rust", "Entrypoint")
         Component(server, "server", "Tonic server", "Control API adapter")
         Component(sandboxes, "sandboxes", "Rust", "Sandbox management")
         Component(session, "session", "Rust", "Attach sessions")

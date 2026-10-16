@@ -1,3 +1,4 @@
+pub mod app;
 pub mod approval;
 pub mod client;
 #[cfg(test)]

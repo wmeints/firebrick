@@ -21,7 +21,7 @@ flowchart LR
   It tags the merge commit with the workspace version when that tag doesn't
   exist yet, and calls `.github/workflows/release.yaml` with the tag.
 - `release.yaml` builds the packages, pushes the `firebrick-base` image,
-  publishes the five workspace crates to crates.io with Trusted Publishing and
+  publishes the six workspace crates to crates.io with Trusted Publishing and
   creates the GitHub release. The release notes are the version's section of
   `CHANGELOG.md`, followed by GitHub's generated list of pull requests.
 
@@ -210,11 +210,11 @@ gh release view <next> --json url,assets,body
 
 The release must have a `.tar.gz` (a `.zip` for Windows) and a `.sha256` for
 each target in the deployment view (`docs/architecture/07-deployment-view.md`),
-and its body must start with the `CHANGELOG.md` section. Each of the five
+and its body must start with the `CHANGELOG.md` section. Each of the six
 workspace crates must have the version on crates.io:
 
 ```bash
-for crate in firebrick-proto firebrick-spec firebrick-utils firebrick-cli firebrick-daemon; do
+for crate in firebrick-proto firebrick-spec firebrick-utils firebrick-cli firebrick-daemon firebrick; do
   curl -fsS -o /dev/null -A "firebrick-release" \
     "https://crates.io/api/v1/crates/$crate/${next#v}" && echo "$crate ok"
 done
