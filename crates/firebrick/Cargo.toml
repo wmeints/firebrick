@@ -34,9 +34,9 @@ required-features = ["vm-tests"]
 anyhow = "1.0.104"
 firebrick-cli = { workspace = true }
 firebrick-daemon = { workspace = true }
+firebrick-utils = { workspace = true }
 
 [dev-dependencies]
-firebrick-utils = { workspace = true }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 tokio = { version = "1.53.2", features = ["full"] }
 tonic = "0.14.6"

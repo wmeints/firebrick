@@ -18,11 +18,13 @@ the daemon wouldn't install `fbk` or `fbkd`.
 A `firebrick` crate in `crates/firebrick` owns the `fbk` and `fbkd` binary
 targets. Each binary calls the entry point of a library: `firebrick_cli::app`
 and `firebrick_daemon::app` hold the code that lived in the `main.rs` files
-before. `firebrick-cli` and `firebrick-daemon` become library-only crates, so no
-two workspace packages build binaries with the same name. The `msb_home`
-integration test, which runs the `fbkd` binary, moves to the `firebrick` crate,
-because Cargo only gives a package's tests the paths of its own binaries; the
-crate has a `vm-tests` feature of its own for it.
+before. Only the `MSB_HOME` setup stays in the `fbkd` binary: it calls
+`set_var`, which is only sound while the process has a single thread, so it
+stays out of the public library API. `firebrick-cli` and `firebrick-daemon`
+become library-only crates, so no two workspace packages build binaries with the
+same name. The `msb_home` integration test, which runs the `fbkd` binary, moves
+to the `firebrick` crate, because Cargo only gives a package's tests the paths
+of its own binaries; the crate has a `vm-tests` feature of its own for it.
 
 ## Consequences
 

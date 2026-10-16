@@ -1,9 +1,5 @@
 //! The `fbkd` daemon: picks its directories and serves the sandbox management API.
 
-#[cfg(unix)]
-use std::fs::DirBuilder;
-#[cfg(unix)]
-use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -15,62 +11,20 @@ use tracing_subscriber::prelude::*;
 use crate::secrets::{self, SecretStore};
 use crate::{runtime, sandboxes, server, ssh};
 
-/// Picks the data, log and microsandbox directories, then runs the daemon on a Tokio runtime.
+/// Picks the data and log directories, then runs the daemon on a Tokio runtime.
 ///
-/// Call it first thing from the `main` of a binary, while the process has a single thread,
-/// because it sets `MSB_HOME` in the environment.
+/// microsandbox keeps its runtime, database and sandboxes in `MSB_HOME`, so the `fbkd` binary
+/// sets it to firebrick's own home before it calls this.
 pub fn main() -> Result<()> {
     // Fail instead of falling back to the shared temp dir, where another user could create
     // the directories first and read or plant the secrets, SSH keys and SSH config.
     let secrets_path = firebrick_utils::secrets_path().context(firebrick_utils::NO_DATA_DIR)?;
     let log_dir = firebrick_utils::log_dir().context(firebrick_utils::NO_LOG_DIR)?;
-    use_firebrick_msb_home()?;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("failed to start the Tokio runtime")?
         .block_on(run(&log_dir, secrets_path))
-}
-
-/// Points microsandbox at firebrick's own home when `MSB_HOME` is unset or empty, so `fbkd`
-/// never shares the runtime, database and sandboxes of a separately installed `msb`.
-///
-/// This sets `MSB_HOME` instead of installing a default backend with that home: the `msb`
-/// processes microsandbox spawns for the VMs only inherit the environment, and resolve some
-/// paths, such as the TLS interception CA, from `MSB_HOME`.
-fn use_firebrick_msb_home() -> Result<()> {
-    if std::env::var_os("MSB_HOME").is_some_and(|home| !home.is_empty()) {
-        return Ok(());
-    }
-    let Some(home) = firebrick_utils::msb_home() else {
-        bail!(
-            "can't choose a microsandbox home: set HOME or XDG_STATE_HOME to an absolute path, \
-             or set MSB_HOME"
-        );
-    };
-    // Private, because the home holds the `msb` binary fbkd runs and the TLS interception CA.
-    create_private_home(&home)
-        .with_context(|| format!("failed to create the microsandbox home {}", home.display()))?;
-    // SAFETY: `main`, which a binary calls first, calls this before it starts the Tokio runtime
-    // or the log writer, while the process has a single thread, so nothing reads or writes the
-    // environment concurrently.
-    // HUMAN-APPROVED: edition 2024 marks `set_var` unsafe because other threads may read the
-    // environment at the same time; the process is still single-threaded here.
-    unsafe { std::env::set_var("MSB_HOME", &home) };
-    Ok(())
-}
-
-/// Creates the microsandbox home and the directories above it with mode `0700`.
-#[cfg(unix)]
-fn create_private_home(home: &Path) -> std::io::Result<()> {
-    DirBuilder::new().recursive(true).mode(0o700).create(home)
-}
-
-/// Creates the microsandbox home with an access list for the user, the system and the
-/// administrators only, which everything in it inherits.
-#[cfg(windows)]
-fn create_private_home(home: &Path) -> std::io::Result<()> {
-    firebrick_utils::make_private_dir(home)
 }
 
 /// Sets up logging in `log_dir` and runs the daemon on its endpoint until shutdown, with the

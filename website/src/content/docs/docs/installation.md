@@ -284,20 +284,26 @@ build and install both binaries with Cargo. This needs a
 Buffers compiler, on your `PATH`. The `protobuf-compiler` package of Ubuntu
 22.04 is too old; install a current release from the
 [protobuf releases](https://github.com/protocolbuffers/protobuf/releases)
-instead:
+instead. From version 0.9.0 on, the `firebrick` crate installs both binaries:
 
 ```sh
 cargo install firebrick
 fbk --version
 ```
 
-The `firebrick` crate installs `fbk` and `fbkd` in `~/.cargo/bin`, so both
-binaries end up in the same directory, as the CLI requires. To upgrade, run the
-same command again and stop the running daemon with `pkill -TERM -x fbkd`. To
-uninstall, stop the daemon and run `cargo uninstall firebrick`. Releases up to
-0.8.0 installed the binaries with the `firebrick-cli` and `firebrick-daemon`
-crates instead; run `cargo uninstall firebrick-cli firebrick-daemon` first when
-you upgrade from one of those.
+Version 0.8.0 and earlier install them with two crates instead:
+
+```sh
+cargo install firebrick-cli firebrick-daemon
+```
+
+Either way, Cargo installs `fbk` and `fbkd` in `~/.cargo/bin`, so both binaries
+end up in the same directory, as the CLI requires. To upgrade, run the same
+command again and stop the running daemon with `pkill -TERM -x fbkd`. To
+uninstall, stop the daemon and run `cargo uninstall firebrick`, or `cargo
+uninstall firebrick-cli firebrick-daemon` for 0.8.0 and earlier. When you move
+from 0.8.0 or earlier to `firebrick`, uninstall the two crates first, because
+Cargo won't replace binaries that another crate installed.
 
 ## Building from source
 
