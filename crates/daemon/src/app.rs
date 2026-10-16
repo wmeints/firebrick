@@ -1,3 +1,5 @@
+//! The `fbkd` daemon: picks its directories and serves the sandbox management API.
+
 #[cfg(unix)]
 use std::fs::DirBuilder;
 #[cfg(unix)]
@@ -10,11 +12,14 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
-use firebrick_daemon::secrets::{self, SecretStore};
-use firebrick_daemon::{runtime, sandboxes, server, ssh};
+use crate::secrets::{self, SecretStore};
+use crate::{runtime, sandboxes, server, ssh};
 
 /// Picks the data, log and microsandbox directories, then runs the daemon on a Tokio runtime.
-fn main() -> Result<()> {
+///
+/// Call it first thing from the `main` of a binary, while the process has a single thread,
+/// because it sets `MSB_HOME` in the environment.
+pub fn main() -> Result<()> {
     // Fail instead of falling back to the shared temp dir, where another user could create
     // the directories first and read or plant the secrets, SSH keys and SSH config.
     let secrets_path = firebrick_utils::secrets_path().context(firebrick_utils::NO_DATA_DIR)?;
@@ -46,8 +51,9 @@ fn use_firebrick_msb_home() -> Result<()> {
     // Private, because the home holds the `msb` binary fbkd runs and the TLS interception CA.
     create_private_home(&home)
         .with_context(|| format!("failed to create the microsandbox home {}", home.display()))?;
-    // SAFETY: `main` calls this before it starts the Tokio runtime or the log writer, while the
-    // process has a single thread, so nothing reads or writes the environment concurrently.
+    // SAFETY: `main`, which a binary calls first, calls this before it starts the Tokio runtime
+    // or the log writer, while the process has a single thread, so nothing reads or writes the
+    // environment concurrently.
     // HUMAN-APPROVED: edition 2024 marks `set_var` unsafe because other threads may read the
     // environment at the same time; the process is still single-threaded here.
     unsafe { std::env::set_var("MSB_HOME", &home) };

@@ -1,5 +1,5 @@
 # Runs the vm-tests on Windows: `mise run integration-tests` runs this script
-# there instead of `cargo test -p firebrick-daemon --features vm-tests`.
+# there instead of `cargo test -p firebrick-daemon -p firebrick --features vm-tests`.
 #
 # Cargo runs test binaries in a job object without the breakaway right, and
 # microsandbox starts each VM with CREATE_BREAKAWAY_FROM_JOB, which Windows
@@ -11,18 +11,18 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
 $build = cargo test --manifest-path "$root/Cargo.toml" -p firebrick-daemon `
-    --features vm-tests --no-run --message-format=json-render-diagnostics
+    -p firebrick --features vm-tests --no-run --message-format=json-render-diagnostics
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $tests = $build |
     ForEach-Object { $_ | ConvertFrom-Json } |
     Where-Object { $_.reason -eq 'compiler-artifact' -and $_.executable -and
         $_.target.kind -contains 'test' } |
-    ForEach-Object { $_.executable }
+    ForEach-Object { @{ Executable = $_.executable; Dir = Split-Path -Parent $_.manifest_path } }
 
 # Without test binaries nothing would boot a VM, and the run would pass anyway.
 if (-not $tests) {
-    Write-Output 'vm-tests failed: cargo built no test binaries for firebrick-daemon'
+    Write-Output 'vm-tests failed: cargo built no test binaries'
     exit 1
 }
 
@@ -42,15 +42,15 @@ if (-not $env:RUST_TEST_THREADS) {
 }
 
 # Cargo runs a package's tests in the package's directory.
-Push-Location "$root/crates/daemon"
 $failed = @()
-try {
-    foreach ($test in $tests) {
-        & $test @args
-        if ($LASTEXITCODE -ne 0) { $failed += "$(Split-Path -Leaf $test) (exit $LASTEXITCODE)" }
+foreach ($test in $tests) {
+    Push-Location $test.Dir
+    try {
+        & $test.Executable @args
+        if ($LASTEXITCODE -ne 0) { $failed += "$(Split-Path -Leaf $test.Executable) (exit $LASTEXITCODE)" }
+    } finally {
+        Pop-Location
     }
-} finally {
-    Pop-Location
 }
 
 # Name the failed binaries last, where a caller that keeps only the end of the

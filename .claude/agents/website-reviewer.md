@@ -64,9 +64,9 @@ When the diff doesn't touch `website/`, report "no website changes" and stop.
    some of these in `.astro` files; check what it can't, such as contrast.
 10. **Facts in the docs**: every command, flag, default, file path and limit in
     the docs and on the landing page must match the code at `HEAD`. Look each
-    one up in the Rust sources (`crates/cli/src/main.rs` for flags, the files
-    the issue names for the rest). Flag features that don't exist yet described
-    as if they did.
+    one up in the Rust sources (`crates/cli/src/app.rs` for flags, the files the
+    issue names for the rest). Flag features that don't exist yet described as
+    if they did.
 11. **Lint and type suppression**: `eslint-disable`, `@ts-ignore`,
     `@ts-expect-error`, `@ts-nocheck`, `prettier-ignore`, `as any` or a non-null
     `!` that hides a real `undefined`. As for the Rust code, a suppression needs

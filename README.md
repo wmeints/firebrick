@@ -100,15 +100,16 @@ starts:
 
 ### Workspace layout
 
-The workspace contains five crates:
+The workspace contains six crates:
 
-| Crate              | Folder          | Purpose                                                                                     |
-| ------------------ | --------------- | ------------------------------------------------------------------------------------------- |
-| `firebrick-cli`    | `crates/cli`    | The `fbk` CLI.                                                                              |
-| `firebrick-daemon` | `crates/daemon` | The `fbkd` daemon.                                                                          |
-| `firebrick-proto`  | `crates/proto`  | Generated gRPC code for the daemon API.                                                     |
-| `firebrick-spec`   | `crates/spec`   | Parses and validates `.firebrick.yml`.                                                      |
-| `firebrick-utils`  | `crates/utils`  | Shared paths for the socket, logs, SSH files and microsandbox home, and the name sanitizer. |
+| Crate              | Folder             | Purpose                                                                                     |
+| ------------------ | ------------------ | ------------------------------------------------------------------------------------------- |
+| `firebrick`        | `crates/firebrick` | Installs the `fbk` and `fbkd` binaries.                                                     |
+| `firebrick-cli`    | `crates/cli`       | The library behind the `fbk` CLI.                                                           |
+| `firebrick-daemon` | `crates/daemon`    | The library behind the `fbkd` daemon.                                                       |
+| `firebrick-proto`  | `crates/proto`     | Generated gRPC code for the daemon API.                                                     |
+| `firebrick-spec`   | `crates/spec`      | Parses and validates `.firebrick.yml`.                                                      |
+| `firebrick-utils`  | `crates/utils`     | Shared paths for the socket, logs, SSH files and microsandbox home, and the name sanitizer. |
 
 The gRPC contract lives in
 [`crates/proto/proto/daemon.v1.proto`](crates/proto/proto/daemon.v1.proto).

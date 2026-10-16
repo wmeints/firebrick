@@ -8,9 +8,8 @@ project directory shared from the host.
 `firebrick-utils` holds the file locations, naming rules and text helpers shared
 by the CLI and the daemon.
 
-This crate is a building block of Firebrick. It is published so that
-`firebrick-cli` and `firebrick-daemon` can be installed from crates.io; it is
-not meant as a general-purpose library.
+This crate is a building block of Firebrick. It is published so that `firebrick`
+can be installed from crates.io; it is not meant as a general-purpose library.
 
 ## Documentation
 

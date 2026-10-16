@@ -77,7 +77,7 @@ integration_tests() {
   if [ "${OS:-}" = Windows_NT ]; then
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/vm-tests.ps1
   else
-    cargo test -p firebrick-daemon --features vm-tests
+    cargo test -p firebrick-daemon -p firebrick --features vm-tests
   fi
 }
 

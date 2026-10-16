@@ -10,20 +10,12 @@ description = "The fbkd daemon that manages Firebrick microVM sandboxes for codi
 [lints]
 workspace = true
 
-[[bin]]
-name = "fbkd"
-path = "src/main.rs"
-
 [features]
 # Integration tests that boot real microsandbox VMs.
 vm-tests = []
 
 [[test]]
 name = "grpc"
-required-features = ["vm-tests"]
-
-[[test]]
-name = "msb_home"
 required-features = ["vm-tests"]
 
 # Reads the host clipboard with stub tools, in a process of its own; it boots no VMs.

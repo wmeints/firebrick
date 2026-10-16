@@ -3,12 +3,15 @@ resolver = "3"
 members = [
     "crates/cli",
     "crates/daemon",
+    "crates/firebrick",
     "crates/proto",
     "crates/spec",
     "crates/utils",
 ]
 
 [workspace.dependencies]
+firebrick-cli = { path = "crates/cli", version = "0.8.0" }
+firebrick-daemon = { path = "crates/daemon", version = "0.8.0" }
 firebrick-proto = { path = "crates/proto", version = "0.8.0" }
 firebrick-spec = { path = "crates/spec", version = "0.8.0" }
 firebrick-utils = { path = "crates/utils", version = "0.8.0" }

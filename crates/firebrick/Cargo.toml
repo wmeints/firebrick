@@ -1,0 +1,46 @@
+[package]
+name = "firebrick"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Installs the fbk CLI and the fbkd daemon for running coding agents in Firebrick microVM sandboxes."
+readme = "README.md"
+
+[lints]
+workspace = true
+
+# `cargo install` only installs the binaries of the package it names, so this crate owns both
+# (ADR 0054).
+[[bin]]
+name = "fbk"
+path = "src/bin/fbk.rs"
+
+[[bin]]
+name = "fbkd"
+path = "src/bin/fbkd.rs"
+
+[features]
+# Integration tests that boot real microsandbox VMs.
+vm-tests = []
+
+# Runs the fbkd binary without MSB_HOME and boots a VM.
+[[test]]
+name = "msb_home"
+required-features = ["vm-tests"]
+
+[dependencies]
+anyhow = "1.0.104"
+firebrick-cli = { workspace = true }
+firebrick-daemon = { workspace = true }
+
+[dev-dependencies]
+firebrick-utils = { workspace = true }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+tokio = { version = "1.53.2", features = ["full"] }
+tonic = "0.14.6"
+tower = "0.5.3"
+# Canonical temp paths without the `\\?\` prefix on Windows, which microsandbox refuses in
+# mounts (ADR 0051).
+dunce = "1.0.5"

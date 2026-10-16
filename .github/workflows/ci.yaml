@@ -143,8 +143,8 @@ jobs:
           # Pin mise itself; it verifies the checksums in mise.lock.
           version: 2026.9.10
 
-      # Restores the cache the check job saved; only firebrick-daemon compiles
-      # again, for the vm-tests feature.
+      # Restores the cache the check job saved; only firebrick-daemon and firebrick
+      # compile again, for the vm-tests feature.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: workspace
@@ -171,4 +171,4 @@ jobs:
         run: |
           export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$RUNNER_TEMP/xdg-runtime}"
           [ -d "$XDG_RUNTIME_DIR" ] || mkdir -m 700 "$XDG_RUNTIME_DIR"
-          cargo test -p firebrick-daemon --features vm-tests
+          cargo test -p firebrick-daemon -p firebrick --features vm-tests

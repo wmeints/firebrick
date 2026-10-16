@@ -1,6 +1,7 @@
 /// Generated gRPC types for the firebrick API.
 pub use firebrick_proto as api;
 
+pub mod app;
 mod atomic_file;
 pub mod clipboard;
 pub mod forward;

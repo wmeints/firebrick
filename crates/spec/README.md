@@ -7,9 +7,8 @@ project directory shared from the host.
 
 `firebrick-spec` parses and validates the `.firebrick.yml` sandbox spec.
 
-This crate is a building block of Firebrick. It is published so that
-`firebrick-cli` and `firebrick-daemon` can be installed from crates.io; it is
-not meant as a general-purpose library.
+This crate is a building block of Firebrick. It is published so that `firebrick`
+can be installed from crates.io; it is not meant as a general-purpose library.
 
 ## Documentation
 

@@ -30,11 +30,11 @@ Before opening the PR, verify the change:
 1. Run the checks from the definition of done in `CLAUDE.md`: `cargo fmt --all
    --check`, `cargo clippy --workspace --all-targets --all-features -- -D
    warnings` and `cargo test --workspace`. Run `cargo test -p firebrick-daemon
-   --features vm-tests` too when the diff touches the files listed in step 3 of
-   the definition of done. When the diff touches `website/`, run its checks from
-   step 2 too: `pnpm --dir website run format:check`, `lint`, `check`, `test`,
-   `build` and `test:e2e`. If a check fails, stop and report it; don't open a PR
-   with failing checks.
+   -p firebrick --features vm-tests` too when the diff touches the files listed
+   in step 3 of the definition of done. When the diff touches `website/`, run
+   its checks from step 2 too: `pnpm --dir website run format:check`, `lint`,
+   `check`, `test`, `build` and `test:e2e`. If a check fails, stop and report
+   it; don't open a PR with failing checks.
 2. Check the documentation rule from the definition of done. When the diff
    changes behavior, the files in `docs/architecture/` must describe the new
    behavior. When it adds a dependency or makes an architectural choice, a new

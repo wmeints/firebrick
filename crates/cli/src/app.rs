@@ -1,14 +1,16 @@
+//! The `fbk` command line: parses the arguments and runs the command.
+
 use std::env;
 use std::path::{Path, PathBuf};
 
+use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
+use crate::manage::OutputFormat;
+use crate::network::{self, NetworkChange};
+use crate::secret::Scope;
+use crate::{client, init, manage, port, presets, secret, session, ssh, validate};
 use anyhow::Result;
 use clap::builder::PossibleValuesParser;
 use clap::{Args, Parser, Subcommand};
-use firebrick_cli::api::sandbox_management_service_client::SandboxManagementServiceClient;
-use firebrick_cli::manage::OutputFormat;
-use firebrick_cli::network::{self, NetworkChange};
-use firebrick_cli::secret::Scope;
-use firebrick_cli::{client, init, manage, port, presets, secret, session, ssh, validate};
 use firebrick_spec::PortMapping;
 use tonic::transport::Channel;
 
@@ -236,8 +238,9 @@ struct RunArgs {
     command: Vec<String>,
 }
 
+/// Parses the `fbk` arguments and runs the command, starting `fbkd` when it needs the daemon.
 #[tokio::main]
-async fn main() -> Result<()> {
+pub async fn main() -> Result<()> {
     let cli = Cli::parse();
     let working_dir = working_dir()?;
 

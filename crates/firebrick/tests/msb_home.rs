@@ -3,7 +3,7 @@
 //! The test runs the `fbkd` binary with `MSB_HOME` removed and the home and XDG directories
 //! pointed at a fresh directory under `/tmp`, or the temp directory on Windows, so it never
 //! touches the user's state. On Windows its pipes get a prefix of their own. It boots a real VM;
-//! run it with `cargo test -p firebrick-daemon --features vm-tests`.
+//! run it with `cargo test -p firebrick --features vm-tests`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};

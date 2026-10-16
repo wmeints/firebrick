@@ -287,15 +287,17 @@ Buffers compiler, on your `PATH`. The `protobuf-compiler` package of Ubuntu
 instead:
 
 ```sh
-cargo install firebrick-cli firebrick-daemon
+cargo install firebrick
 fbk --version
 ```
 
-Cargo installs `fbk` and `fbkd` in `~/.cargo/bin`, so both binaries end up in
-the same directory, as the CLI requires. Install both crates with the same
-version. To upgrade, run the same command again and stop the running daemon with
-`pkill -TERM -x fbkd`. To uninstall, stop the daemon and run `cargo uninstall
-firebrick-cli firebrick-daemon`.
+The `firebrick` crate installs `fbk` and `fbkd` in `~/.cargo/bin`, so both
+binaries end up in the same directory, as the CLI requires. To upgrade, run the
+same command again and stop the running daemon with `pkill -TERM -x fbkd`. To
+uninstall, stop the daemon and run `cargo uninstall firebrick`. Releases up to
+0.8.0 installed the binaries with the `firebrick-cli` and `firebrick-daemon`
+crates instead; run `cargo uninstall firebrick-cli firebrick-daemon` first when
+you upgrade from one of those.
 
 ## Building from source
 
@@ -307,8 +309,7 @@ Make sure that directory is on your `PATH`, as in step 2:
 git clone https://github.com/wmeints/firebrick.git
 cd firebrick
 mise install
-cargo install --locked --path crates/cli
-cargo install --locked --path crates/daemon
+cargo install --locked --path crates/firebrick
 ```
 
 A build from source that isn't a release defaults to a `firebrick-base` image
