@@ -113,9 +113,12 @@ C4Component
   it names the sandbox after the full working directory path. Before it creates
   a sandbox, it has `approval` check the resolved mounts, the network section
   and the clipboard setting. `ls` prints the name, status and host name of each
-  sandbox as a table, or as a JSON array with `--format json`. `start`, `run`,
-  the `network` changes and the `port` commands print the outdated image warning
-  from `outdated_warning` (see
+  sandbox as a table, or as a JSON array with `--format json`. Every start
+  request it sends from a spec, also for an existing sandbox, carries the spec's
+  `env`, and it prints `env changes in .firebrick.yml apply after the sandbox
+  restarts: fbk stop && fbk start` when the daemon reports that a running
+  sandbox keeps other variables. `start`, `run`, the `network` changes and the
+  `port` commands print the outdated image warning from `outdated_warning` (see
   [Outdated sandbox images](08-crosscutting-concepts.md#outdated-sandbox-images)).
 - `session` - Runs a command in the sandbox through the `Attach` stream. It
   makes sure the sandbox runs first, puts the terminal in raw mode and forwards
@@ -226,6 +229,7 @@ C4Component
         Component(clipboard, "clipboard", "Rust", "Host clipboard")
         Component(vsock, "vsock", "Rust", "Sockets of vsock routes")
         Component(pull, "pull", "Rust", "Image pull progress")
+        Component(env, "env", "Rust", "Environment variables")
     }
     Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names, text")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
@@ -248,6 +252,7 @@ C4Component
     Rel(sandboxes, network, "Applies egress rules")
     Rel(sandboxes, forward, "Reconciles port forwards")
     Rel(sandboxes, pull, "Reports image pull progress")
+    Rel(sandboxes, env, "Sets and syncs spec variables")
     Rel(forward, microsandbox, "Opens direct-tcpip channels")
     Rel(sandboxes, open, "Starts URL relays")
     Rel(open, microsandbox, "Runs the relay as an exec stream")
@@ -299,21 +304,24 @@ C4Component
   A `StartSandbox` or `UpgradeSandbox` request with an image that isn't an OCI
   reference fails with `INVALID_ARGUMENT` (see
   [Keeping spec text off the terminal](08-crosscutting-concepts.md#keeping-spec-text-off-the-terminal)).
-  `ListNetworkActivity` turns a sandbox's record into one entry per DNS name and
-  per connection address and protocol, sorted by last seen, newest first, and
-  evaluates the sandbox's current rules for each with `network::allows_host`:
-  domain rules for a DNS entry, IP and CIDR rules for a connection, and
-  `allowed` for every entry when the rules aren't enforced. This is `fbkd`'s
-  evaluation, not microsandbox's own decision. `StartSandbox` is a
-  server-streaming RPC: `server` runs the start in a task of its own, so it
-  finishes when the client disconnects, streams the image pull and mise install
-  progress and ends the stream with the open and failed forwards, or with the
-  error status. It maps the `SandboxError` of `sandboxes` to gRPC status codes
-  in one place. It refuses to start when the socket already exists, binds it
-  with `ipc::Listener`, which gives a socket mode `0600` and a pipe an access
-  list for the user and `LocalSystem` only, and removes it on shutdown. It only
-  hands a connection to tonic when the peer runs as the daemon's own user or
-  root, `LocalSystem` on Windows (see
+  It checks the names of a `StartSandbox` request's `env` with
+  `firebrick_spec::validate_env_name` and rejects an invalid or `MSB_` name, or
+  a value with a NUL character, with `INVALID_ARGUMENT`. `ListNetworkActivity`
+  turns a sandbox's record into one entry per DNS name and per connection
+  address and protocol, sorted by last seen, newest first, and evaluates the
+  sandbox's current rules for each with `network::allows_host`: domain rules for
+  a DNS entry, IP and CIDR rules for a connection, and `allowed` for every entry
+  when the rules aren't enforced. This is `fbkd`'s evaluation, not
+  microsandbox's own decision. `StartSandbox` is a server-streaming RPC:
+  `server` runs the start in a task of its own, so it finishes when the client
+  disconnects, streams the image pull and mise install progress and ends the
+  stream with the open and failed forwards, or with the error status. It maps
+  the `SandboxError` of `sandboxes` to gRPC status codes in one place. It
+  refuses to start when the socket already exists, binds it with
+  `ipc::Listener`, which gives a socket mode `0600` and a pipe an access list
+  for the user and `LocalSystem` only, and removes it on shutdown. It only hands
+  a connection to tonic when the peer runs as the daemon's own user or root,
+  `LocalSystem` on Windows (see
   [Securing the daemon socket](08-crosscutting-concepts.md#securing-the-daemon-socket)).
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
@@ -350,13 +358,16 @@ C4Component
   secret and adds it to the sandboxes in its scope: a global secret to the
   existing sandboxes firebrick created, except the ones with a sandbox-scoped
   secret with that name, and a sandbox-scoped secret to its sandbox only, which
-  must exist. `ListSecrets` returns the names, scopes and allowed hosts, sorted
-  by name and then scope with the global secret first, never the values.
-  `RemoveSecret` removes a secret from the same sandboxes and then from the
-  store, keeps it in the store when a sandbox fails so the removal can be
-  retried, and returns `NOT_FOUND` for an unknown name or sandbox. A sandbox
-  that loses its sandbox-scoped secret gets the global one with that name back.
-  Removing a sandbox removes its sandbox-scoped secrets from the store (see
+  must exist. It refuses a secret whose name one of those sandboxes got as an
+  `env` variable from its spec with `FAILED_PRECONDITION` (see
+  [Setting environment variables](06-runtime-view.md#setting-environment-variables)).
+  `ListSecrets` returns the names, scopes and allowed hosts, sorted by name and
+  then scope with the global secret first, never the values. `RemoveSecret`
+  removes a secret from the same sandboxes and then from the store, keeps it in
+  the store when a sandbox fails so the removal can be retried, and returns
+  `NOT_FOUND` for an unknown name or sandbox. A sandbox that loses its
+  sandbox-scoped secret gets the global one with that name back. Removing a
+  sandbox removes its sandbox-scoped secrets from the store (see
   [Secret scopes](08-crosscutting-concepts.md#secret-scopes)). A lock around the
   secret store makes sure a sandbox that is being created can't miss a secret
   that is being set. It stores a sandbox's port mappings in the
@@ -431,6 +442,17 @@ C4Component
   with its rules from the `firebrick.network` label (`network::rules_of`),
   `FAILED_PRECONDITION` when the sandbox has no network log route, or `INTERNAL`
   when its record can't be read.
+- `env` - Gives a sandbox the plain environment variables of its spec. It sets
+  them with `SandboxBuilder::envs` on the shared builder chain, so created,
+  recreated and upgraded sandboxes get them, and records their names in the
+  `firebrick.env` label (`NODE_ENV,PORT`). microsandbox merges the image's
+  variables into the same list, so the label tells the spec's variables apart.
+  `sync` compares the requested variables with the stored ones and, when they
+  differ, sets the new and changed ones, removes the ones that left the spec and
+  updates the label as one `next_start` change; it never touches a variable the
+  label doesn't name. A spec variable with the name of an image variable
+  replaces it, and removing it from the spec removes the variable altogether.
+  The values are passed on as they are, without secret substitution.
 - `pull` - Turns microsandbox's `PullProgress` events into pull updates: it adds
   up the downloaded bytes per layer, takes the total from the manifest, and
   reports at most one update every 100 ms, one for each layer that finishes and
@@ -737,12 +759,17 @@ C4Component
   `ports: []` when the last entry goes, and rewrite a flow list such as `[3000]`
   as a block list. They parse the result before returning it. `with_port`
   replaces or adds a mapping by host port; the daemon uses it for the stored
-  ports too. `guest_mount_path` checks a mount's `guest` the way microsandbox
-  does: an absolute path other than `/`, without `..`, `:`, `;` or `,`. It
-  normalizes the path (no `.` parts or trailing slash), and each normalized path
-  may appear only once. The daemon uses the same check. The CLI resolves each
-  mount's `host` against the spec file's directory, expanding `~` to `$HOME` and
-  `~user` to that user's home directory
+  ports too. The optional `env` map holds variable names with string, number or
+  boolean values, which it keeps as text (`3000` becomes `"3000"`) without
+  expanding `$VAR`. A list, map or null value, a name that doesn't match
+  `[A-Za-z_][A-Za-z0-9_]*` (`validate_env_name`), a name with the reserved
+  `MSB_` prefix and a name that appears twice are reported at the entry.
+  `guest_mount_path` checks a mount's `guest` the way microsandbox does: an
+  absolute path other than `/`, without `..`, `:`, `;` or `,`. It normalizes the
+  path (no `.` parts or trailing slash), and each normalized path may appear
+  only once. The daemon uses the same check. The CLI resolves each mount's
+  `host` against the spec file's directory, expanding `~` to `$HOME` and `~user`
+  to that user's home directory
   ([ADR 0020](decisions/0020-look-up-user-home-directories-with-nix.md)), to the
   canonical path of an existing directory before it sends `StartSandbox`.
   `NetworkRule` parses a rule: a host name, `*.` plus a domain of at least two

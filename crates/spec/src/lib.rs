@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
@@ -10,7 +10,7 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use serde::de::{self, SeqAccess, Visitor};
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::result::Result;
 use thiserror::Error;
@@ -145,6 +145,15 @@ pub struct SandboxSpec {
     /// `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clipboard: Option<bool>,
+    /// Environment variables set in every process in the sandbox, with their values as written:
+    /// numbers and booleans become their text, and `$VAR` isn't expanded. Names are checked by
+    /// [`validate_env_name`].
+    #[serde(
+        default,
+        deserialize_with = "deserialize_env",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub env: BTreeMap<String, String>,
 }
 
 /// A host directory mounted into the sandbox when it's created.
@@ -500,6 +509,162 @@ impl Visitor<'_> for UniquePort<'_> {
         }
 
         Ok(mapping)
+    }
+}
+
+/// Prefix of the environment variables that microsandbox reserves for secret placeholders.
+pub const RESERVED_ENV_PREFIX: &str = "MSB_";
+
+/// An environment variable name that a sandbox can't get.
+#[derive(Error, Debug, PartialEq, Eq)]
+pub enum InvalidEnvName {
+    /// The name doesn't match `[A-Za-z_][A-Za-z0-9_]*`.
+    #[error(
+        "invalid variable name {0:?}: use ASCII letters, digits and '_', not starting with a digit"
+    )]
+    Invalid(String),
+    /// The name has the prefix microsandbox reserves for secret placeholders.
+    #[error("{0}: the MSB_ prefix is reserved")]
+    Reserved(String),
+}
+
+/// Checks an environment variable name: an ASCII letter or `_` first, then only ASCII letters,
+/// digits and `_`, and not the [`RESERVED_ENV_PREFIX`]. A valid name is safe to show in a
+/// message.
+pub fn validate_env_name(name: &str) -> Result<(), InvalidEnvName> {
+    let starts_ok = name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_');
+    let charset_ok = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+
+    if !(starts_ok && charset_ok) {
+        return Err(InvalidEnvName::Invalid(name.to_string()));
+    }
+
+    if name.starts_with(RESERVED_ENV_PREFIX) {
+        return Err(InvalidEnvName::Reserved(name.to_string()));
+    }
+
+    Ok(())
+}
+
+/// Deserializes the `env` map, checking each name and turning each scalar value into its text.
+fn deserialize_env<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, String>, D::Error> {
+    deserializer.deserialize_option(EnvVisitor)
+}
+
+/// Reads the variables of an `env` map. An empty `env:` has no variables.
+struct EnvVisitor;
+
+impl<'de> Visitor<'de> for EnvVisitor {
+    type Value = BTreeMap<String, String>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a map of environment variables")
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(BTreeMap::new())
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(self)
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut env = BTreeMap::new();
+
+        while let Some(name) = map.next_key_seed(EnvName(&env))? {
+            let value = map.next_value_seed(EnvValue)?;
+            env.insert(name, value);
+        }
+
+        Ok(env)
+    }
+}
+
+/// Reads a variable name and checks it, failing when the map already has it. The check runs
+/// while the parser still points at the name, so a problem is reported at its own line.
+struct EnvName<'a>(&'a BTreeMap<String, String>);
+
+impl<'de> de::DeserializeSeed<'de> for EnvName<'_> {
+    type Value = String;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<String, D::Error> {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl Visitor<'_> for EnvName<'_> {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an environment variable name")
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<String, E> {
+        // An invalid name may hold escape sequences, which the diagnostic strips.
+        validate_env_name(value).map_err(E::custom)?;
+
+        if self.0.contains_key(value) {
+            return Err(E::custom(format!("{value} is listed more than once")));
+        }
+
+        Ok(value.to_string())
+    }
+}
+
+/// Reads a variable value: a string as it is, and a number or boolean as its text.
+struct EnvValue;
+
+/// What a variable value has to be.
+const ENV_VALUE_EXPECTED: &str = "expected a string, number or boolean";
+
+impl<'de> de::DeserializeSeed<'de> for EnvValue {
+    type Value = String;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<String, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for EnvValue {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a string, number or boolean")
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<String, E> {
+        Ok(value.to_string())
+    }
+
+    fn visit_bool<E: de::Error>(self, value: bool) -> Result<String, E> {
+        Ok(value.to_string())
+    }
+
+    fn visit_i64<E: de::Error>(self, value: i64) -> Result<String, E> {
+        Ok(value.to_string())
+    }
+
+    fn visit_u64<E: de::Error>(self, value: u64) -> Result<String, E> {
+        Ok(value.to_string())
+    }
+
+    fn visit_f64<E: de::Error>(self, value: f64) -> Result<String, E> {
+        Ok(value.to_string())
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<String, E> {
+        Err(E::custom(ENV_VALUE_EXPECTED))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, _seq: A) -> Result<String, A::Error> {
+        Err(de::Error::custom(ENV_VALUE_EXPECTED))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, _map: A) -> Result<String, A::Error> {
+        Err(de::Error::custom(ENV_VALUE_EXPECTED))
     }
 }
 
@@ -1155,6 +1320,7 @@ pub fn default_spec(name: String) -> SandboxSpec {
         mounts: None,
         ports: vec![],
         clipboard: None,
+        env: BTreeMap::new(),
     }
 }
 
@@ -2532,5 +2698,169 @@ pub mod tests {
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "name: new\n");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn env_is_empty_without_an_env_section() {
+        for content in ["name: dev\n", "name: dev\nenv:\n", "name: dev\nenv: {}\n"] {
+            let spec = from_str(content).unwrap();
+
+            assert!(spec.env.is_empty(), "{content:?}");
+        }
+    }
+
+    #[test]
+    fn env_keeps_values_as_written() {
+        let spec = from_str(
+            "name: dev\nenv:\n  NODE_ENV: development\n  RUST_LOG: \"debug,hyper=info\"\n  \
+             GREETING: \"$HOME\"\n  BRACED: \"${HOME}\"\n  EMPTY: \"\"\n  _under: x\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            spec.env,
+            BTreeMap::from(
+                [
+                    ("NODE_ENV", "development"),
+                    ("RUST_LOG", "debug,hyper=info"),
+                    ("GREETING", "$HOME"),
+                    ("BRACED", "${HOME}"),
+                    ("EMPTY", ""),
+                    ("_under", "x"),
+                ]
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+            )
+        );
+    }
+
+    #[test]
+    fn env_turns_numbers_and_booleans_into_text() {
+        let spec =
+            from_str("name: dev\nenv:\n  PORT: 3000\n  OFFSET: -1\n  DEBUG: true\n  RATIO: 0.5\n")
+                .unwrap();
+
+        assert_eq!(spec.env["PORT"], "3000");
+        assert_eq!(spec.env["OFFSET"], "-1");
+        assert_eq!(spec.env["DEBUG"], "true");
+        assert_eq!(spec.env["RATIO"], "0.5");
+    }
+
+    #[test]
+    fn env_value_that_isnt_a_scalar_returns_diagnostic() {
+        let values = [("[1]", 8), ("{a: 1}", 8), ("~", 8), ("null", 8), ("", 7)];
+
+        for (value, column) in values {
+            let diagnostic = from_str(&format!("name: dev\nenv:\n  FOO: {value}\n"))
+                .unwrap_err()
+                .diagnostic()
+                .unwrap();
+
+            assert_eq!(
+                (diagnostic.line, diagnostic.column),
+                (3, column),
+                "{value:?}"
+            );
+            assert_eq!(
+                diagnostic.message, "env.FOO: expected a string, number or boolean",
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_env_name_returns_diagnostic() {
+        for name in ["1X", "A-B", "\"A B\"", "\"\"", "dé", "\"x\\e]0;pwned\\a\""] {
+            let diagnostic = from_str(&format!("name: dev\nenv:\n  {name}: x\n"))
+                .unwrap_err()
+                .diagnostic()
+                .unwrap();
+
+            assert_eq!((diagnostic.line, diagnostic.column), (3, 3), "{name:?}");
+            assert!(
+                diagnostic.message.starts_with("env: invalid variable name"),
+                "{}",
+                diagnostic.message
+            );
+            assert!(
+                !diagnostic.message.contains('\x1b'),
+                "{}",
+                diagnostic.message
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_env_name_diagnostic_names_the_variable() {
+        let diagnostic = from_str("name: dev\nenv:\n  A-B: x\n")
+            .unwrap_err()
+            .diagnostic()
+            .unwrap();
+
+        assert_eq!(
+            diagnostic.message,
+            "env: invalid variable name \"A-B\": use ASCII letters, digits and '_', not \
+             starting with a digit"
+        );
+    }
+
+    #[test]
+    fn reserved_env_name_returns_diagnostic() {
+        let diagnostic = from_str("name: dev\nenv:\n  PORT: 1\n  MSB_FOO: x\n")
+            .unwrap_err()
+            .diagnostic()
+            .unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (4, 3));
+        assert_eq!(
+            diagnostic.message,
+            "env: MSB_FOO: the MSB_ prefix is reserved"
+        );
+    }
+
+    #[test]
+    fn duplicate_env_name_returns_diagnostic() {
+        let diagnostic = from_str("name: dev\nenv:\n  A: x\n  A: y\n")
+            .unwrap_err()
+            .diagnostic()
+            .unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (4, 3));
+        assert_eq!(diagnostic.message, "env: A is listed more than once");
+    }
+
+    #[test]
+    fn env_that_isnt_a_map_returns_diagnostic() {
+        let diagnostic = from_str("name: dev\nenv: [A]\n")
+            .unwrap_err()
+            .diagnostic()
+            .unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (2, 6));
+        assert_eq!(
+            diagnostic.message,
+            "env: invalid type: sequence, expected a map of environment variables"
+        );
+    }
+
+    #[test]
+    fn validate_env_name_accepts_shell_names() {
+        for name in ["A", "_", "node_env", "PATH2", "MSB"] {
+            assert_eq!(validate_env_name(name), Ok(()), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn validate_env_name_rejects_the_reserved_prefix() {
+        assert_eq!(
+            validate_env_name("MSB_TOKEN"),
+            Err(InvalidEnvName::Reserved("MSB_TOKEN".to_string()))
+        );
+    }
+
+    #[test]
+    fn default_spec_writes_no_env_section() {
+        let text = serde_yaml::to_string(&default_spec("dev".to_string())).unwrap();
+
+        assert!(!text.contains("env"), "{text}");
     }
 }

@@ -328,6 +328,17 @@ pub fn for_sandbox(secrets: Vec<Secret>, sandbox: &str) -> Vec<Secret> {
         .collect()
 }
 
+/// Returns the first of the environment variable names that one of the secrets also uses.
+pub fn conflicting_name<'a>(
+    secrets: &[Secret],
+    names: impl IntoIterator<Item = &'a String>,
+) -> Option<&'a str> {
+    names
+        .into_iter()
+        .map(String::as_str)
+        .find(|name| secrets.iter().any(|secret| secret.name == *name))
+}
+
 /// Returns the first secret whose name an earlier secret in the same scope already uses.
 fn first_duplicate(secrets: &[Secret]) -> Option<&Secret> {
     let mut keys = HashSet::new();
@@ -759,6 +770,25 @@ mod tests {
         let secrets = vec![global.clone(), scoped("X", "b", "b.example.com")];
 
         assert_eq!(for_sandbox(secrets, "a"), [global]);
+    }
+
+    #[test]
+    fn conflicting_name_returns_the_first_name_a_secret_uses() {
+        let secrets = vec![
+            secret("GH_TOKEN", &["github.com"]).unwrap(),
+            scoped("API_KEY", "a", "example.com"),
+        ];
+        let names = ["NODE_ENV", "API_KEY", "GH_TOKEN"].map(String::from);
+
+        assert_eq!(conflicting_name(&secrets, &names), Some("API_KEY"));
+    }
+
+    #[test]
+    fn conflicting_name_is_none_without_a_shared_name() {
+        let secrets = vec![secret("GH_TOKEN", &["github.com"]).unwrap()];
+        let names = ["NODE_ENV", "gh_token"].map(String::from);
+
+        assert_eq!(conflicting_name(&secrets, &names), None);
     }
 
     #[test]

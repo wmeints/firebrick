@@ -8,6 +8,11 @@ Agents need tokens, such as an API key for their model or a GitHub token. With
 host swaps in the value only in requests to the hosts you allow. An agent that
 leaks its environment leaks the placeholder, which is useless anywhere else.
 
+For configuration that isn't secret, such as `NODE_ENV`, use
+[`env` in `.firebrick.yml`](/docs/configuration/#environment-variables) instead.
+Don't put secrets there: the sandbox gets those values as they are, so the agent
+can read them.
+
 ## Setting a secret
 
 ```sh

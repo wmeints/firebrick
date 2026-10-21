@@ -45,6 +45,7 @@ refuses to replace an existing file; `fbk init --force` overwrites it.
 | `mounts[].guest`    | Absolute guest path to mount it at. Each path may appear only once.     | Required per mount                          |
 | `mounts[].readonly` | Mount the directory read-only.                                          | `false`                                     |
 | `clipboard`         | Let programs in the sandbox read and write the host clipboard.          | `false`                                     |
+| `env`               | Environment variables every process in the sandbox gets.                | Empty                                       |
 
 The `name` is 1 to 128 characters long, starts with a letter or digit, and
 contains only ASCII letters, digits, `.`, `-` and `_`, such as `my-project` or
@@ -63,8 +64,9 @@ what is wrong with it.
 
 When you set `resources`, set both `cpu` and `memory`. The `network` and `ports`
 fields are described in [Networking](/docs/networking/), and `image` and `init`
-in [Custom images](/docs/custom-images/), and `clipboard` in
-[Sharing the host clipboard](#sharing-the-host-clipboard).
+in [Custom images](/docs/custom-images/), `clipboard` in
+[Sharing the host clipboard](#sharing-the-host-clipboard), and `env` in
+[Environment variables](#environment-variables).
 
 Firebrick rejects fields it doesn't know, so a typo such as `memroy` is an error
 rather than a setting that's silently ignored. Check the file with `fbk
@@ -133,10 +135,11 @@ fbk start
 ```
 
 `fbk rm` deletes the sandbox's disk, including the tools installed in it and its
-Docker data; your project files stay on the host. There are two exceptions: `fbk
-start` applies `ports` to an existing sandbox, also while it runs, and `fbk
-network` changes the network rules without removing the sandbox. See
-[Networking](/docs/networking/).
+Docker data; your project files stay on the host. There are three exceptions:
+`fbk start` applies `ports` to an existing sandbox, also while it runs, it
+applies `env` the next time the sandbox starts (see
+[Environment variables](#environment-variables)), and `fbk network` changes the
+network rules without removing the sandbox. See [Networking](/docs/networking/).
 
 The agent can edit `.firebrick.yml` like any other file in the workspace, so
 review changes you didn't make before you apply them. See
@@ -177,6 +180,67 @@ for example in a script; `fbk` still prints them. Without a terminal and without
 `--yes`, the command fails. Starting an existing sandbox never asks, because it
 doesn't apply `mounts`, `network` or `clipboard`. The other settings, such as
 `image` and `resources`, apply without asking.
+
+## Environment variables
+
+Set plain configuration for the project, such as `NODE_ENV`, `RUST_LOG` or the
+URL of a local service, in `env`. Every process in the sandbox gets the
+variables, in `fbk run` commands and in `fbk ssh` and `ssh <leaf>.fbk` shells:
+
+```yaml
+env:
+  NODE_ENV: development
+  RUST_LOG: "debug,hyper=info"
+  PORT: 3000 # becomes "3000"
+  DEBUG: true # becomes "true"
+  GREETING: "$HOME" # stays the literal string $HOME
+```
+
+```sh
+$ fbk run -- printenv GREETING
+$HOME
+```
+
+The sandbox gets each value as you wrote it: `$VAR` and `${VAR}` aren't
+expanded, neither from the host nor in the sandbox. Strings, numbers and
+booleans are allowed, and a number or boolean becomes its text. YAML reads a
+number such as `1.50` or `0x10` as a number, so it becomes `1.5` or `16`; quote
+a value to keep it exactly as written. An empty string is allowed; a list, a map
+or an empty value isn't. A name contains ASCII letters, digits and `_`, doesn't
+start with a digit, and doesn't start with `MSB_`, which microsandbox reserves
+for secret placeholders. `fbk validate` reports a problem with its line and
+column:
+
+```sh
+$ fbk validate
+.firebrick.yml:3:8: error: env.FOO: expected a string, number or boolean
+```
+
+**Don't put secrets in `env`.** The agent and every program in the sandbox can
+read the values and send them anywhere the network rules allow. Use
+[`fbk secret`](/docs/secrets/) for tokens: the sandbox then only sees a
+placeholder. A variable can't have the name of a secret the sandbox gets; `fbk
+start` then fails with `env variable <NAME> conflicts with secret <NAME>; remove
+one of them` and changes nothing. The other way around, `fbk secret set` refuses
+a secret whose name a sandbox it would go to uses in `env`.
+
+`fbk start` and `fbk run` apply changes to `env` the next time the sandbox
+starts: they set added and changed variables and remove the ones you deleted
+from `env`, and leave the image's variables and secret placeholders alone. A
+variable with the name of an image variable, such as `PATH`, replaces it, and
+deleting it from `env` removes the variable. A running sandbox keeps its
+environment, and `fbk` reminds you to restart it:
+
+```sh
+$ fbk start
+env changes in .firebrick.yml apply after the sandbox restarts: fbk stop && fbk start
+```
+
+An SSH connection that starts a stopped sandbox boots it with the variables it
+had when it last stopped; run `fbk start` to apply changes to `env`. `fbk
+network` and `fbk upgrade` keep the variables. `env` isn't one of the settings
+you approve: variables only affect processes in the sandbox and can't give it
+more access to the host or the network.
 
 ## Extra mounts
 

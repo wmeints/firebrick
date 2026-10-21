@@ -53,6 +53,16 @@ message StartSandboxRequest {
   // Whether programs in the sandbox can read and write the host clipboard through fbkd. Applied
   // when the sandbox is created. Unset means false.
   optional bool clipboard = 11;
+  // Environment variables every process in the sandbox gets, with their literal values. Stored
+  // with the sandbox, and applied when it's created or the next time it starts; a running
+  // sandbox keeps its environment. Unset keeps the stored variables.
+  optional EnvVars env = 12;
+}
+
+message EnvVars {
+  // Variable names map to their values. A name matches [A-Za-z_][A-Za-z0-9_]*, doesn't start
+  // with MSB_ and isn't the name of a secret the sandbox gets.
+  map<string, string> vars = 1;
 }
 
 message PortForwards {
@@ -147,6 +157,9 @@ message SandboxStarted {
   repeated PortForward forwards = 1;
   // The forwards fbkd couldn't open. The sandbox still started.
   repeated PortForwardFailure failed_forwards = 2;
+  // Set when the sandbox was already running and the requested environment variables differ
+  // from the ones it runs with. They apply after the sandbox restarts.
+  bool env_pending_restart = 3;
 }
 
 message StopSandboxRequest {

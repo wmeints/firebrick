@@ -4,25 +4,27 @@
 //! runtime, so they boot real VMs and pull the sandbox image. They only build with the
 //! `vm-tests` feature; run them with `cargo test -p firebrick-daemon --features vm-tests`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use firebrick_daemon::api::{
-    AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, ForwardPortRequest,
-    ForwardPortResponse, GetSandboxRequest, GetSandboxResponse, ListNetworkActivityRequest,
-    ListSandboxesRequest, MiseInstallProgress, Mount, NetworkActivity, NetworkActivityKind,
-    NetworkPolicy, PortForward, PortForwards, RemovePortRequest, RemovePortResponse,
-    RemoveSandboxRequest, RemoveSecretRequest, SandboxResources, SandboxStarted, SandboxStatus,
-    SandboxUpgraded, SandboxVolumes, SetSecretRequest, StartSandboxRequest, StartSandboxResponse,
+    AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, EnvVars,
+    ForwardPortRequest, ForwardPortResponse, GetSandboxRequest, GetSandboxResponse,
+    ListNetworkActivityRequest, ListSandboxesRequest, ListSecretsRequest, MiseInstallProgress,
+    Mount, NetworkActivity, NetworkActivityKind, NetworkPolicy, PortForward, PortForwards,
+    RemovePortRequest, RemovePortResponse, RemoveSandboxRequest, RemoveSecretRequest,
+    SandboxResources, SandboxStarted, SandboxStatus, SandboxUpgraded, SandboxVolumes,
+    SetSecretRequest, SetSecretResponse, StartSandboxRequest, StartSandboxResponse,
     StopSandboxRequest, UpdateNetworkRequest, UpgradeSandboxRequest, UpgradeSandboxResponse,
     attach_request, attach_response, start_sandbox_response, upgrade_sandbox_response,
 };
 use firebrick_daemon::clipboard::{self, Cause, Clipboards, HostClipboard, HostError, Kind};
 use firebrick_daemon::open::{self, Opener};
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
-use firebrick_daemon::{mise, netlog, sandboxes, server};
+use firebrick_daemon::{env, mise, netlog, sandboxes, server};
 use firebrick_utils::ipc;
 use hyper_util::rt::TokioIo;
 use microsandbox::sandbox::{
@@ -1653,6 +1655,219 @@ async fn restart_sandbox(client: &mut SandboxManagementServiceClient<Channel>, n
     start_running_sandbox(client, name).await;
 }
 
+/// Variables the recreation and upgrade tests give their sandboxes. The value would expand in
+/// a shell, so it shows that fbkd passes it on literally.
+const TEST_ENV: &[(&str, &str)] = &[("FIREBRICK_IT_GREETING", "$HOME")];
+
+/// Returns the variables as a map.
+fn env_map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
+}
+
+/// Returns the variables as their API message.
+fn env_vars(pairs: &[(&str, &str)]) -> EnvVars {
+    EnvVars {
+        vars: env_map(pairs).into_iter().collect(),
+    }
+}
+
+/// Returns the start request of the sandbox with the variables.
+fn env_request(name: &str, pairs: &[(&str, &str)]) -> StartSandboxRequest {
+    StartSandboxRequest {
+        env: Some(env_vars(pairs)),
+        ..start_request(name)
+    }
+}
+
+#[tokio::test]
+async fn new_sandbox_has_the_env_variables_as_written() {
+    let name: &str = &sandbox_name("env-new");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("env-new").await;
+    let mut client = daemon.client().await;
+    let request = env_request(
+        name,
+        &[("GREETING", "$HOME"), ("PORT", "3000"), ("EMPTY", "")],
+    );
+    start_and_wait(&mut client, request).await;
+
+    let (output, code) = run_command(
+        &mut client,
+        name,
+        "sh",
+        &[
+            "-c",
+            "printenv GREETING PORT EMPTY; echo rc=$?; printenv PATH",
+        ],
+    )
+    .await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert_eq!(code, 0, "{output:?}");
+    assert!(
+        output.starts_with("$HOME\r\n3000\r\n\r\nrc=0\r\n"),
+        "{output:?}"
+    );
+    // The image's own variables are still there.
+    assert!(output.contains("/usr/bin"), "{output:?}");
+}
+
+/// Prints the variables of the sync test, then the exit code of printing the removed one, then
+/// the test secret's placeholder and the image's `PATH`.
+const ENV_SYNC_CHECK: &str =
+    "printenv KEPT CHANGED ADDED; printenv REMOVED; echo $?; printenv FIREBRICK_IT_TOKEN PATH";
+
+#[tokio::test]
+async fn start_of_stopped_sandbox_syncs_its_env_with_the_request() {
+    let name: &str = &sandbox_name("env-sync");
+    remove_sandbox(name).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let daemon =
+        TestDaemon::start_with_secrets("env-sync", store_with_test_secret(dir.path())).await;
+    let mut client = daemon.client().await;
+    let old = env_request(name, &[("KEPT", "1"), ("CHANGED", "old"), ("REMOVED", "x")]);
+    start_and_wait(&mut client, old).await;
+    stop_sandbox(&mut client, name).await;
+
+    let new = env_request(name, &[("KEPT", "1"), ("CHANGED", "new"), ("ADDED", "2")]);
+    let started = start(&mut client, new).await.expect("failed to start");
+    wait_for_status(&mut client, name, SandboxStatus::Running).await;
+    let (output, code) = run_command(&mut client, name, "sh", &["-c", ENV_SYNC_CHECK]).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert!(!started.env_pending_restart);
+    assert_eq!(code, 0, "{output:?}");
+    assert!(
+        output.starts_with("1\r\nnew\r\n2\r\n1\r\n$MSB_FIREBRICK_IT_TOKEN\r\n"),
+        "{output:?}"
+    );
+    assert!(output.contains("/usr/bin"), "{output:?}");
+}
+
+#[tokio::test]
+async fn start_of_running_sandbox_keeps_its_env_and_reports_the_change() {
+    let name: &str = &sandbox_name("env-running");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("env-running").await;
+    let mut client = daemon.client().await;
+    start_and_wait(&mut client, env_request(name, &[("MODE", "old")])).await;
+
+    let same = start(&mut client, env_request(name, &[("MODE", "old")])).await;
+    let changed = start(&mut client, env_request(name, &[("MODE", "new")])).await;
+    let kept = start(&mut client, start_request(name)).await;
+    let mode = print_env(&mut client, name, "MODE").await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert!(!same.unwrap().env_pending_restart);
+    assert!(changed.unwrap().env_pending_restart);
+    // A request without env keeps the stored variables, so there is nothing to apply.
+    assert!(!kept.unwrap().env_pending_restart);
+    assert_eq!(mode, "old\r\n");
+}
+
+/// What fbkd answers to a start whose env has the name of the test secret.
+const CONFLICT_MESSAGE: &str =
+    "env variable FIREBRICK_IT_TOKEN conflicts with secret FIREBRICK_IT_TOKEN; remove one of them";
+
+#[tokio::test]
+async fn start_rejects_env_that_conflicts_with_a_secret() {
+    let name: &str = &sandbox_name("env-secret");
+    remove_sandbox(name).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_with_test_secret(dir.path());
+    let daemon =
+        TestDaemon::start_with_secrets("env-secret", store_with_test_secret(dir.path())).await;
+    let mut client = daemon.client().await;
+    let conflicting = || env_request(name, &[("FIREBRICK_IT_TOKEN", "plain")]);
+
+    let create = start(&mut client, conflicting()).await.unwrap_err();
+    let created = sandbox_status(&mut client, name).await;
+
+    store.remove("FIREBRICK_IT_TOKEN", None).unwrap();
+    start_and_wait(&mut client, start_request(name)).await;
+    stop_sandbox(&mut client, name).await;
+    store.set(test_secret("FIREBRICK_IT_TOKEN")).unwrap();
+    let restart = start(&mut client, conflicting()).await.unwrap_err();
+    let status = sandbox_status(&mut client, name).await;
+    let stored = env::stored(&sandbox_spec(name).await);
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    for status in [&create, &restart] {
+        assert_eq!(status.code(), Code::InvalidArgument, "{status:?}");
+        assert_eq!(status.message(), CONFLICT_MESSAGE);
+    }
+    assert_eq!(created, None);
+    assert_eq!(status, Some(SandboxStatus::Stopped));
+    assert!(stored.is_empty(), "{stored:?}");
+}
+
+/// Asks the daemon to set a secret with the name, for the sandbox or globally.
+async fn set_secret(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    sandbox: Option<&str>,
+) -> Result<SetSecretResponse, Status> {
+    client
+        .set_secret(SetSecretRequest {
+            name: name.to_string(),
+            value: "fbk-it-secret-value".to_string(),
+            allowed_hosts: vec!["example.com".to_string()],
+            sandbox: sandbox.map(str::to_string),
+        })
+        .await
+        .map(tonic::Response::into_inner)
+}
+
+#[tokio::test]
+async fn set_secret_rejects_a_name_a_sandbox_uses_in_env() {
+    let name: &str = &sandbox_name("env-secret-set");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("env-secret-set").await;
+    let mut client = daemon.client().await;
+    start_and_wait(
+        &mut client,
+        env_request(name, &[("FIREBRICK_IT_ENV_KEY", "dev")]),
+    )
+    .await;
+
+    let scoped = set_secret(&mut client, "FIREBRICK_IT_ENV_KEY", Some(name)).await;
+    let global = set_secret(&mut client, "FIREBRICK_IT_ENV_KEY", None).await;
+    let listed = client
+        .list_secrets(ListSecretsRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    let message = format!(
+        "secret FIREBRICK_IT_ENV_KEY conflicts with env variable FIREBRICK_IT_ENV_KEY of \
+         sandbox {name}; remove one of them"
+    );
+    for status in [scoped.unwrap_err(), global.unwrap_err()] {
+        assert_eq!(status.code(), Code::FailedPrecondition, "{status:?}");
+        assert_eq!(status.message(), message);
+    }
+    assert!(listed.secrets.is_empty(), "{listed:?}");
+}
+
 #[tokio::test]
 async fn new_sandbox_sees_secret_placeholder_only() {
     let name: &str = &sandbox_name("secret-new");
@@ -2280,6 +2495,7 @@ struct KeptSettings {
     init: bool,
     docker_disk_mib: Option<u32>,
     clipboard_route: bool,
+    env: BTreeMap<String, String>,
 }
 
 async fn kept_settings(
@@ -2298,12 +2514,18 @@ async fn kept_settings(
         init: spec.init.is_some(),
         docker_disk_mib: docker_disk_mib(&spec),
         clipboard_route: has_clipboard_route(name, &spec),
+        env: env::stored(&spec),
     }
 }
 
 /// Asserts that a recreated sandbox kept its settings, including its clipboard route.
 fn assert_kept_with_clipboard(after: &KeptSettings, before: &KeptSettings) {
     assert!(before.clipboard_route, "the sandbox had no clipboard route");
+    assert_eq!(
+        before.env,
+        env_map(TEST_ENV),
+        "the sandbox had other variables"
+    );
     assert_eq!(after, before);
 }
 
@@ -2385,6 +2607,7 @@ fn clipboard_curl_request(name: &str) -> StartSandboxRequest {
         image: CURL_IMAGE.to_string(),
         network: Some(allow_policy(true, &["example.com"])),
         clipboard: Some(true),
+        env: Some(env_vars(TEST_ENV)),
         ..start_request(name)
     }
 }
@@ -3082,6 +3305,7 @@ struct AfterUpgrade {
     /// The output and exit code of a check that the marker files are gone.
     fresh_disks: (String, i32),
     secret: String,
+    greeting: String,
     probes: Vec<String>,
 }
 
@@ -3095,6 +3319,7 @@ async fn after_upgrade(
         release: alpine_release(client, name).await,
         fresh_disks: run_command(client, name, "sh", &["-c", NO_MARKERS]).await,
         secret: print_env(client, name, "FIREBRICK_IT_TOKEN").await,
+        greeting: print_env(client, name, "FIREBRICK_IT_GREETING").await,
         probes: leftover_probes(name).await,
     }
 }
@@ -3110,6 +3335,7 @@ async fn start_old_sandbox(
         network: Some(allow_policy(true, &["example.com"])),
         ports: Some(forward_ports(host, GUEST_PORT)),
         clipboard: Some(true),
+        env: Some(env_vars(TEST_ENV)),
         ..old_image_request(name)
     };
 
@@ -3185,6 +3411,7 @@ fn assert_upgraded_and_kept(
         "{:?}",
         after.secret
     );
+    assert_eq!(after.greeting, "$HOME\r\n");
 }
 
 /// Returns the labels with the image label set to the image, as an upgrade to it leaves them.
