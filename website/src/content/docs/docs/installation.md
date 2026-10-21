@@ -68,7 +68,7 @@ first and run them in that shell.
 Set the release to install and pick the target for your machine:
 
 ```sh
-VERSION=v0.8.0
+VERSION=v0.9.0
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)  TARGET=x86_64-unknown-linux-gnu ;;
   Linux-aarch64) TARGET=aarch64-unknown-linux-gnu ;;
@@ -134,7 +134,7 @@ fbk --version
 fbk ls
 ```
 
-`fbk --version` prints the installed version, for example `fbk 0.8.0`.
+`fbk --version` prints the installed version, for example `fbk 0.9.0`.
 
 `fbk ls` starts `fbkd`, which installs the microsandbox runtime in
 `~/.local/state/firebrick/msb`, and lists your sandboxes (none yet). An error
@@ -165,7 +165,7 @@ Windows support is experimental. Run these steps in PowerShell:
 2. Download the archive and its checksum, and verify the archive:
 
    ```powershell
-   $Version = "v0.8.0"
+   $Version = "v0.9.0"
    $Name = "firebrick-$Version-x86_64-pc-windows-msvc"
    $Base = "https://github.com/wmeints/firebrick/releases/download/$Version"
    Invoke-WebRequest "$Base/$Name.zip" -OutFile "$Name.zip"
