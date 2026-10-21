@@ -6,6 +6,20 @@ request, and the release workflow copies the section into the GitHub release,
 above the generated list of pull requests. Each section starts with a `##
 vX.Y.Z - YYYY-MM-DD` heading.
 
+## v0.9.0 - 2026-10-21
+
+This release sets plain environment variables in the sandbox from
+`.firebrick.yml`, for configuration that doesn't need to be kept secret.
+
+### Features
+
+- An `env` map in `.firebrick.yml` sets environment variables, such as
+  `NODE_ENV` or `RUST_LOG`, verbatim in every process in the sandbox, including
+  `fbk run` and SSH shells. Unlike `fbk secret`, the agent sees the real value
+  instead of a placeholder. Changes apply the next time a stopped sandbox
+  starts; for a running sandbox, `fbk` tells you to run `fbk stop && fbk start`.
+  A variable can't share its name with a secret the sandbox gets. (#219)
+
 ## v0.8.0 - 2026-10-15
 
 This release runs `fbk` and `fbkd` natively on Windows, shares the host
