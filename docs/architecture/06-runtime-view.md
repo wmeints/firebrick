@@ -257,12 +257,14 @@ sequenceDiagram
 `fbk start` creates the sandbox when it doesn't exist yet, or starts the
 existing one. The image, init, mise setting, resources, network rules and mounts
 from the spec only apply when the sandbox is created; the `ports` apply every
-time. Like `fbk run`, the CLI first checks the status of the sandbox: it waits
-for a starting one (max 120s), fails for a stopping or paused one, and sends
-`StartSandbox` with the spec's ports for a running, stopped or crashed one. The
-daemon's `StartSandbox` is idempotent as well: it returns without starting a
-sandbox that is already running or starting, and treats a start that loses a
-race with another start as a success.
+time, and the `env` every time the sandbox starts (see
+[Setting environment variables](#setting-environment-variables)). Like `fbk
+run`, the CLI first checks the status of the sandbox: it waits for a starting
+one (max 120s), fails for a stopping or paused one, and sends `StartSandbox`
+with the spec's ports for a running, stopped or crashed one. The daemon's
+`StartSandbox` is idempotent as well: it returns without starting a sandbox that
+is already running or starting, and treats a start that loses a race with
+another start as a success.
 
 The daemon parses the `network` rules of every `StartSandbox` and rejects an
 invalid one with `INVALID_ARGUMENT` before it looks up the sandbox. When it
@@ -401,6 +403,52 @@ sandbox's disk; run `fbk start` to install changed ones.
 The SSH config and editor settings are synced after every `StartSandbox`, also
 when it failed, so the developer can still connect to a sandbox whose mise step
 failed.
+
+### Setting environment variables
+
+The `env` map in `.firebrick.yml` gives every process in the sandbox plain
+configuration, such as `NODE_ENV` or a local service URL:
+
+```yaml
+env:
+  NODE_ENV: development
+  PORT: 3000 # becomes "3000"
+  GREETING: "$HOME" # stays the literal string $HOME
+```
+
+`fbk start` and `fbk run` send the variables in `StartSandbox`, also for an
+existing sandbox; `fbk start <name>` sends none, which keeps the stored ones.
+When fbkd creates a sandbox, it sets them with `SandboxBuilder::envs` and
+records their names in the `firebrick.env` label. microsandbox hands them to
+every exec, so they show up in `fbk run` commands and SSH shells:
+
+```sh
+$ fbk run -- printenv GREETING PORT
+$HOME
+3000
+```
+
+When `StartSandbox` starts a stopped or crashed sandbox, fbkd first syncs the
+variables named in the label with the request through `modify().env(..)` and
+`modify().remove_env(..)` with `.next_start()`, so the sandbox boots with the
+new set. Variables the label doesn't name, such as the image's `PATH` and secret
+placeholders, stay as they are. microsandbox can't change the environment of a
+running sandbox, so fbkd doesn't change one that is running or starting; when
+its variables differ from the request, it sets `env_pending_restart` on
+`SandboxStarted` and fbk prints `env changes in .firebrick.yml apply after the
+sandbox restarts: fbk stop && fbk start`. An SSH connection that starts a
+stopped sandbox through the tunnel boots it with the stored variables. The
+recreation by `UpdateNetwork` and `UpgradeSandbox` reads the variables the label
+names from the old sandbox and sets them on the new one.
+
+Unlike a secret, a variable's value is in the guest as it is: there is no
+placeholder and no substitution by the TLS proxy, so anything in the sandbox can
+read and send it. A variable with the name of a secret the sandbox gets, global
+or scoped to that sandbox, would hide the secret's placeholder, so
+`StartSandbox` fails with `INVALID_ARGUMENT` and `env variable <NAME> conflicts
+with secret <NAME>; remove one of them` before it creates or changes anything.
+`env` isn't part of the approved settings: variables only affect processes in
+the VM and can't widen what the sandbox reaches on the host or the network.
 
 ### Forwarding ports
 

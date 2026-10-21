@@ -4,6 +4,7 @@
 //! settings and Zed's remote projects.
 
 use crate::clipboard::{self, Clipboards, HostClipboard};
+use crate::env;
 use crate::forward::{self, ForwardReport, Forwards, SshConnector};
 use crate::mise::{self, MiseError, MiseUpdate};
 use crate::netlog::{NetLogs, Record};
@@ -153,6 +154,19 @@ pub struct StartSandbox<'a> {
     pub mounts: &'a [MountSpec],
     /// Whether the sandbox can read the host clipboard. Stored when the sandbox is created.
     pub clipboard: bool,
+    /// Environment variables of the sandbox, applied when it's created or starts; `None` keeps
+    /// the stored ones. No name is also the name of a secret the sandbox gets.
+    pub env: Option<&'a BTreeMap<String, String>>,
+}
+
+/// What starting a sandbox did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Started {
+    /// The forwards of the sandbox.
+    pub forwards: ForwardReport,
+    /// Whether the sandbox was already running with other environment variables than the
+    /// requested ones, which it gets when it restarts.
+    pub env_pending_restart: bool,
 }
 
 /// The name, status, SSH host name and workspace paths of a sandbox.
@@ -326,6 +340,8 @@ struct SandboxSettings {
     workspace: Option<Workspace>,
     /// Extra host directories bind-mounted next to the workspace.
     mounts: Vec<MountSpec>,
+    /// Environment variables from the spec, which [`env::NAMES_LABEL`] names.
+    env: BTreeMap<String, String>,
     init: bool,
     resources: Resources,
 }
@@ -349,6 +365,7 @@ impl SandboxSettings {
         Ok(Self {
             name: handle.name().to_string(),
             mounts: extra_mounts(&spec.mounts, workdir),
+            env: env::stored(&spec),
             labels: spec.labels,
             workspace,
             init: spec.init.is_some(),
@@ -373,6 +390,7 @@ impl SandboxSettings {
             .detached(true);
         let builder = with_workspace(builder, self.workspace.as_ref());
         let builder = with_mounts(builder, &self.mounts);
+        let builder = env::with_env(builder, &self.env);
         let builder = netlogs.add_route(builder, &self.name);
         let builder = if clipboard::is_enabled(&self.labels) {
             clipboards.add_route(builder, &self.name)
@@ -538,32 +556,55 @@ impl SandboxManager {
     /// its URL relay, also when it was already running.
     /// `resources` is only called when the sandbox is created. `on_progress` gets the progress
     /// of an image that is downloaded for a new sandbox, and of installing the mise tools.
+    /// Fails with `InvalidArgument`, without creating or changing the sandbox, when one of the
+    /// requested environment variables has the name of a secret the sandbox gets.
     pub async fn start(
         &self,
         request: StartSandbox<'_>,
         resources: impl FnOnce() -> Result<Resources, SandboxError>,
         mut on_progress: impl FnMut(StartProgress) + Send,
-    ) -> Result<ForwardReport, SandboxError> {
+    ) -> Result<Started, SandboxError> {
         let _guard = self.lock_sandbox(request.name).await;
+        self.check_env_against_secrets(request)?;
+
         let result = match Sandbox::get(request.name).await {
             Ok(existing_sb) => {
                 self.listen_if_routed(&existing_sb).await;
                 start_existing_sandbox(&existing_sb, request, mise_progress(&mut on_progress)).await
             }
             Err(_) => match self.listen_for_new(request).await {
-                Ok(()) => {
-                    self.create_and_install(request, resources, on_progress)
-                        .await
-                }
+                Ok(()) => self
+                    .create_and_install(request, resources, on_progress)
+                    .await
+                    .map(|()| false),
                 Err(err) => Err(err),
             },
         };
 
         sync_ssh_config().await;
-        result?;
+        let env_pending_restart = result?;
         self.start_relay(request.name).await;
 
-        Ok(self.open_forwards(request.name, request.ports).await)
+        Ok(Started {
+            forwards: self.open_forwards(request.name, request.ports).await,
+            env_pending_restart,
+        })
+    }
+
+    /// Fails with `InvalidArgument` when a requested environment variable has the name of a
+    /// secret the sandbox gets, which would hide the secret's placeholder.
+    fn check_env_against_secrets(&self, request: StartSandbox<'_>) -> Result<(), SandboxError> {
+        let Some(env) = request.env else {
+            return Ok(());
+        };
+        let secrets = self.load_secrets_for(request.name)?;
+
+        match secrets::conflicting_name(&secrets, env.keys()) {
+            Some(name) => Err(SandboxError::invalid_argument(format!(
+                "env variable {name} conflicts with secret {name}; remove one of them"
+            ))),
+            None => Ok(()),
+        }
     }
 
     /// Opens the forwards of the sandboxes that are running, from their stored ports. Used
@@ -1383,14 +1424,30 @@ impl SandboxManager {
 }
 
 /// Returns the settings of a new sandbox for the request, with its workspace mounted at
-/// `guest_path` and the SSH host name. Only a sandbox that shares the host clipboard gets the
-/// clipboard label.
+/// `guest_path` and the SSH host name.
 fn new_sandbox_settings(
     request: StartSandbox<'_>,
     guest_path: &str,
     hostname: &str,
     resources: Resources,
 ) -> SandboxSettings {
+    SandboxSettings {
+        name: request.name.to_string(),
+        labels: new_sandbox_labels(request, hostname),
+        workspace: Some(Workspace {
+            host: request.workspace.to_string(),
+            guest: guest_path.to_string(),
+        }),
+        mounts: request.mounts.to_vec(),
+        env: request.env.cloned().unwrap_or_default(),
+        init: request.init,
+        resources,
+    }
+}
+
+/// Returns the labels of a new sandbox for the request with the SSH host name. Only a sandbox
+/// that shares the host clipboard gets the clipboard labels.
+fn new_sandbox_labels(request: StartSandbox<'_>, hostname: &str) -> BTreeMap<String, String> {
     let mut labels = BTreeMap::from([
         (ssh::HOSTNAME_LABEL.to_string(), hostname.to_string()),
         (
@@ -1412,17 +1469,7 @@ fn new_sandbox_settings(
         labels.insert(clipboard::COPY_LABEL.to_string(), "true".to_string());
     }
 
-    SandboxSettings {
-        name: request.name.to_string(),
-        labels,
-        workspace: Some(Workspace {
-            host: request.workspace.to_string(),
-            guest: guest_path.to_string(),
-        }),
-        mounts: request.mounts.to_vec(),
-        init: request.init,
-        resources,
-    }
+    labels
 }
 
 /// Mounts the workspace read/write and makes it the working directory. Mirror propagates guest
@@ -1962,14 +2009,16 @@ fn is_live(status: SandboxStatus) -> bool {
     )
 }
 
-/// Starts an existing sandbox, first giving it a host name when it has none, then installs its
-/// workspace's mise tools when the sandbox has mise enabled, passing their progress to
-/// `on_mise`. Does nothing when the sandbox is already running or starting.
+/// Starts an existing sandbox, first giving it a host name when it has none and the requested
+/// environment variables, then installs its workspace's mise tools when the sandbox has mise
+/// enabled, passing their progress to `on_mise`. Doesn't change a sandbox that is already
+/// running or starting, and returns whether it runs with other variables than the requested
+/// ones.
 async fn start_existing_sandbox(
     sb: &SandboxHandle,
     request: StartSandbox<'_>,
     on_mise: impl FnMut(MiseUpdate) + Send,
-) -> Result<(), SandboxError> {
+) -> Result<bool, SandboxError> {
     // Sandboxes created before SSH support have no host name yet.
     if ssh::hostname_of(sb).is_none() {
         assign_hostname(sb, request).await?;
@@ -1979,13 +2028,17 @@ async fn start_existing_sandbox(
         sb.status_snapshot(),
         SandboxStatus::Running | SandboxStatus::Starting
     ) {
-        return Ok(());
+        return Ok(request.env.is_some_and(|wanted| env::differs(sb, wanted)));
+    }
+
+    if let Some(wanted) = request.env {
+        sync_env(sb, wanted).await?;
     }
 
     let started = match sb.start_detached().await {
         Ok(started) => started,
         // Another request started the sandbox after its status was read, and installs the tools.
-        Err(MicrosandboxError::SandboxStillRunning(_)) => return Ok(()),
+        Err(MicrosandboxError::SandboxStillRunning(_)) => return Ok(false),
         Err(err) => {
             tracing::error!(error = ?err, "failed to start sandbox {}", request.name);
             return Err(SandboxError::internal("failed to start sandbox"));
@@ -1996,10 +2049,26 @@ async fn start_existing_sandbox(
 
     match workspace_path_of(sb) {
         Some(workspace) if mise_enabled(sb) => {
-            install_mise_tools(&started, &workspace, on_mise).await
+            install_mise_tools(&started, &workspace, on_mise).await?
         }
-        _ => Ok(()),
+        _ => {}
     }
+
+    Ok(false)
+}
+
+/// Gives a stopped sandbox the environment variables from its next start on.
+async fn sync_env(
+    sb: &SandboxHandle,
+    wanted: &BTreeMap<String, String>,
+) -> Result<(), SandboxError> {
+    env::sync(sb, wanted).await.map_err(|err| {
+        tracing::error!(error = ?err, "failed to set the environment of sandbox {}", sb.name());
+        SandboxError::internal(format!(
+            "failed to set the environment variables of sandbox {}",
+            sb.name()
+        ))
+    })
 }
 
 /// A change to the ports stored with a sandbox.
@@ -2710,6 +2779,16 @@ mod tests {
     /// Returns the settings of a new sandbox created for a request with the image and the
     /// clipboard setting.
     fn new_settings(image: &str, clipboard: bool) -> SandboxSettings {
+        new_settings_with_env(image, clipboard, None)
+    }
+
+    /// Returns the settings of a new sandbox created for a request with the image, the
+    /// clipboard setting and the environment variables.
+    fn new_settings_with_env(
+        image: &str,
+        clipboard: bool,
+        env: Option<&BTreeMap<String, String>>,
+    ) -> SandboxSettings {
         let request = StartSandbox {
             name: "dev",
             workspace: "/home/user/project",
@@ -2720,6 +2799,7 @@ mod tests {
             ports: None,
             mounts: &[],
             clipboard,
+            env,
         };
         let resources = Resources {
             cpus: 1,
@@ -2753,6 +2833,29 @@ mod tests {
             .await
             .unwrap()
             .spec
+    }
+
+    #[tokio::test]
+    async fn new_sandbox_gets_the_requested_env_and_its_names() {
+        let env = BTreeMap::from([
+            ("GREETING".to_string(), "$HOME".to_string()),
+            ("PORT".to_string(), "3000".to_string()),
+        ]);
+
+        let spec = built_spec(&new_settings_with_env("", false, Some(&env))).await;
+
+        assert_eq!(env::stored(&spec), env);
+    }
+
+    #[tokio::test]
+    async fn new_sandbox_without_env_gets_no_variables_from_the_spec() {
+        let spec = built_spec(&new_settings("", false)).await;
+
+        assert!(env::stored(&spec).is_empty());
+        assert_eq!(
+            spec.labels.get(env::NAMES_LABEL).map(String::as_str),
+            Some("")
+        );
     }
 
     #[tokio::test]

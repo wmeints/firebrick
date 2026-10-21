@@ -163,6 +163,13 @@ build on it when `Cargo.lock` has a newer version.
 
 - `modify()` changes cpus, memory, disk size, env, labels, workdir and secrets.
   Use `.next_start()` or `.restart()` to choose when changes apply.
+- `SandboxBuilder::env` and `modify().env(..)` reject nothing but the `MSB_`
+  prefix. At create time microsandbox merges the image's variables into
+  `config().spec.env` (`merge_image_defaults`), so the stored list mixes image
+  and builder variables; `fbkd` names its own in the `firebrick.env` label. Env
+  has no live path: `modify().env(..)` / `.remove_env(..)` on a running sandbox
+  need `.next_start()` or `.restart()`, and every exec merges `spec.env` with
+  its own env (`build_exec_request`).
 - The network policy has no `modify()` setting: it's fixed when the sandbox is
   created. Changing rules means recreating the sandbox, which `fbkd` does from a
   disk snapshot (ADR 0021).

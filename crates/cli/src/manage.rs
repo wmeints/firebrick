@@ -3,6 +3,7 @@ use clap::ValueEnum;
 use firebrick_spec::{MountSpec, NetworkRule, NetworkSpec, PortMapping, SandboxSpec};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
 use std::ops::ControlFlow;
@@ -14,7 +15,7 @@ use tonic::Streaming;
 use tonic::transport::Channel;
 
 use crate::api::{
-    GetSandboxRequest, GetSandboxResponse, ImagePullProgress, ListSandboxesRequest,
+    EnvVars, GetSandboxRequest, GetSandboxResponse, ImagePullProgress, ListSandboxesRequest,
     ListSandboxesResponse, MiseInstallProgress, Mount, NetworkPolicy, PortForward, PortForwards,
     RemoveSandboxRequest, SandboxResources, SandboxStarted, SandboxStatus, SandboxSummary,
     SandboxUpgraded, SandboxVolumes, StartSandboxRequest, StopSandboxRequest,
@@ -216,8 +217,10 @@ pub(crate) async fn ensure_running(
 ) -> Result<SandboxStarted> {
     check_workspace_owner(&spec.name, workspace, client).await?;
 
-    let ports = port_forwards(&spec.ports);
-    let request = start_request(&spec.name, workspace, Some(ports));
+    let request = StartSandboxRequest {
+        env: Some(env_vars(&spec.env)),
+        ..start_request(&spec.name, workspace, Some(port_forwards(&spec.ports)))
+    };
     let started = match start_if_exists(request, client).await? {
         Some(started) => started,
         None => {
@@ -231,8 +234,19 @@ pub(crate) async fn ensure_running(
     };
 
     warn_failed_forwards(&started);
+    warn_env_pending_restart(&started);
 
     Ok(started)
+}
+
+/// Prints a notice to stderr when the running sandbox keeps other environment variables than
+/// the spec sets until it restarts.
+fn warn_env_pending_restart(started: &SandboxStarted) {
+    if started.env_pending_restart {
+        eprintln!(
+            "env changes in {SPEC_FILE_NAME} apply after the sandbox restarts: fbk stop && fbk start"
+        );
+    }
 }
 
 /// Makes sure the user approved the mounts, network and clipboard settings of the new sandbox,
@@ -468,7 +482,15 @@ fn build_start_request(spec: SandboxSpec, workspace: &Path) -> Result<StartSandb
         ports: Some(port_forwards(&spec.ports)),
         mounts,
         clipboard: Some(spec.clipboard.unwrap_or(false)),
+        env: Some(env_vars(&spec.env)),
     })
+}
+
+/// Turns the environment variables of a spec into their API message.
+fn env_vars(env: &BTreeMap<String, String>) -> EnvVars {
+    EnvVars {
+        vars: env.clone().into_iter().collect(),
+    }
 }
 
 /// Turns the mounts of a spec into their API messages, with canonical absolute host paths.
@@ -1822,6 +1844,39 @@ mod tests {
                 ]
             })
         );
+    }
+
+    #[test]
+    fn start_request_carries_env_from_spec() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join(SPEC_FILE_NAME),
+            "name: dev\nenv:\n  GREETING: \"$HOME\"\n  PORT: 3000\n",
+        )
+        .unwrap();
+
+        let request =
+            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
+
+        assert_eq!(
+            request.env,
+            Some(EnvVars {
+                vars: [("GREETING", "$HOME"), ("PORT", "3000")]
+                    .map(|(name, value)| (name.to_string(), value.to_string()))
+                    .into()
+            })
+        );
+    }
+
+    #[test]
+    fn start_request_without_env_in_spec_carries_no_variables() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(SPEC_FILE_NAME), "name: dev\n").unwrap();
+
+        let request =
+            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
+
+        assert_eq!(request.env, Some(EnvVars::default()));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::api::sandbox_management_service_server::{
     SandboxManagementService, SandboxManagementServiceServer,
 };
 use crate::api::{
-    AttachRequest, AttachResponse, AttachStart, ForwardPortRequest, ForwardPortResponse,
+    AttachRequest, AttachResponse, AttachStart, EnvVars, ForwardPortRequest, ForwardPortResponse,
     GetSandboxRequest, GetSandboxResponse, ImagePullProgress, ListNetworkActivityRequest,
     ListNetworkActivityResponse, ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest,
     ListSecretsResponse, MiseInstallProgress, Mount, NetworkActivity, NetworkActivityKind,
@@ -19,7 +19,7 @@ use crate::api::{
     upgrade_sandbox_response,
 };
 use crate::clipboard::{HostClipboard, HostTools};
-use crate::forward::{ForwardFailure, ForwardReport};
+use crate::forward::ForwardFailure;
 use crate::mise::MiseUpdate;
 use crate::netlog::{ConnectionEntry, DnsEntry, Protocol, Record};
 use crate::network;
@@ -27,7 +27,7 @@ use crate::open::{HostOpener, Opener};
 use crate::pull::PullUpdate;
 use crate::sandboxes::{
     NewSecret, Resources, SandboxError, SandboxInfo, SandboxManager, StartProgress, StartSandbox,
-    Upgrade,
+    Started, Upgrade,
 };
 use crate::secrets::{Secret, SecretStore};
 use crate::session::{self, SessionCommand};
@@ -38,7 +38,7 @@ use firebrick_spec::{
     MountSpec, NetworkRule, NetworkSpec, PortMapping, SandboxResourcesSpec, VolumesSpec,
 };
 use firebrick_utils::ipc;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io;
 use std::path::Path;
 use std::pin::Pin;
@@ -93,14 +93,37 @@ impl FirebrickServer {
     }
 }
 
-/// Reads the sandbox to start from a request with its parsed egress rules and ports. A request
-/// without `init` runs the image's init, and one without `mise` installs the workspace's mise
-/// tools. A request without `clipboard` doesn't share the host clipboard.
+/// The settings of a start request that fbkd parses before it starts the sandbox.
+#[derive(Debug, Default)]
+struct ParsedStart {
+    network: NetworkSpec,
+    ports: Option<Vec<PortMapping>>,
+    mounts: Vec<MountSpec>,
+    env: Option<BTreeMap<String, String>>,
+}
+
+impl ParsedStart {
+    /// Checks the name and image of a start request and parses its settings, failing with
+    /// `InvalidArgument` when one of them is invalid.
+    fn of(request: &StartSandboxRequest) -> Result<Self, Status> {
+        check_name(&request.name)?;
+        check_image(&request.image)?;
+
+        Ok(Self {
+            network: network_spec(request.network.as_ref())?,
+            ports: request.ports.as_ref().map(port_mappings).transpose()?,
+            mounts: mount_specs(&request.mounts),
+            env: request.env.as_ref().map(env_vars).transpose()?,
+        })
+    }
+}
+
+/// Reads the sandbox to start from a request with its parsed settings. A request without
+/// `init` runs the image's init, and one without `mise` installs the workspace's mise tools. A
+/// request without `clipboard` doesn't share the host clipboard.
 fn start_sandbox_from<'a>(
     request: &'a StartSandboxRequest,
-    network: &'a NetworkSpec,
-    ports: Option<&'a [PortMapping]>,
-    mounts: &'a [MountSpec],
+    parsed: &'a ParsedStart,
 ) -> StartSandbox<'a> {
     StartSandbox {
         name: &request.name,
@@ -108,11 +131,32 @@ fn start_sandbox_from<'a>(
         image: &request.image,
         init: request.init.unwrap_or(true),
         mise: request.mise.unwrap_or(true),
-        network,
-        ports,
-        mounts,
+        network: &parsed.network,
+        ports: parsed.ports.as_deref(),
+        mounts: &parsed.mounts,
         clipboard: request.clipboard.unwrap_or(false),
+        env: parsed.env.as_ref(),
     }
+}
+
+/// Reads the environment variables of a request, failing with `InvalidArgument` on a name
+/// that [`firebrick_spec::validate_env_name`] refuses or a value with a NUL character.
+fn env_vars(env: &EnvVars) -> Result<BTreeMap<String, String>, Status> {
+    env.vars
+        .iter()
+        .map(|(name, value)| {
+            firebrick_spec::validate_env_name(name)
+                .map_err(|err| Status::invalid_argument(err.to_string()))?;
+
+            if value.contains('\0') {
+                return Err(Status::invalid_argument(format!(
+                    "env variable {name} has a NUL character"
+                )));
+            }
+
+            Ok((name.clone(), value.clone()))
+        })
+        .collect()
 }
 
 /// Parses the ports of a request, failing with `InvalidArgument` on a port outside 1 to 65535
@@ -150,8 +194,11 @@ fn port_number(port: u32) -> Result<u16, Status> {
 }
 
 /// Converts the forwards of a sandbox to the message that ends the start stream.
-fn sandbox_started(report: ForwardReport) -> SandboxStarted {
+fn sandbox_started(started: Started) -> SandboxStarted {
+    let report = started.forwards;
+
     SandboxStarted {
+        env_pending_restart: started.env_pending_restart,
         forwards: report.open.into_iter().map(port_forward).collect(),
         failed_forwards: report
             .failed
@@ -355,11 +402,7 @@ impl SandboxManagementService for FirebrickServer {
         request: Request<StartSandboxRequest>,
     ) -> Result<Response<Self::StartSandboxStream>, Status> {
         let request_data = request.into_inner();
-        check_name(&request_data.name)?;
-        check_image(&request_data.image)?;
-        let network = network_spec(request_data.network.as_ref())?;
-        let ports = request_data.ports.as_ref().map(port_mappings).transpose()?;
-        let mounts = mount_specs(&request_data.mounts);
+        let parsed = ParsedStart::of(&request_data)?;
         let sandboxes = Arc::clone(&self.sandboxes);
         let (tx, rx) = mpsc::channel(16);
 
@@ -367,7 +410,7 @@ impl SandboxManagementService for FirebrickServer {
             let progress_tx = tx.clone();
             let result = sandboxes
                 .start(
-                    start_sandbox_from(&request_data, &network, ports.as_deref(), &mounts),
+                    start_sandbox_from(&request_data, &parsed),
                     || sandbox_resources(&request_data),
                     // Progress is best-effort: drop it when the client is slow or gone.
                     |progress| {
@@ -376,9 +419,9 @@ impl SandboxManagementService for FirebrickServer {
                 )
                 .await;
             let last = result
-                .map(|report| {
+                .map(|started| {
                     start_sandbox_response(start_sandbox_response::Message::Started(
-                        sandbox_started(report),
+                        sandbox_started(started),
                     ))
                 })
                 .map_err(Status::from);
@@ -978,6 +1021,7 @@ mod tests {
     use super::*;
     use crate::api::SandboxVolumes;
     use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
+    use crate::forward::ForwardReport;
     use hyper_util::rt::TokioIo;
     use microsandbox::sandbox::SandboxStatus as MsbStatus;
     use std::path::PathBuf;
@@ -1087,14 +1131,14 @@ mod tests {
     fn start_sandbox_from_request_defaults_init_to_true() {
         let request = StartSandboxRequest::default();
 
-        assert!(start_sandbox_from(&request, &NetworkSpec::default(), None, &[]).init);
+        assert!(start_sandbox_from(&request, &ParsedStart::default()).init);
     }
 
     #[test]
     fn start_sandbox_from_request_defaults_mise_to_true() {
         let request = StartSandboxRequest::default();
 
-        assert!(start_sandbox_from(&request, &NetworkSpec::default(), None, &[]).mise);
+        assert!(start_sandbox_from(&request, &ParsedStart::default()).mise);
     }
 
     #[test]
@@ -1104,7 +1148,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(!start_sandbox_from(&request, &NetworkSpec::default(), None, &[]).mise);
+        assert!(!start_sandbox_from(&request, &ParsedStart::default()).mise);
     }
 
     #[test]
@@ -1117,8 +1161,8 @@ mod tests {
             ..Default::default()
         };
 
-        let network = NetworkSpec::default();
-        let start = start_sandbox_from(&request, &network, None, &[]);
+        let parsed = ParsedStart::default();
+        let start = start_sandbox_from(&request, &parsed);
 
         assert_eq!(
             (start.name, start.image, start.workspace, start.init),
@@ -1269,8 +1313,12 @@ mod tests {
             }],
         };
 
-        let response = sandbox_started(report);
+        let response = sandbox_started(Started {
+            forwards: report,
+            env_pending_restart: true,
+        });
 
+        assert!(response.env_pending_restart);
         assert_eq!(response.forwards, [port_forward(mapping(8080, 5173))]);
         assert_eq!(
             response.failed_forwards,
@@ -1279,6 +1327,59 @@ mod tests {
                 reason: "Address in use".to_string(),
             }]
         );
+    }
+
+    fn env_request(pairs: &[(&str, &str)]) -> EnvVars {
+        EnvVars {
+            vars: pairs
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn env_vars_keep_names_and_values() {
+        let env = env_vars(&env_request(&[("GREETING", "$HOME"), ("EMPTY", "")])).unwrap();
+
+        assert_eq!(
+            env,
+            BTreeMap::from([
+                ("EMPTY".to_string(), String::new()),
+                ("GREETING".to_string(), "$HOME".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn env_vars_reject_invalid_and_reserved_names() {
+        for name in ["1X", "A-B", "", "MSB_TOKEN"] {
+            let status = env_vars(&env_request(&[(name, "x")])).unwrap_err();
+
+            assert_eq!(status.code(), tonic::Code::InvalidArgument, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn env_vars_reject_a_nul_character() {
+        let status = env_vars(&env_request(&[("A", "a\0b")])).unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(status.message(), "env variable A has a NUL character");
+    }
+
+    #[test]
+    fn start_sandbox_from_request_keeps_env() {
+        let request = StartSandboxRequest::default();
+        let env = BTreeMap::from([("A".to_string(), "1".to_string())]);
+        let parsed = ParsedStart {
+            env: Some(env.clone()),
+            ..ParsedStart::default()
+        };
+
+        let start = start_sandbox_from(&request, &parsed);
+
+        assert_eq!(start.env, Some(&env));
     }
 
     #[test]

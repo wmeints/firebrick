@@ -3,6 +3,7 @@ pub use firebrick_proto as api;
 
 mod atomic_file;
 pub mod clipboard;
+pub mod env;
 pub mod forward;
 pub mod mise;
 pub mod netlog;
