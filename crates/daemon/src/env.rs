@@ -15,21 +15,34 @@ pub fn with_env(builder: SandboxBuilder, env: &BTreeMap<String, String>) -> Sand
 }
 
 /// Returns the variables the sandbox got from its spec: the names in [`NAMES_LABEL`] with the
-/// values the sandbox has for them. A sandbox from before the label has none.
+/// values the sandbox has for them. A sandbox from before the label has none. Logs a warning
+/// for a name without a value, which a recreate would lose.
 pub fn stored(spec: &SandboxSpec) -> BTreeMap<String, String> {
-    let Some(names) = spec.labels.get(NAMES_LABEL) else {
-        return BTreeMap::new();
-    };
-
-    names
-        .split(',')
+    names(spec)
         .filter_map(|name| {
-            spec.env
-                .iter()
-                .find(|var| var.key == name)
-                .map(|var| (var.key.clone(), var.value.clone()))
+            let value = spec.env.iter().find(|var| var.key == name);
+            if value.is_none() {
+                tracing::warn!(
+                    "the sandbox's env names {name}, but the sandbox has no value for it"
+                );
+            }
+            value.map(|var| (var.key.clone(), var.value.clone()))
         })
         .collect()
+}
+
+/// Whether the sandbox got a variable with the name from its spec.
+pub fn names_variable(spec: &SandboxSpec, name: &str) -> bool {
+    names(spec).any(|stored| stored == name)
+}
+
+/// Returns the names in the sandbox's [`NAMES_LABEL`].
+fn names(spec: &SandboxSpec) -> impl Iterator<Item = &str> {
+    spec.labels
+        .get(NAMES_LABEL)
+        .into_iter()
+        .flat_map(|names| names.split(','))
+        .filter(|name| !name.is_empty())
 }
 
 /// Gives the sandbox the variables in place of the ones it got from its spec before, from its
@@ -63,9 +76,13 @@ pub async fn sync(
     Ok(())
 }
 
-/// Whether the variables differ from the ones the sandbox got from its spec.
-pub fn differs(sb: &SandboxHandle, env: &BTreeMap<String, String>) -> bool {
-    sb.config().is_ok_and(|config| stored(&config.spec) != *env)
+/// Whether the variables differ from the ones the sandbox got from its spec. Fails when the
+/// sandbox's config can't be read.
+pub fn differs(
+    sb: &SandboxHandle,
+    env: &BTreeMap<String, String>,
+) -> Result<bool, MicrosandboxError> {
+    Ok(stored(&sb.config()?.spec) != *env)
 }
 
 /// Returns the value of [`NAMES_LABEL`] for the variables.
@@ -114,6 +131,25 @@ mod tests {
         let spec = spec_with(&[], &[("PATH", "/usr/bin")]);
 
         assert!(stored(&spec).is_empty());
+    }
+
+    #[test]
+    fn stored_leaves_out_a_name_without_a_value() {
+        let spec = spec_with(&[(NAMES_LABEL, "GONE,PORT")], &[("PORT", "3000")]);
+
+        assert_eq!(stored(&spec), vars(&[("PORT", "3000")]));
+    }
+
+    #[test]
+    fn names_variable_tells_spec_variables_from_image_variables() {
+        let spec = spec_with(
+            &[(NAMES_LABEL, "API_KEY")],
+            &[("API_KEY", "dev"), ("PATH", "/bin")],
+        );
+
+        assert!(names_variable(&spec, "API_KEY"));
+        assert!(!names_variable(&spec, "PATH"));
+        assert!(!names_variable(&spec_with(&[(NAMES_LABEL, "")], &[]), ""));
     }
 
     #[test]

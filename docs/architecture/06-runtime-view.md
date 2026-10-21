@@ -447,8 +447,14 @@ read and send it. A variable with the name of a secret the sandbox gets, global
 or scoped to that sandbox, would hide the secret's placeholder, so
 `StartSandbox` fails with `INVALID_ARGUMENT` and `env variable <NAME> conflicts
 with secret <NAME>; remove one of them` before it creates or changes anything.
-`env` isn't part of the approved settings: variables only affect processes in
-the VM and can't widen what the sandbox reaches on the host or the network.
+Only a request with variables reads the secrets for this check. The other way
+around, `SetSecret` fails with `FAILED_PRECONDITION` and `secret <NAME>
+conflicts with env variable <NAME> of sandbox <sandbox>; remove one of them`
+before it stores anything, when the `firebrick.env` label of a sandbox the
+secret would go to names it: the scoped sandbox, or for a global secret every
+firebrick sandbox without its own secret with that name. `env` isn't part of the
+approved settings: variables only affect processes in the VM and can't widen
+what the sandbox reaches on the host or the network.
 
 ### Forwarding ports
 

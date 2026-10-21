@@ -218,7 +218,7 @@ pub(crate) async fn ensure_running(
     check_workspace_owner(&spec.name, workspace, client).await?;
 
     let request = StartSandboxRequest {
-        env: Some(env_vars(&spec.env)),
+        env: Some(env_vars(spec.env.clone())),
         ..start_request(&spec.name, workspace, Some(port_forwards(&spec.ports)))
     };
     let started = match start_if_exists(request, client).await? {
@@ -482,14 +482,14 @@ fn build_start_request(spec: SandboxSpec, workspace: &Path) -> Result<StartSandb
         ports: Some(port_forwards(&spec.ports)),
         mounts,
         clipboard: Some(spec.clipboard.unwrap_or(false)),
-        env: Some(env_vars(&spec.env)),
+        env: Some(env_vars(spec.env)),
     })
 }
 
 /// Turns the environment variables of a spec into their API message.
-fn env_vars(env: &BTreeMap<String, String>) -> EnvVars {
+fn env_vars(env: BTreeMap<String, String>) -> EnvVars {
     EnvVars {
-        vars: env.clone().into_iter().collect(),
+        vars: env.into_iter().collect(),
     }
 }
 

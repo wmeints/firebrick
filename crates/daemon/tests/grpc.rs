@@ -13,13 +13,13 @@ use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementS
 use firebrick_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, EnvVars,
     ForwardPortRequest, ForwardPortResponse, GetSandboxRequest, GetSandboxResponse,
-    ListNetworkActivityRequest, ListSandboxesRequest, MiseInstallProgress, Mount, NetworkActivity,
-    NetworkActivityKind, NetworkPolicy, PortForward, PortForwards, RemovePortRequest,
-    RemovePortResponse, RemoveSandboxRequest, RemoveSecretRequest, SandboxResources,
-    SandboxStarted, SandboxStatus, SandboxUpgraded, SandboxVolumes, SetSecretRequest,
-    StartSandboxRequest, StartSandboxResponse, StopSandboxRequest, UpdateNetworkRequest,
-    UpgradeSandboxRequest, UpgradeSandboxResponse, attach_request, attach_response,
-    start_sandbox_response, upgrade_sandbox_response,
+    ListNetworkActivityRequest, ListSandboxesRequest, ListSecretsRequest, MiseInstallProgress,
+    Mount, NetworkActivity, NetworkActivityKind, NetworkPolicy, PortForward, PortForwards,
+    RemovePortRequest, RemovePortResponse, RemoveSandboxRequest, RemoveSecretRequest,
+    SandboxResources, SandboxStarted, SandboxStatus, SandboxUpgraded, SandboxVolumes,
+    SetSecretRequest, SetSecretResponse, StartSandboxRequest, StartSandboxResponse,
+    StopSandboxRequest, UpdateNetworkRequest, UpgradeSandboxRequest, UpgradeSandboxResponse,
+    attach_request, attach_response, start_sandbox_response, upgrade_sandbox_response,
 };
 use firebrick_daemon::clipboard::{self, Cause, Clipboards, HostClipboard, HostError, Kind};
 use firebrick_daemon::open::{self, Opener};
@@ -1719,16 +1719,18 @@ async fn new_sandbox_has_the_env_variables_as_written() {
 }
 
 /// Prints the variables of the sync test, then the exit code of printing the removed one, then
-/// the image's `PATH`.
+/// the test secret's placeholder and the image's `PATH`.
 const ENV_SYNC_CHECK: &str =
-    "printenv KEPT CHANGED ADDED; printenv REMOVED; echo $?; printenv PATH";
+    "printenv KEPT CHANGED ADDED; printenv REMOVED; echo $?; printenv FIREBRICK_IT_TOKEN PATH";
 
 #[tokio::test]
 async fn start_of_stopped_sandbox_syncs_its_env_with_the_request() {
     let name: &str = &sandbox_name("env-sync");
     remove_sandbox(name).await;
 
-    let daemon = TestDaemon::start("env-sync").await;
+    let dir = tempfile::tempdir().unwrap();
+    let daemon =
+        TestDaemon::start_with_secrets("env-sync", store_with_test_secret(dir.path())).await;
     let mut client = daemon.client().await;
     let old = env_request(name, &[("KEPT", "1"), ("CHANGED", "old"), ("REMOVED", "x")]);
     start_and_wait(&mut client, old).await;
@@ -1744,7 +1746,10 @@ async fn start_of_stopped_sandbox_syncs_its_env_with_the_request() {
 
     assert!(!started.env_pending_restart);
     assert_eq!(code, 0, "{output:?}");
-    assert!(output.starts_with("1\r\nnew\r\n2\r\n1\r\n"), "{output:?}");
+    assert!(
+        output.starts_with("1\r\nnew\r\n2\r\n1\r\n$MSB_FIREBRICK_IT_TOKEN\r\n"),
+        "{output:?}"
+    );
     assert!(output.contains("/usr/bin"), "{output:?}");
 }
 
@@ -1809,6 +1814,58 @@ async fn start_rejects_env_that_conflicts_with_a_secret() {
     assert_eq!(created, None);
     assert_eq!(status, Some(SandboxStatus::Stopped));
     assert!(stored.is_empty(), "{stored:?}");
+}
+
+/// Asks the daemon to set a secret with the name, for the sandbox or globally.
+async fn set_secret(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    sandbox: Option<&str>,
+) -> Result<SetSecretResponse, Status> {
+    client
+        .set_secret(SetSecretRequest {
+            name: name.to_string(),
+            value: "fbk-it-secret-value".to_string(),
+            allowed_hosts: vec!["example.com".to_string()],
+            sandbox: sandbox.map(str::to_string),
+        })
+        .await
+        .map(tonic::Response::into_inner)
+}
+
+#[tokio::test]
+async fn set_secret_rejects_a_name_a_sandbox_uses_in_env() {
+    let name: &str = &sandbox_name("env-secret-set");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("env-secret-set").await;
+    let mut client = daemon.client().await;
+    start_and_wait(
+        &mut client,
+        env_request(name, &[("FIREBRICK_IT_ENV_KEY", "dev")]),
+    )
+    .await;
+
+    let scoped = set_secret(&mut client, "FIREBRICK_IT_ENV_KEY", Some(name)).await;
+    let global = set_secret(&mut client, "FIREBRICK_IT_ENV_KEY", None).await;
+    let listed = client
+        .list_secrets(ListSecretsRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    let message = format!(
+        "secret FIREBRICK_IT_ENV_KEY conflicts with env variable FIREBRICK_IT_ENV_KEY of \
+         sandbox {name}; remove one of them"
+    );
+    for status in [scoped.unwrap_err(), global.unwrap_err()] {
+        assert_eq!(status.code(), Code::FailedPrecondition, "{status:?}");
+        assert_eq!(status.message(), message);
+    }
+    assert!(listed.secrets.is_empty(), "{listed:?}");
 }
 
 #[tokio::test]

@@ -221,7 +221,8 @@ read the values and send them anywhere the network rules allow. Use
 [`fbk secret`](/docs/secrets/) for tokens: the sandbox then only sees a
 placeholder. A variable can't have the name of a secret the sandbox gets; `fbk
 start` then fails with `env variable <NAME> conflicts with secret <NAME>; remove
-one of them` and changes nothing.
+one of them` and changes nothing. The other way around, `fbk secret set` refuses
+a secret whose name a sandbox it would go to uses in `env`.
 
 `fbk start` and `fbk run` apply changes to `env` the next time the sandbox
 starts: they set added and changed variables and remove the ones you deleted
@@ -235,10 +236,11 @@ $ fbk start
 env changes in .firebrick.yml apply after the sandbox restarts: fbk stop && fbk start
 ```
 
-An SSH connection that starts a stopped sandbox boots it with the variables of
-its last `fbk start`. `fbk network` and `fbk upgrade` keep the variables. `env`
-isn't one of the settings you approve: variables only affect processes in the
-sandbox and can't give it more access to the host or the network.
+An SSH connection that starts a stopped sandbox boots it with the variables it
+had when it last stopped; run `fbk start` to apply changes to `env`. `fbk
+network` and `fbk upgrade` keep the variables. `env` isn't one of the settings
+you approve: variables only affect processes in the sandbox and can't give it
+more access to the host or the network.
 
 ## Extra mounts
 

@@ -659,10 +659,6 @@ impl<'de> Visitor<'de> for EnvValue {
         Err(E::custom(ENV_VALUE_EXPECTED))
     }
 
-    fn visit_none<E: de::Error>(self) -> Result<String, E> {
-        Err(E::custom(ENV_VALUE_EXPECTED))
-    }
-
     fn visit_seq<A: SeqAccess<'de>>(self, _seq: A) -> Result<String, A::Error> {
         Err(de::Error::custom(ENV_VALUE_EXPECTED))
     }
@@ -2794,6 +2790,20 @@ pub mod tests {
     }
 
     #[test]
+    fn invalid_env_name_diagnostic_names_the_variable() {
+        let diagnostic = from_str("name: dev\nenv:\n  A-B: x\n")
+            .unwrap_err()
+            .diagnostic()
+            .unwrap();
+
+        assert_eq!(
+            diagnostic.message,
+            "env: invalid variable name \"A-B\": use ASCII letters, digits and '_', not \
+             starting with a digit"
+        );
+    }
+
+    #[test]
     fn reserved_env_name_returns_diagnostic() {
         let diagnostic = from_str("name: dev\nenv:\n  PORT: 1\n  MSB_FOO: x\n")
             .unwrap_err()
@@ -2826,6 +2836,10 @@ pub mod tests {
             .unwrap();
 
         assert_eq!((diagnostic.line, diagnostic.column), (2, 6));
+        assert_eq!(
+            diagnostic.message,
+            "env: invalid type: sequence, expected a map of environment variables"
+        );
     }
 
     #[test]

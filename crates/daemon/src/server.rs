@@ -1352,12 +1352,27 @@ mod tests {
     }
 
     #[test]
-    fn env_vars_reject_invalid_and_reserved_names() {
-        for name in ["1X", "A-B", "", "MSB_TOKEN"] {
+    fn env_vars_reject_invalid_names() {
+        for name in ["1X", "A-B", ""] {
             let status = env_vars(&env_request(&[(name, "x")])).unwrap_err();
 
             assert_eq!(status.code(), tonic::Code::InvalidArgument, "{name:?}");
+            assert!(
+                status
+                    .message()
+                    .starts_with(&format!("invalid variable name {name:?}")),
+                "{}",
+                status.message()
+            );
         }
+    }
+
+    #[test]
+    fn env_vars_reject_reserved_names() {
+        let status = env_vars(&env_request(&[("MSB_TOKEN", "x")])).unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(status.message(), "MSB_TOKEN: the MSB_ prefix is reserved");
     }
 
     #[test]

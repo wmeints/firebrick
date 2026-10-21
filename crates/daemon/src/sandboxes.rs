@@ -594,7 +594,7 @@ impl SandboxManager {
     /// Fails with `InvalidArgument` when a requested environment variable has the name of a
     /// secret the sandbox gets, which would hide the secret's placeholder.
     fn check_env_against_secrets(&self, request: StartSandbox<'_>) -> Result<(), SandboxError> {
-        let Some(env) = request.env else {
+        let Some(env) = request.env.filter(|env| !env.is_empty()) else {
             return Ok(());
         };
         let secrets = self.load_secrets_for(request.name)?;
@@ -1249,6 +1249,8 @@ impl SandboxManager {
 
         let _secrets_guard = self.secrets_lock.lock().await;
         let scoped_handle = scoped_sandbox(secret.sandbox()).await?;
+        self.check_secret_against_env(scoped_handle.as_ref(), secret.name())
+            .await?;
 
         self.secrets.set(secret.clone()).map_err(|err| {
             tracing::error!(error = ?err, "failed to store secret {}", secret.name());
@@ -1334,6 +1336,56 @@ impl SandboxManager {
         }
     }
 
+    /// Fails with `FailedPrecondition` when a sandbox the secret goes to has a variable from its
+    /// spec with the secret's name, which would hide the secret's placeholder: the scoped
+    /// sandbox, or every firebrick sandbox without its own secret with the name.
+    async fn check_secret_against_env(
+        &self,
+        scoped_handle: Option<&SandboxHandle>,
+        name: &str,
+    ) -> Result<(), SandboxError> {
+        let conflicting = match scoped_handle {
+            Some(handle) => sets_variable(handle, name).then(|| handle.name().to_string()),
+            None => self
+                .unscoped_sandboxes(name)
+                .await?
+                .iter()
+                .find(|handle| sets_variable(handle, name))
+                .map(|handle| handle.name().to_string()),
+        };
+
+        match conflicting {
+            Some(sandbox) => Err(SandboxError::failed_precondition(format!(
+                "secret {name} conflicts with env variable {name} of sandbox {sandbox}; remove \
+                 one of them"
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// Returns the firebrick sandboxes a global secret with the name goes to: the ones without
+    /// a sandbox-scoped secret with that name.
+    async fn unscoped_sandboxes(&self, name: &str) -> Result<Vec<SandboxHandle>, SandboxError> {
+        let overridden = self.overriding_sandboxes(name)?;
+
+        Ok(list_all_sandboxes()
+            .await?
+            .into_iter()
+            .filter(|handle| ssh::hostname_of(handle).is_some())
+            .filter(|handle| !overridden.contains(handle.name()))
+            .collect())
+    }
+
+    /// Returns the names of the sandboxes with a sandbox-scoped secret with the name.
+    fn overriding_sandboxes(&self, name: &str) -> Result<HashSet<String>, SandboxError> {
+        Ok(self
+            .load_secrets()?
+            .iter()
+            .filter(|secret| secret.name() == name)
+            .filter_map(|secret| secret.sandbox().map(str::to_string))
+            .collect())
+    }
+
     /// Applies a change to a global secret to every firebrick sandbox, except the ones with a
     /// sandbox-scoped secret with the same name. Returns the names of the sandboxes the change
     /// failed for.
@@ -1342,12 +1394,7 @@ impl SandboxManager {
         name: &str,
         change: SecretChange<'_>,
     ) -> Result<Vec<String>, SandboxError> {
-        let overridden: HashSet<String> = self
-            .load_secrets()?
-            .iter()
-            .filter(|secret| secret.name() == name)
-            .filter_map(|secret| secret.sandbox().map(str::to_string))
-            .collect();
+        let overridden = self.overriding_sandboxes(name)?;
 
         update_firebrick_sandboxes(change, &overridden).await
     }
@@ -2028,7 +2075,7 @@ async fn start_existing_sandbox(
         sb.status_snapshot(),
         SandboxStatus::Running | SandboxStatus::Starting
     ) {
-        return Ok(request.env.is_some_and(|wanted| env::differs(sb, wanted)));
+        return env_pending_restart(sb, request);
     }
 
     if let Some(wanted) = request.env {
@@ -2038,7 +2085,11 @@ async fn start_existing_sandbox(
     let started = match sb.start_detached().await {
         Ok(started) => started,
         // Another request started the sandbox after its status was read, and installs the tools.
-        Err(MicrosandboxError::SandboxStillRunning(_)) => return Ok(false),
+        // It may have booted it before the sync, so report a change against the config `sb`
+        // read before it.
+        Err(MicrosandboxError::SandboxStillRunning(_)) => {
+            return env_pending_restart(sb, request);
+        }
         Err(err) => {
             tracing::error!(error = ?err, "failed to start sandbox {}", request.name);
             return Err(SandboxError::internal("failed to start sandbox"));
@@ -2046,15 +2097,55 @@ async fn start_existing_sandbox(
     };
 
     tracing::info!("started sandbox {}", request.name);
-
-    match workspace_path_of(sb) {
-        Some(workspace) if mise_enabled(sb) => {
-            install_mise_tools(&started, &workspace, on_mise).await?
-        }
-        _ => {}
-    }
+    install_tools_of_existing(sb, &started, on_mise).await?;
 
     Ok(false)
+}
+
+/// Installs the workspace's mise tools in the started sandbox when it has mise enabled.
+async fn install_tools_of_existing(
+    sb: &SandboxHandle,
+    started: &Sandbox,
+    on_mise: impl FnMut(MiseUpdate) + Send,
+) -> Result<(), SandboxError> {
+    match workspace_path_of(sb) {
+        Some(workspace) if mise_enabled(sb) => {
+            install_mise_tools(started, &workspace, on_mise).await
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Whether the sandbox got a variable with the name from its spec. A sandbox whose config
+/// can't be read counts as not having it, with a warning: adding the secret to it fails and
+/// reports the sandbox anyway.
+fn sets_variable(sb: &SandboxHandle, name: &str) -> bool {
+    match sb.config() {
+        Ok(config) => env::names_variable(&config.spec, name),
+        Err(err) => {
+            tracing::warn!(error = ?err, "failed to read the environment of sandbox {}", sb.name());
+            false
+        }
+    }
+}
+
+/// Whether the running sandbox has other environment variables than the request asks for. A
+/// request without variables keeps the stored ones, so it has none pending.
+fn env_pending_restart(
+    sb: &SandboxHandle,
+    request: StartSandbox<'_>,
+) -> Result<bool, SandboxError> {
+    let Some(wanted) = request.env else {
+        return Ok(false);
+    };
+
+    env::differs(sb, wanted).map_err(|err| {
+        tracing::error!(error = ?err, "failed to read the environment of sandbox {}", sb.name());
+        SandboxError::internal(format!(
+            "failed to read the environment variables of sandbox {}",
+            sb.name()
+        ))
+    })
 }
 
 /// Gives a stopped sandbox the environment variables from its next start on.

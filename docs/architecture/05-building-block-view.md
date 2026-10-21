@@ -358,13 +358,16 @@ C4Component
   secret and adds it to the sandboxes in its scope: a global secret to the
   existing sandboxes firebrick created, except the ones with a sandbox-scoped
   secret with that name, and a sandbox-scoped secret to its sandbox only, which
-  must exist. `ListSecrets` returns the names, scopes and allowed hosts, sorted
-  by name and then scope with the global secret first, never the values.
-  `RemoveSecret` removes a secret from the same sandboxes and then from the
-  store, keeps it in the store when a sandbox fails so the removal can be
-  retried, and returns `NOT_FOUND` for an unknown name or sandbox. A sandbox
-  that loses its sandbox-scoped secret gets the global one with that name back.
-  Removing a sandbox removes its sandbox-scoped secrets from the store (see
+  must exist. It refuses a secret whose name one of those sandboxes got as an
+  `env` variable from its spec with `FAILED_PRECONDITION` (see
+  [Setting environment variables](06-runtime-view.md#setting-environment-variables)).
+  `ListSecrets` returns the names, scopes and allowed hosts, sorted by name and
+  then scope with the global secret first, never the values. `RemoveSecret`
+  removes a secret from the same sandboxes and then from the store, keeps it in
+  the store when a sandbox fails so the removal can be retried, and returns
+  `NOT_FOUND` for an unknown name or sandbox. A sandbox that loses its
+  sandbox-scoped secret gets the global one with that name back. Removing a
+  sandbox removes its sandbox-scoped secrets from the store (see
   [Secret scopes](08-crosscutting-concepts.md#secret-scopes)). A lock around the
   secret store makes sure a sandbox that is being created can't miss a secret
   that is being set. It stores a sandbox's port mappings in the
