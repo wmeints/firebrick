@@ -25,7 +25,8 @@ program.
 
 ## Decision
 
-`fbkd` gives every sandbox it creates a `firebrick-login` script, which
+`fbkd` gives every sandbox it creates a `firebrick-login` script, kept in
+`crates/daemon/src/firebrick-login.sh` and embedded with `include_str!`, which
 microsandbox writes to `/.msb/scripts/firebrick-login` at every start, and sets
 it as the sandbox's shell. The script looks up the session user's UID in
 `/etc/passwd`, falls back to `/bin/sh` when there's no entry or its shell isn't

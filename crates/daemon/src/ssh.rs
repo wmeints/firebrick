@@ -36,20 +36,7 @@ const LOGIN_SCRIPT: &str = "firebrick-login";
 /// Content of the [`LOGIN_SCRIPT`]: looks up the session user's shell in `/etc/passwd`, falls
 /// back to `/bin/sh`, exports it as `SHELL` and runs it with the session's arguments, or as a
 /// login shell for an interactive session.
-const LOGIN_SCRIPT_CONTENT: &str = r#"#!/bin/sh
-# fbkd runs every SSH session through this script, so it gets the user's login shell and SHELL.
-uid=$(id -u)
-SHELL=/bin/sh
-while IFS=: read -r _ _ id _ _ _ shell; do
-    if [ "$id" = "$uid" ] && [ -x "$shell" ]; then
-        SHELL=$shell
-        break
-    fi
-done </etc/passwd
-export SHELL
-[ "$#" -eq 0 ] && exec "$SHELL" -l
-exec "$SHELL" "$@"
-"#;
+const LOGIN_SCRIPT_CONTENT: &str = include_str!("firebrick-login.sh");
 
 /// Returns the builder with the [`LOGIN_SCRIPT`] as the sandbox's shell, so SSH sessions run
 /// in the session user's login shell with `SHELL` set. microsandbox writes the script at every
