@@ -6,6 +6,7 @@
 use crate::clipboard::{self, Clipboards, HostClipboard};
 use crate::env;
 use crate::forward::{self, ForwardReport, Forwards, SshConnector};
+use crate::git_identity::{self, GitIdentity};
 use crate::mise::{self, MiseError, MiseUpdate};
 use crate::netlog::{NetLogs, Record};
 use crate::network;
@@ -157,6 +158,9 @@ pub struct StartSandbox<'a> {
     /// Environment variables of the sandbox, applied when it's created or starts; `None` keeps
     /// the stored ones. No name is also the name of a secret the sandbox gets.
     pub env: Option<&'a BTreeMap<String, String>>,
+    /// The git identity of the sandbox's default user, applied whenever the request leaves the
+    /// sandbox running; `None` leaves its git config alone.
+    pub git_identity: Option<GitIdentity<'a>>,
 }
 
 /// What starting a sandbox did.
@@ -585,6 +589,10 @@ impl SandboxManager {
         sync_ssh_config().await;
         let env_pending_restart = result?;
         self.start_relay(request.name).await;
+
+        if let Some(identity) = request.git_identity {
+            git_identity::apply(request.name, identity).await;
+        }
 
         Ok(Started {
             forwards: self.open_forwards(request.name, request.ports).await,
@@ -2892,6 +2900,7 @@ mod tests {
             mounts: &[],
             clipboard,
             env,
+            git_identity: None,
         };
         let resources = Resources {
             cpus: 1,

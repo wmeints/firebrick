@@ -404,6 +404,43 @@ The SSH config and editor settings are synced after every `StartSandbox`, also
 when it failed, so the developer can still connect to a sandbox whose mise step
 failed.
 
+### Setting the git identity
+
+Commits in the sandbox get the same author as commits on the host. Every
+`StartSandbox` that fbk sends for a workspace, from `fbk start` and `fbk run`,
+carries the host's git identity for that workspace in `git_identity`. fbk reads
+it with `git -C <workspace> config --get user.name` and `user.email`, so
+`includeIf` and a repository-local identity on the host apply. It leaves out a
+key that is unset or that it can't read because `git` isn't installed, and, with
+a warning on stderr, a value with a newline or NUL, which git can't store on one
+line. `fbk start <name>` has no workspace and sends no identity, and an SSH
+connection that starts a stopped sandbox starts it through the tunnel without
+one; the sandbox keeps the identity on its disk from the last start that set it.
+
+Once the sandbox runs, fbkd runs `git config --global user.name <value>` and
+`git config --global user.email <value>` as the image's default user, one exec
+per key and without a shell, so a value such as `O'Brien; $(id)` is stored
+literally in the `agent` user's `~/.gitconfig`. It does this on every start that
+carries an identity: when it creates the sandbox, when a stopped sandbox starts
+and when the sandbox already runs. A changed host identity reaches the sandbox
+on the next fbk command, and a sandbox whose root filesystem `fbk upgrade`
+replaced gets it back on its next start, so nothing is stored with the sandbox.
+A request without `git_identity`, or without one of the keys, leaves that key in
+the sandbox alone; fbkd never unsets a value. A start that fails, for example
+because `mise install` failed, doesn't set it. The `/etc/gitconfig` with the
+GitHub credential helper stays as it is, and a repository-local identity inside
+the sandbox still wins over the global one.
+
+Only `user.name` and `user.email` are copied, and only from the host to the
+sandbox: other host git config, such as aliases, hooks, `core.sshCommand` or
+`includeIf` targets, doesn't reach the sandbox, and nothing in the sandbox's git
+config is written back to the host (see the
+[threat model](concepts/threat-model.md)).
+
+- The image has no `git`, or `git config` fails or doesn't finish within 5
+  seconds: fbkd logs a warning naming the sandbox and the key, and
+  `StartSandbox` succeeds.
+
 ### Setting environment variables
 
 The `env` map in `.firebrick.yml` gives every process in the sandbox plain

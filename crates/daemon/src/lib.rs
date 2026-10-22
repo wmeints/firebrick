@@ -5,6 +5,7 @@ mod atomic_file;
 pub mod clipboard;
 pub mod env;
 pub mod forward;
+pub mod git_identity;
 pub mod mise;
 pub mod netlog;
 pub mod network;
