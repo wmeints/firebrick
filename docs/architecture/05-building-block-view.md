@@ -278,16 +278,17 @@ C4Component
     Rel(runtime, microsandbox, "Installs msb and libkrunfw")
 ```
 
-- `main` - Sets up logging to stdout and to a daily log file in
-  `$XDG_STATE_HOME/firebrick`, exits when the socket is already in use, makes
-  sure the microsandbox runtime and the SSH keys exist, makes the microsandbox
-  `db` directory readable by the user only, syncs the SSH config and serves the
-  API until `SIGINT` or `SIGTERM`, on Windows until Ctrl-C, Ctrl-Break, the
-  console closing or Windows shutting down. Before serving, `server` reopens the
-  port forwards of the sandboxes that are running and removes the upgrade probes
-  an earlier daemon left behind. When it stops, their listeners close, and it
-  waits up to 60 seconds for updates and upgrades of sandboxes that are still
-  running.
+- `main` - Handles `--version`, which prints the package version, and `--help`
+  with clap and rejects any other argument. It then sets up logging to stdout
+  and to a daily log file in `$XDG_STATE_HOME/firebrick`, exits when the socket
+  is already in use, makes sure the microsandbox runtime and the SSH keys exist,
+  makes the microsandbox `db` directory readable by the user only, syncs the SSH
+  config and serves the API until `SIGINT` or `SIGTERM`, on Windows until
+  Ctrl-C, Ctrl-Break, the console closing or Windows shutting down. Before
+  serving, `server` reopens the port forwards of the sandboxes that are running
+  and removes the upgrade probes an earlier daemon left behind. When it stops,
+  their listeners close, and it waits up to 60 seconds for updates and upgrades
+  of sandboxes that are still running.
 - `server` - Adapts `SandboxManagementService` to the modules below: it converts
   each request into plain values, calls `sandboxes`, `session` or `tunnel`, and
   converts the result into a response. It converts requested resources and

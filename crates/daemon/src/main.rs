@@ -5,6 +5,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use clap::Parser;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
@@ -13,8 +14,15 @@ use tracing_subscriber::prelude::*;
 use firebrick_daemon::secrets::{self, SecretStore};
 use firebrick_daemon::{runtime, sandboxes, server, ssh};
 
+/// The firebrick daemon. `fbk` starts it on demand, so it takes no arguments besides `--help`
+/// and `--version`.
+#[derive(Debug, Parser)]
+#[command(name = "fbkd", version)]
+struct Cli {}
+
 /// Picks the data, log and microsandbox directories, then runs the daemon on a Tokio runtime.
 fn main() -> Result<()> {
+    Cli::parse();
     // Fail instead of falling back to the shared temp dir, where another user could create
     // the directories first and read or plant the secrets, SSH keys and SSH config.
     let secrets_path = firebrick_utils::secrets_path().context(firebrick_utils::NO_DATA_DIR)?;
@@ -106,4 +114,34 @@ fn init_logging(log_dir: &Path) -> Result<WorkerGuard> {
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
     Ok(log_guard)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::*;
+
+    #[test]
+    fn cli_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn version_flag_prints_package_version() {
+        let error = Cli::try_parse_from(["fbkd", "--version"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert_eq!(
+            error.to_string(),
+            format!("fbkd {}\n", env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_arguments() {
+        let error = Cli::try_parse_from(["fbkd", "serve"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
 }

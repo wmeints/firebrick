@@ -5,7 +5,8 @@ description: Every fbk command with its arguments, flags and defaults.
 
 Firebrick has two binaries. You only run `fbk`. It starts the daemon, `fbkd`, on
 demand from its own directory when it isn't running, so keep both in the same
-directory. `fbkd` takes no arguments.
+directory. `fbkd` takes no arguments besides `--help` and `--version`, which
+prints the daemon's version, for example `fbkd 0.9.0`.
 
 Run the commands from your project directory: Firebrick derives the sandbox from
 the working directory and its `.firebrick.yml`. `start`, `stop` and `rm` also
