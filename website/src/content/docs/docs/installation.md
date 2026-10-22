@@ -257,18 +257,19 @@ run inside WSL. Editors on Windows don't see them.
 
 ## Upgrading and uninstalling
 
-To upgrade, repeat step 1 with the new `VERSION`. The next `fbk` command finds
-that the running daemon has another version and restarts it:
+To upgrade, repeat step 1 with the new `VERSION`. The next `fbk` command that
+talks to the daemon, such as `fbk ls`, finds that the daemon has another version
+and restarts it:
 
 ```text
 note: restarting the firebrick daemon (running 0.9.0, fbk is 0.10.0)
 ```
 
 `fbk` doesn't restart the daemon while another `fbk run` session, SSH
-connection, start or upgrade is open; it fails and asks you to close them first.
-Sandboxes keep running across the restart. A daemon of version 0.9.0 or earlier
-can't be restarted by `fbk`, so stop it once after upgrading from such a
-version:
+connection, start, upgrade or network change is in progress; it fails and asks
+you to close them first. Sandboxes keep running across the restart. A daemon of
+version 0.9.0 or earlier can't be restarted by `fbk`, so stop it once after
+upgrading from such a version:
 
 ```sh
 pkill -TERM -x fbkd
@@ -307,10 +308,12 @@ fbk --version
 
 Cargo installs `fbk` and `fbkd` in `~/.cargo/bin`, so both binaries end up in
 the same directory, as the CLI requires. Install both crates with the same
-version. To upgrade, run the same command again; the next `fbk` command restarts
-the daemon, as described in
-[Upgrading and uninstalling](#upgrading-and-uninstalling). To uninstall, stop
-the daemon and run `cargo uninstall firebrick-cli firebrick-daemon`.
+version. To upgrade, run the same command again; the next `fbk` command that
+talks to the daemon restarts it, as described in
+[Upgrading and uninstalling](#upgrading-and-uninstalling). On Windows, stop the
+daemon with `Stop-Process -Name fbkd` first, because Windows can't replace a
+running program. To uninstall, stop the daemon and run `cargo uninstall
+firebrick-cli firebrick-daemon`.
 
 ## Building from source
 

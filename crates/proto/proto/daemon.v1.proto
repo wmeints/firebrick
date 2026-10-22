@@ -32,7 +32,7 @@ service SandboxManagementService {
   rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);
   // Stops fbkd the way SIGTERM does. Sandboxes keep running. Fails with FAILED_PRECONDITION,
   // and fbkd keeps serving, while an Attach, SshTunnel, StartSandbox or UpgradeSandbox stream
-  // is open, because stopping would cut it.
+  // or an UpdateNetwork request is in progress, because stopping would cut it.
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
 }
 

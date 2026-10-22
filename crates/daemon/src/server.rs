@@ -44,7 +44,6 @@ use std::io;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 use thiserror::Error;
@@ -106,30 +105,24 @@ impl FirebrickServer {
     }
 }
 
-/// Counts the open streams that stopping the daemon would cut. Each of them holds a
-/// [`Session`] from [`Sessions::open`].
-#[derive(Clone, Default)]
-struct Sessions(Arc<AtomicUsize>);
+/// Counts the requests in progress that stopping the daemon would cut. Each of them holds a
+/// [`Session`] from [`Sessions::open`]. It isn't `Clone`, so every other reference to its
+/// `Arc` is an open session.
+#[derive(Default)]
+struct Sessions(Arc<()>);
+
+/// An open session of [`Sessions`], closed when it's dropped.
+type Session = Arc<()>;
 
 impl Sessions {
     /// Opens a session, which counts until it's dropped.
     fn open(&self) -> Session {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Session(Arc::clone(&self.0))
+        Arc::clone(&self.0)
     }
 
     /// Returns the number of open sessions.
     fn count(&self) -> usize {
-        self.0.load(Ordering::SeqCst)
-    }
-}
-
-/// An open session of [`Sessions`], closed when it's dropped.
-struct Session(Arc<AtomicUsize>);
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        Arc::strong_count(&self.0) - 1
     }
 }
 
@@ -509,15 +502,14 @@ impl SandboxManagementService for FirebrickServer {
         check_name(&request_data.name)?;
         let network = network_spec(request_data.network.as_ref())?;
         let sandboxes = Arc::clone(&self.sandboxes);
+        let session = self.sessions.open();
 
-        let updated =
-            tokio::spawn(
-                async move { sandboxes.update_network(&request_data.name, &network).await },
-            )
-            .await
-            .map_err(|err| {
-                Status::internal(format!("failed to update the network rules: {err}"))
-            })??;
+        let updated = tokio::spawn(async move {
+            let _session = session;
+            sandboxes.update_network(&request_data.name, &network).await
+        })
+        .await
+        .map_err(|err| Status::internal(format!("failed to update the network rules: {err}")))??;
 
         Ok(Response::new(UpdateNetworkResponse { updated }))
     }
@@ -908,13 +900,7 @@ pub async fn run(socket_path: &Path, secrets: SecretStore) -> Result<(), ServerE
     sandboxes.restore_listeners().await;
     sandboxes.remove_stale_probes().await;
 
-    let shutdown = async {
-        tokio::select! {
-            () = shutdown_signal() => {}
-            () = requested => {}
-        }
-    };
-    let served = serve(socket_path, service, shutdown).await;
+    let served = serve(socket_path, service, shutdown_or(requested)).await;
 
     if !sandboxes.finish_recreations(RECREATION_TIMEOUT).await {
         tracing::warn!("stopped while a sandbox was still being updated or upgraded");
@@ -1039,6 +1025,14 @@ impl AsyncWrite for Connection {
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+}
+
+/// Completes on the signals of [`shutdown_signal`] or when `requested` completes.
+async fn shutdown_or(requested: impl Future<Output = ()>) {
+    tokio::select! {
+        () = shutdown_signal() => {}
+        () = requested => {}
     }
 }
 
@@ -1757,13 +1751,16 @@ mod tests {
         assert_eq!(response.into_inner().version, env!("CARGO_PKG_VERSION"));
     }
 
-    /// Serves a server on the endpoint until a client asks it to shut down, returning its
-    /// sessions so a test can wait for one to open.
+    /// Serves a server on the endpoint until a client asks it to shut down, returning a weak
+    /// reference to its sessions so a test can wait for one to open without opening one.
     fn serve_until_requested(
         path: PathBuf,
-    ) -> (Sessions, tokio::task::JoinHandle<Result<(), ServerError>>) {
+    ) -> (
+        std::sync::Weak<()>,
+        tokio::task::JoinHandle<Result<(), ServerError>>,
+    ) {
         let server = name_server();
-        let sessions = server.sessions.clone();
+        let sessions = Arc::downgrade(&server.sessions.0);
         let requested = server.shutdown_requested();
         let handle = tokio::spawn(async move { serve(&path, server, requested).await });
 
@@ -1794,11 +1791,32 @@ mod tests {
         daemon.attach(ReceiverStream::new(rx)).await
     }
 
-    /// Waits until `count` sessions are open.
-    async fn wait_for_sessions(sessions: &Sessions, count: usize) {
-        while sessions.count() != count {
+    /// Returns how many sessions are open, from a weak reference to the sessions.
+    fn open_sessions(sessions: &std::sync::Weak<()>) -> usize {
+        sessions.strong_count().saturating_sub(1)
+    }
+
+    /// Waits up to 5 seconds until `count` sessions are open.
+    async fn wait_for_sessions(sessions: &std::sync::Weak<()>, count: usize) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+
+        while open_sessions(sessions) != count {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{} sessions are open, not {count}",
+                open_sessions(sessions)
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn shutdown_or_completes_when_a_shutdown_is_requested() {
+        let requested = std::future::ready(());
+
+        let stopped = tokio::time::timeout(Duration::from_secs(5), shutdown_or(requested)).await;
+
+        assert!(stopped.is_ok(), "a requested shutdown didn't complete");
     }
 
     #[tokio::test]

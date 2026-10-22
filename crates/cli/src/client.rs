@@ -26,10 +26,11 @@ type Client = SandboxManagementServiceClient<Channel>;
 pub async fn connect() -> Result<Client> {
     let path =
         firebrick_utils::socket_path().context("can't name the firebrick daemon's endpoint")?;
+    let lock_path = firebrick_utils::daemon_lock_path().context(firebrick_utils::NO_DATA_DIR)?;
     let client = connect_to(path.clone()).await?;
-    let restarted = async {
-        wait_for_shutdown(&path).await?;
-        connect_to(path.clone()).await
+    let restarted = async move {
+        wait_for_shutdown(&lock_path).await?;
+        connect_to(path).await
     };
 
     matching_daemon(
@@ -59,7 +60,7 @@ async fn matching_daemon(
 
     let running = version_label(running.as_deref());
     eprintln!("note: restarting the firebrick daemon (running {running}, fbk is {expected})");
-    shut_down(client, &running, expected).await?;
+    shut_down(client, running, expected).await?;
 
     let mut client = restarted.await?;
     let restarted = daemon_version(&mut client).await?;
@@ -86,16 +87,15 @@ async fn daemon_version(client: &mut Client) -> Result<Option<String>> {
 }
 
 /// Describes a version from [`daemon_version`].
-fn version_label(version: Option<&str>) -> String {
-    version.map_or_else(|| "an older version".to_string(), str::to_string)
+fn version_label(version: Option<&str>) -> &str {
+    version.unwrap_or("an older version")
 }
 
 /// Asks the daemon, which runs version `running` instead of `expected`, to shut down. Closes
 /// the client, so the daemon doesn't wait for its connection.
 async fn shut_down(mut client: Client, running: &str, expected: &str) -> Result<()> {
-    let status = match client.shutdown(ShutdownRequest {}).await {
-        Ok(_) => return Ok(()),
-        Err(status) => status,
+    let Err(status) = client.shutdown(ShutdownRequest {}).await else {
+        return Ok(());
     };
 
     match status.code() {
@@ -112,14 +112,22 @@ async fn shut_down(mut client: Client, running: &str, expected: &str) -> Result<
     }
 }
 
-/// Waits until the daemon that was asked to shut down has removed its endpoint, so the daemon
-/// that replaces it doesn't bind an endpoint the old one is about to remove.
-async fn wait_for_shutdown(socket_path: &Path) -> Result<()> {
+/// Waits until the daemon that was asked to shut down has exited and released the lock at
+/// `lock_path`, so the daemon that replaces it finds its endpoint, host ports and listeners
+/// free.
+async fn wait_for_shutdown(lock_path: &Path) -> Result<()> {
     let deadline = Instant::now() + DAEMON_START_TIMEOUT;
 
-    while ipc::exists(socket_path).await {
+    while firebrick_utils::try_lock_daemon(lock_path)
+        .with_context(|| format!("failed to lock {}", lock_path.display()))?
+        .is_none()
+    {
         if Instant::now() >= deadline {
-            bail!("timed out waiting for the firebrick daemon to shut down");
+            bail!(
+                "timed out waiting for the firebrick daemon to shut down and release {}; stop \
+                 the fbkd process and try again",
+                lock_path.display()
+            );
         }
 
         sleep(DAEMON_POLL_INTERVAL).await;
@@ -432,23 +440,39 @@ mod tests {
         );
     }
 
-    /// Closes the listener and removes its endpoint after a moment, like a daemon that shuts
-    /// down.
-    async fn remove_later(listener: ipc::Listener, path: PathBuf) {
+    /// Releases the lock after a moment, like a daemon that exits.
+    async fn release_later(lock: std::fs::File) {
         sleep(Duration::from_millis(100)).await;
-        drop(listener);
-        ipc::remove(&path).await.unwrap();
+        drop(lock);
     }
 
     #[tokio::test]
-    async fn wait_for_shutdown_returns_once_the_endpoint_is_gone() {
-        let (_dir, path) = test_endpoint("gone");
-        let listener = ipc::Listener::bind(&path).unwrap();
-        tokio::spawn(remove_later(listener, path.clone()));
+    async fn wait_for_shutdown_returns_once_the_daemon_released_its_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fbkd.lock");
+        let lock = firebrick_utils::try_lock_daemon(&path).unwrap().unwrap();
 
-        wait_for_shutdown(&path).await.unwrap();
+        let (waited, ()) = tokio::join!(wait_for_shutdown(&path), release_later(lock));
 
-        assert!(!ipc::exists(&path).await);
+        waited.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_shutdown_times_out_while_the_daemon_holds_its_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fbkd.lock");
+        let _lock = firebrick_utils::try_lock_daemon(&path).unwrap().unwrap();
+
+        let error = wait_for_shutdown(&path).await.unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "timed out waiting for the firebrick daemon to shut down and release {}; stop \
+                 the fbkd process and try again",
+                path.display()
+            )
+        );
     }
 
     #[test]

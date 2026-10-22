@@ -22,15 +22,20 @@ connections, and starts and upgrades in progress.
 The daemon API gets two RPCs. `GetVersion` returns the daemon's package version.
 `Shutdown` completes the same graceful shutdown as SIGTERM, and fails with
 `FAILED_PRECONDITION` while an `Attach`, `SshTunnel`, `StartSandbox` or
-`UpgradeSandbox` stream is open. The daemon counts these sessions while they
-run; a start or upgrade counts until its task is done, also when its client is
-gone.
+`UpgradeSandbox` stream or an `UpdateNetwork` request is in progress. The daemon
+counts these sessions while they run; a start, upgrade or network update counts
+until its task is done, also when its client is gone.
+
+`fbkd` holds an exclusive lock on `fbkd.lock` in its data directory for as long
+as its process runs, taken with the standard library's `File::try_lock`. The
+operating system releases it when the process exits, after the daemon closed its
+port forwards and listeners.
 
 After it connects, `fbk` compares the daemon's version with its own. The
 versions must match exactly. On a mismatch it asks the daemon to shut down,
-waits until the endpoint is gone, starts the `fbkd` next to it as it does when
-no daemon runs, and checks the version of the new daemon. It fails when the
-daemon refuses to shut down, when the daemon predates `GetVersion` and
+waits until it can take the daemon's lock, starts the `fbkd` next to it as it
+does when no daemon runs, and checks the version of the new daemon. It fails
+when the daemon refuses to shut down, when the daemon predates `GetVersion` and
 `Shutdown`, or when the new daemon runs another version, naming the `fbkd`
 binary it started.
 
@@ -44,5 +49,8 @@ binary it started.
 - Development builds of the same version aren't told apart; restart the daemon
   by hand after changing it.
 - A sandbox's port forwards and listeners move to the new daemon the same way as
-  after any restart. The old daemon closes its listeners after it removed its
-  endpoint, so for a moment both may hold them.
+  after any restart. Waiting for the lock instead of the endpoint matters here:
+  the old daemon removes its endpoint before it closes its forwards and
+  listeners, and a new daemon that started in between couldn't take them.
+- A second `fbkd` now also exits when it can't take the lock, not only when the
+  endpoint exists.

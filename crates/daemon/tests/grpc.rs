@@ -17,9 +17,10 @@ use firebrick_daemon::api::{
     Mount, NetworkActivity, NetworkActivityKind, NetworkPolicy, PortForward, PortForwards,
     RemovePortRequest, RemovePortResponse, RemoveSandboxRequest, RemoveSecretRequest,
     SandboxResources, SandboxStarted, SandboxStatus, SandboxUpgraded, SandboxVolumes,
-    SetSecretRequest, SetSecretResponse, StartSandboxRequest, StartSandboxResponse,
-    StopSandboxRequest, UpdateNetworkRequest, UpgradeSandboxRequest, UpgradeSandboxResponse,
-    attach_request, attach_response, start_sandbox_response, upgrade_sandbox_response,
+    SetSecretRequest, SetSecretResponse, ShutdownRequest, StartSandboxRequest,
+    StartSandboxResponse, StopSandboxRequest, UpdateNetworkRequest, UpgradeSandboxRequest,
+    UpgradeSandboxResponse, attach_request, attach_response, start_sandbox_response,
+    upgrade_sandbox_response,
 };
 use firebrick_daemon::clipboard::{self, Cause, Clipboards, HostClipboard, HostError, Kind};
 use firebrick_daemon::open::{self, Opener};
@@ -1434,6 +1435,70 @@ async fn attach_disconnect_ends_session() {
     drop(responses);
 
     wait_for_process_exit(name, "sleep").await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+}
+
+/// Sends `Shutdown` until the daemon accepts it, failing after 10 seconds. The test daemon
+/// keeps serving after it accepted, so the test can go on.
+async fn wait_until_shutdown_accepted(client: &mut SandboxManagementServiceClient<Channel>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    while let Err(status) = client.shutdown(ShutdownRequest {}).await {
+        assert!(
+            Instant::now() < deadline,
+            "shutdown still refused: {status}"
+        );
+        sleep(POLL_INTERVAL).await;
+    }
+}
+
+#[tokio::test]
+async fn shutdown_is_refused_while_a_session_is_attached() {
+    let name: &str = &sandbox_name("shutdown-attached");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("shutdown-attached").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, name).await;
+
+    let start = attach_start(name, "sh", &["-c", "echo ready; sleep 300"], DEFAULT_SIZE);
+    let (tx, mut responses) = open_session(&mut client, start).await;
+    wait_for_output(&mut responses, "ready").await;
+    let refused = client.shutdown(ShutdownRequest {}).await.unwrap_err();
+
+    drop(tx);
+    drop(responses);
+    wait_until_shutdown_accepted(&mut client).await;
+
+    assert_eq!(refused.code(), Code::FailedPrecondition);
+    assert_eq!(refused.message(), "1 session is open");
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+}
+
+#[tokio::test]
+async fn shutdown_is_refused_while_a_sandbox_starts() {
+    let name: &str = &sandbox_name("shutdown-starting");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("shutdown-starting").await;
+    let mut client = daemon.client().await;
+
+    let mut stream = client
+        .start_sandbox(start_request(name))
+        .await
+        .expect("failed to start the sandbox")
+        .into_inner();
+    let refused = client.shutdown(ShutdownRequest {}).await.unwrap_err();
+
+    while stream.message().await.expect("start failed").is_some() {}
+    wait_until_shutdown_accepted(&mut client).await;
+
+    assert_eq!(refused.code(), Code::FailedPrecondition);
+    assert_eq!(refused.message(), "1 session is open");
 
     daemon.stop().await;
     remove_sandbox(name).await;

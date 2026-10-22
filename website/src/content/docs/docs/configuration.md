@@ -378,6 +378,7 @@ it uses the default under your home directory:
 | `$XDG_RUNTIME_DIR/firebrick/netlog/<sandbox>.sock`                             | The sockets sandboxes report their network activity to. On macOS without `XDG_RUNTIME_DIR`, they're in `/private/tmp/fbk-<uid>`, which must be yours with mode `0700`. On Linux without it, sandboxes get no network record. |
 | `$XDG_DATA_HOME/firebrick/ssh` (`~/.local/share/firebrick/ssh`)                | The SSH keys, `known_hosts` and the generated SSH config. See [Editor support](/docs/editor-support/).                                                                                                                       |
 | `~/.local/share/firebrick/secrets.yml`                                         | The secrets. See [Secrets](/docs/secrets/).                                                                                                                                                                                  |
+| `~/.local/share/firebrick/fbkd.lock`                                           | The lock the running daemon holds, so a second daemon doesn't start and `fbk` knows when a restarted one is gone.                                                                                                            |
 | `$XDG_CONFIG_HOME/firebrick/approved.yml` (`~/.config/firebrick/approved.yml`) | The mounts, network and clipboard settings you approved per project. See [Approving settings changes](#approving-settings-changes).                                                                                          |
 
 `fbkd` never falls back to the temp directory for its data, logs and
@@ -388,13 +389,13 @@ home). `fbk` only uses a socket served by your own user or by root.
 On Windows, an `XDG_*` variable that is an absolute path still wins, but the
 defaults follow Windows instead, and `HOME` doesn't count:
 
-| Path                                        | Contents                                                                                        |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `\\.\pipe\firebrick-<SID>-fbkd`             | The named pipe the CLI and daemon talk over. Only your user and `LocalSystem` can open it.      |
-| `\\.\pipe\firebrick-<SID>-netlog-<sandbox>` | The pipes sandboxes report their network activity to; `-clipboard-<sandbox>` for the clipboard. |
-| `%LOCALAPPDATA%\firebrick\state`            | The daemon's logs, the microsandbox home (`msb`) and the network records (`network`).           |
-| `%LOCALAPPDATA%\firebrick\data`             | The SSH keys and config (`ssh`) and the secrets (`secrets.yml`).                                |
-| `%APPDATA%\firebrick\approved.yml`          | The settings you approved per project.                                                          |
+| Path                                        | Contents                                                                                          |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `\\.\pipe\firebrick-<SID>-fbkd`             | The named pipe the CLI and daemon talk over. Only your user and `LocalSystem` can open it.        |
+| `\\.\pipe\firebrick-<SID>-netlog-<sandbox>` | The pipes sandboxes report their network activity to; `-clipboard-<sandbox>` for the clipboard.   |
+| `%LOCALAPPDATA%\firebrick\state`            | The daemon's logs, the microsandbox home (`msb`) and the network records (`network`).             |
+| `%LOCALAPPDATA%\firebrick\data`             | The SSH keys and config (`ssh`), the secrets (`secrets.yml`) and the daemon's lock (`fbkd.lock`). |
+| `%APPDATA%\firebrick\approved.yml`          | The settings you approved per project.                                                            |
 
 `<SID>` is your user's security identifier, such as `S-1-5-21-...`.
 

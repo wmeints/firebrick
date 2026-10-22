@@ -1,5 +1,6 @@
 #[cfg(unix)]
 use std::fs::DirBuilder;
+use std::fs::File;
 #[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -20,11 +21,26 @@ fn main() -> Result<()> {
     let secrets_path = firebrick_utils::secrets_path().context(firebrick_utils::NO_DATA_DIR)?;
     let log_dir = firebrick_utils::log_dir().context(firebrick_utils::NO_LOG_DIR)?;
     use_firebrick_msb_home()?;
+    let _lock = lock_daemon()?;
+    // Since edition 2024 the runtime, a temporary of the tail expression, is dropped before the
+    // lock, so its tasks, which may hold port forwards and listeners, are gone when the lock is
+    // released.
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("failed to start the Tokio runtime")?
         .block_on(run(&log_dir, secrets_path))
+}
+
+/// Takes the daemon's lock, which this process keeps until it exits, so `fbk` can wait for a
+/// daemon it asked to shut down to release its host ports and listeners. Fails when another
+/// daemon holds it.
+fn lock_daemon() -> Result<File> {
+    let path = firebrick_utils::daemon_lock_path().context(firebrick_utils::NO_DATA_DIR)?;
+    let lock = firebrick_utils::try_lock_daemon(&path)
+        .with_context(|| format!("failed to lock {}", path.display()))?;
+
+    lock.with_context(|| format!("another firebrick daemon holds {}", path.display()))
 }
 
 /// Points microsandbox at firebrick's own home when `MSB_HOME` is unset or empty, so `fbkd`
