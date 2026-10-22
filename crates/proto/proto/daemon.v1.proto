@@ -63,6 +63,17 @@ message StartSandboxRequest {
   // with the sandbox, and applied when it's created or the next time it starts; a running
   // sandbox keeps its environment. Unset keeps the stored variables.
   optional EnvVars env = 12;
+  // The host's git identity for the workspace, written to the global git config of the
+  // sandbox's default user whenever the sandbox runs after this request. Unset leaves the
+  // sandbox's git config alone.
+  optional GitIdentity git_identity = 13;
+}
+
+message GitIdentity {
+  // The value for user.name. Unset leaves the sandbox's user.name alone.
+  optional string name = 1;
+  // The value for user.email. Unset leaves the sandbox's user.email alone.
+  optional string email = 2;
 }
 
 message EnvVars {

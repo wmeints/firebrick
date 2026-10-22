@@ -291,6 +291,40 @@ terminal, for example in CI, `fbk start` prints `Installing mise tools...` and
 mise's error and the sandbox keeps running, so you can connect and fix the
 config. Images without mise skip this step. Set `mise: false` to turn it off.
 
+## Git identity
+
+Commits the agent makes in the sandbox get the same author as your commits on
+the host. Each time `fbk start` or `fbk run` starts the sandbox or finds it
+running, `fbk` reads `user.name` and `user.email` the way `git` does in the
+project directory, including `includeIf` and a repository-local identity, and
+sets them in the global git config of the `agent` user:
+
+```sh
+$ git config user.email
+ada@example.com
+$ fbk start
+$ fbk run -- git config --global --get user.email
+ada@example.com
+```
+
+When you change your identity on the host, the sandbox gets it the next time you
+run `fbk start` or `fbk run` in the project directory. A key you haven't set on
+the host stays as it is in the sandbox, and so does the identity when `fbk start
+<name>` starts the sandbox, because it has no project directory to read it in. A
+value with a line break isn't copied, and neither is anything when git can't
+read your config, for example because of a syntax error; `fbk` says so. To
+commit as someone else in one repository inside the sandbox, set a
+repository-local identity there; it wins over the global one:
+
+```sh
+fbk run -- git -C /workspaces/my-project config user.email agent@example.com
+```
+
+Only the name and email are copied. Your other git settings, such as aliases,
+hooks and signing keys, stay on the host, and nothing in the sandbox's git
+config is written back to the host. There's no setting to turn this off; images
+without git skip this step.
+
 ## Sharing the host clipboard
 
 The sandbox has no display, so programs that use the clipboard themselves, such

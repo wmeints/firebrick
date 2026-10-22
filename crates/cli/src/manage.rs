@@ -15,14 +15,16 @@ use tonic::Streaming;
 use tonic::transport::Channel;
 
 use crate::api::{
-    EnvVars, GetSandboxRequest, GetSandboxResponse, ImagePullProgress, ListSandboxesRequest,
-    ListSandboxesResponse, MiseInstallProgress, Mount, NetworkPolicy, PortForward, PortForwards,
-    RemoveSandboxRequest, SandboxResources, SandboxStarted, SandboxStatus, SandboxSummary,
-    SandboxUpgraded, SandboxVolumes, StartSandboxRequest, StopSandboxRequest,
-    UpgradeSandboxRequest, sandbox_management_service_client::SandboxManagementServiceClient,
-    start_sandbox_response, upgrade_sandbox_response,
+    EnvVars, GetSandboxRequest, GetSandboxResponse, GitIdentity, ImagePullProgress,
+    ListSandboxesRequest, ListSandboxesResponse, MiseInstallProgress, Mount, NetworkPolicy,
+    PortForward, PortForwards, RemoveSandboxRequest, SandboxResources, SandboxStarted,
+    SandboxStatus, SandboxSummary, SandboxUpgraded, SandboxVolumes, StartSandboxRequest,
+    StopSandboxRequest, UpgradeSandboxRequest,
+    sandbox_management_service_client::SandboxManagementServiceClient, start_sandbox_response,
+    upgrade_sandbox_response,
 };
 use crate::approval::{Approver, Clipboard, Settings};
+use crate::git;
 use crate::progress::{MiseProgressView, PullProgressView};
 use crate::table;
 
@@ -206,9 +208,10 @@ const STARTING_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Makes sure the sandbox exists and is running, creating or starting it when needed, and
 /// sends the spec's ports, also to a running sandbox. Warns about forwards the daemon couldn't
-/// open and returns its response. Fails when an existing sandbox mounts another directory than
-/// the workspace. A new sandbox only gets mounts and network settings the user approved;
-/// `assume_yes` approves them without asking.
+/// open and returns its response. Both requests carry the host's git identity for the
+/// workspace. Fails when an existing sandbox mounts another directory than the workspace. A new
+/// sandbox only gets mounts and network settings the user approved; `assume_yes` approves them
+/// without asking.
 pub(crate) async fn ensure_running(
     spec: SandboxSpec,
     workspace: &Path,
@@ -217,15 +220,13 @@ pub(crate) async fn ensure_running(
 ) -> Result<SandboxStarted> {
     check_workspace_owner(&spec.name, workspace, client).await?;
 
-    let request = StartSandboxRequest {
-        env: Some(env_vars(spec.env.clone())),
-        ..start_request(&spec.name, workspace, Some(port_forwards(&spec.ports)))
-    };
+    let git_identity = git::host_identity(workspace).await;
+    let request = existing_start_request(&spec, workspace, git_identity.clone());
     let started = match start_if_exists(request, client).await? {
         Some(started) => started,
         None => {
             let network = spec.network.clone().unwrap_or_default();
-            let request = build_start_request(spec, workspace)?;
+            let request = build_start_request(spec, workspace, git_identity)?;
             approve_new_sandbox(&request, network, workspace, assume_yes).await?;
 
             eprintln!("Creating sandbox {}...", request.name);
@@ -372,6 +373,20 @@ fn start_request(name: &str, workspace: &Path, ports: Option<PortForwards>) -> S
     }
 }
 
+/// Returns the request that starts the existing sandbox of the spec with the spec's ports and
+/// environment variables, and the git identity.
+fn existing_start_request(
+    spec: &SandboxSpec,
+    workspace: &Path,
+    git_identity: Option<GitIdentity>,
+) -> StartSandboxRequest {
+    StartSandboxRequest {
+        env: Some(env_vars(spec.env.clone())),
+        git_identity,
+        ..start_request(&spec.name, workspace, Some(port_forwards(&spec.ports)))
+    }
+}
+
 /// Sends the start request when the sandbox exists, waiting while it's starting. Returns the
 /// daemon's response, or `None` when the sandbox doesn't exist.
 async fn start_if_exists(
@@ -451,11 +466,15 @@ async fn start_existing_sandbox(
 }
 
 /// Builds a start request from the spec, filling in the default image, resources, init, mise,
-/// volumes and clipboard.
+/// volumes and clipboard, with the git identity.
 /// The workspace and the extra mounts are mounted into the sandbox when it's created. The
 /// workspace holds the spec file, so relative mount host paths resolve against it. Fails when a
 /// mount host path isn't an existing directory.
-fn build_start_request(spec: SandboxSpec, workspace: &Path) -> Result<StartSandboxRequest> {
+fn build_start_request(
+    spec: SandboxSpec,
+    workspace: &Path,
+    git_identity: Option<GitIdentity>,
+) -> Result<StartSandboxRequest> {
     let resources = spec.resources.unwrap_or_default();
     let mounts = resolve_mounts(
         spec.mounts.unwrap_or_default(),
@@ -483,6 +502,7 @@ fn build_start_request(spec: SandboxSpec, workspace: &Path) -> Result<StartSandb
         mounts,
         clipboard: Some(spec.clipboard.unwrap_or(false)),
         env: Some(env_vars(spec.env)),
+        git_identity,
     })
 }
 
@@ -1764,9 +1784,46 @@ mod tests {
     fn start_request_carries_workspace() {
         let spec = firebrick_spec::default_spec("dev".to_string());
 
-        let request = build_start_request(spec, Path::new("/home/user/project")).unwrap();
+        let request = build_start_request(spec, Path::new("/home/user/project"), None).unwrap();
 
         assert_eq!(request.workspace, "/home/user/project");
+    }
+
+    fn identity() -> GitIdentity {
+        GitIdentity {
+            name: Some("Ada Lovelace".to_string()),
+            email: Some("ada@example.com".to_string()),
+        }
+    }
+
+    #[test]
+    fn start_request_carries_the_git_identity() {
+        let spec = firebrick_spec::default_spec("dev".to_string());
+
+        let request =
+            build_start_request(spec, Path::new("/home/user/project"), Some(identity())).unwrap();
+
+        assert_eq!(request.git_identity, Some(identity()));
+    }
+
+    #[test]
+    fn existing_start_request_carries_the_git_identity_ports_and_env() {
+        let mut spec = firebrick_spec::default_spec("dev".to_string());
+        spec.env = BTreeMap::from([("A".to_string(), "1".to_string())]);
+
+        let request =
+            existing_start_request(&spec, Path::new("/home/user/project"), Some(identity()));
+
+        assert_eq!(request.git_identity, Some(identity()));
+        assert_eq!(request.ports, Some(port_forwards(&spec.ports)));
+        assert_eq!(request.env, Some(env_vars(spec.env)));
+    }
+
+    #[test]
+    fn named_start_request_carries_no_git_identity() {
+        let request = start_request("dev", Path::new(""), None);
+
+        assert_eq!(request.git_identity, None);
     }
 
     #[test]
@@ -1778,8 +1835,12 @@ mod tests {
         )
         .unwrap();
 
-        let request =
-            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
+        let request = build_start_request(
+            read_spec_file(dir.path()).unwrap().unwrap(),
+            dir.path(),
+            None,
+        )
+        .unwrap();
         let resources = request.resources.unwrap();
 
         assert_eq!(request.image, "alpine:3.22");
@@ -1798,8 +1859,12 @@ mod tests {
         )
         .unwrap();
 
-        let request =
-            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
+        let request = build_start_request(
+            read_spec_file(dir.path()).unwrap().unwrap(),
+            dir.path(),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(
             request.network,
@@ -1826,8 +1891,12 @@ mod tests {
         )
         .unwrap();
 
-        let request =
-            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
+        let request = build_start_request(
+            read_spec_file(dir.path()).unwrap().unwrap(),
+            dir.path(),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(
             request.ports,
@@ -1855,8 +1924,12 @@ mod tests {
         )
         .unwrap();
 
-        let request =
-            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
+        let request = build_start_request(
+            read_spec_file(dir.path()).unwrap().unwrap(),
+            dir.path(),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(
             request.env,
@@ -1873,8 +1946,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(SPEC_FILE_NAME), "name: dev\n").unwrap();
 
-        let request =
-            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
+        let request = build_start_request(
+            read_spec_file(dir.path()).unwrap().unwrap(),
+            dir.path(),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(request.env, Some(EnvVars::default()));
     }
@@ -1900,8 +1977,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(SPEC_FILE_NAME), "name: dev\n").unwrap();
 
-        let request =
-            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
+        let request = build_start_request(
+            read_spec_file(dir.path()).unwrap().unwrap(),
+            dir.path(),
+            None,
+        )
+        .unwrap();
         let resources = request.resources.unwrap();
         let defaults = firebrick_spec::SandboxResourcesSpec::default();
 
@@ -1929,8 +2010,12 @@ mod tests {
         )
         .unwrap();
 
-        let request =
-            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
+        let request = build_start_request(
+            read_spec_file(dir.path()).unwrap().unwrap(),
+            dir.path(),
+            None,
+        )
+        .unwrap();
         let settings = new_sandbox_settings(&request, NetworkSpec::default());
 
         assert_eq!(request.clipboard, Some(true));
@@ -1950,7 +2035,8 @@ mod tests {
         .unwrap();
 
         let request =
-            build_start_request(read_spec_file(&project).unwrap().unwrap(), &project).unwrap();
+            build_start_request(read_spec_file(&project).unwrap().unwrap(), &project, None)
+                .unwrap();
 
         assert_eq!(
             request.mounts,
@@ -1981,7 +2067,8 @@ mod tests {
         )
         .unwrap();
         let request =
-            build_start_request(read_spec_file(&project).unwrap().unwrap(), &project).unwrap();
+            build_start_request(read_spec_file(&project).unwrap().unwrap(), &project, None)
+                .unwrap();
 
         let settings = new_sandbox_settings(&request, NetworkSpec::default());
 
@@ -2007,7 +2094,11 @@ mod tests {
         )
         .unwrap();
 
-        let result = build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path());
+        let result = build_start_request(
+            read_spec_file(dir.path()).unwrap().unwrap(),
+            dir.path(),
+            None,
+        );
 
         assert!(result.is_err());
     }
