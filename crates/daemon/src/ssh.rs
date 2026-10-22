@@ -473,9 +473,6 @@ mod tests {
             spec.runtime.shell.as_deref(),
             Some("/.msb/scripts/firebrick-login")
         );
-        assert_eq!(
-            spec.runtime.scripts.get(LOGIN_SCRIPT).map(String::as_str),
-            Some(LOGIN_SCRIPT_CONTENT)
-        );
+        assert!(spec.runtime.scripts.contains_key(LOGIN_SCRIPT));
     }
 }

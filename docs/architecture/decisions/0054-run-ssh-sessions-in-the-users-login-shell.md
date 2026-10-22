@@ -47,5 +47,10 @@ session. It's POSIX `sh` and reads `/etc/passwd` itself, so it needs neither
   sandbox, so sandboxes created before this change keep `/bin/sh` until they're
   recreated, for example with `fbk rm` and `fbk start`, or by `fbk upgrade` when
   their image has a new version.
+- The fallback to `/bin/sh` is silent, unlike `sshd`, which refuses the login
+  when the user's shell isn't executable. It keeps a sandbox with a broken
+  passwd entry reachable, as before this change, so it can be repaired over SSH.
+  A warning on stderr would end up in the output of commands that clients such
+  as editors parse, and the guest has no channel to the daemon's log.
 - An image that needs no SSH sessions still gets the script; it costs one small
   file.
