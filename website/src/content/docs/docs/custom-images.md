@@ -98,7 +98,9 @@ based on `firebrick-base` must:
   such as `/home/agent`. Images based on Ubuntu ship an `ubuntu` user with UID
   1000; remove it first.
 - Set `USER agent`. `fbk run` runs commands as the image's user, while SSH
-  always logs in as `agent`.
+  always logs in as `agent`. SSH sessions run in the login shell of `agent` in
+  `/etc/passwd`, with `SHELL` set to it, so give `agent` the shell you want,
+  such as `/bin/bash`.
 - Install `sudo` and allow `agent` to use it without a password, if agents
   should be able to install system packages.
 - Provide an executable `/sbin/init`, or set `init: false` in `.firebrick.yml`.

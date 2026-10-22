@@ -28,7 +28,8 @@ use firebrick_daemon::{env, mise, netlog, sandboxes, server};
 use firebrick_utils::ipc;
 use hyper_util::rt::TokioIo;
 use microsandbox::sandbox::{
-    OwnedVolumeStorage, RootfsSource, SandboxHandle, SandboxSpec, VolumeMount, VsockSocketType,
+    OwnedVolumeStorage, RootfsSource, SandboxHandle, SandboxSpec, SshOutput, VolumeMount,
+    VsockSocketType,
 };
 use microsandbox::snapshot::{Snapshot, SnapshotHandle};
 use microsandbox::{MicrosandboxError, MicrosandboxResult, Sandbox};
@@ -1436,6 +1437,83 @@ async fn attach_disconnect_ends_session() {
 
     daemon.stop().await;
     remove_sandbox(name).await;
+}
+
+/// Starts a sandbox, runs the shell command `prepare` in it with exec, then `command` over SSH
+/// as root, and returns the SSH output.
+async fn ssh_output_after(test: &str, prepare: &str, command: &str) -> SshOutput {
+    let name: &str = &sandbox_name(test);
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start(test).await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, name).await;
+
+    let sb = Sandbox::get(name)
+        .await
+        .expect("sandbox disappeared")
+        .connect()
+        .await
+        .expect("failed to connect to sandbox");
+    let prepared = sb
+        .exec("sh", ["-c", prepare])
+        .await
+        .expect("failed to prepare the sandbox");
+    assert_eq!(prepared.status().code, 0, "{prepared:?}");
+    let output = sb
+        .ssh()
+        .connect()
+        .await
+        .expect("failed to connect over SSH")
+        .exec(command)
+        .await
+        .expect("failed to run command over SSH");
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    output
+}
+
+#[tokio::test]
+async fn ssh_command_runs_in_the_login_shell_with_shell_exported() {
+    // root's login shell in the test image is /bin/bash; BASH_VERSION is only set in bash.
+    let output = ssh_output_after(
+        "ssh-shell",
+        "true",
+        r#"printenv SHELL; [ -n "$BASH_VERSION" ] && echo bash"#,
+    )
+    .await;
+
+    assert_eq!(output.status, 0, "{output:?}");
+    assert_eq!(output.stdout, "/bin/bash\nbash\n", "{output:?}");
+}
+
+#[tokio::test]
+async fn ssh_falls_back_to_sh_without_an_executable_login_shell() {
+    let output = ssh_output_after(
+        "ssh-shell-fallback",
+        "usermod --shell /nonexistent root",
+        r#"printenv SHELL; [ -z "$BASH_VERSION" ] && echo not-bash"#,
+    )
+    .await;
+
+    assert_eq!(output.status, 0, "{output:?}");
+    assert_eq!(output.stdout, "/bin/sh\nnot-bash\n", "{output:?}");
+}
+
+#[tokio::test]
+async fn ssh_session_without_a_command_starts_a_login_shell() {
+    // An interactive SSH session runs the login script without arguments; feed it a script.
+    let output = ssh_output_after(
+        "ssh-shell-login",
+        "true",
+        "echo 'shopt -q login_shell && echo login' | /.msb/scripts/firebrick-login",
+    )
+    .await;
+
+    assert_eq!(output.status, 0, "{output:?}");
+    assert_eq!(output.stdout, "login\n", "{output:?}");
 }
 
 #[tokio::test]

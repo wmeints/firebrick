@@ -1088,6 +1088,14 @@ sequenceDiagram
     CLI-->>SSHC: Exit 0
 ```
 
+microsandbox's SSH server runs each session with the sandbox's shell, which
+`fbkd` sets to the `firebrick-login` script at `/.msb/scripts/firebrick-login`.
+The script looks up the session user's login shell in `/etc/passwd`, exports it
+as `SHELL` and execs it, with `-c <command>` for a command or `-l` for an
+interactive session, as `sshd` would
+([ADR 0054](decisions/0054-run-ssh-sessions-in-the-users-login-shell.md)).
+Clients such as the Codex desktop app require `SHELL`.
+
 The SSH client sends its own `TERM` when it requests a PTY, and microsandbox
 sets it in the guest, so the daemon can't choose it. The `firebrick-base` image
 handles this in `/etc/bash.bashrc` instead: interactive shells switch to

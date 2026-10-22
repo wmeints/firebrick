@@ -33,6 +33,11 @@ command tunnels the connection through the daemon's socket to the SSH server in
 the sandbox, so no SSH port is published on your host. Connecting to a stopped
 sandbox starts it.
 
+SSH sessions run in the login shell of the `agent` user, with `SHELL` set to it,
+as with `sshd`. Clients such as the Codex desktop app require `SHELL`. A sandbox
+created by Firebrick 0.9 or earlier runs SSH sessions in `/bin/sh` without
+`SHELL`; recreate it with `fbk rm --force` and `fbk start` to fix that.
+
 The sandbox's SSH server doesn't support agent forwarding (`ssh -A`), so your
 SSH keys stay on the host. Use git over HTTPS with a secret instead; see
 [Git over HTTPS](/docs/secrets/#git-over-https).
