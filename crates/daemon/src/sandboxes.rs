@@ -6,7 +6,7 @@
 use crate::clipboard::{self, Clipboards, HostClipboard};
 use crate::env;
 use crate::forward::{self, ForwardReport, Forwards, SshConnector};
-use crate::git_identity::{self, GitIdentity};
+use crate::git::{self, GitIdentity};
 use crate::mise::{self, MiseError, MiseUpdate};
 use crate::netlog::{NetLogs, Record};
 use crate::network;
@@ -1169,7 +1169,7 @@ impl SandboxManager {
         self.relays.ensure(&sb).await;
 
         if let Some(identity) = request.git_identity {
-            git_identity::apply(&sb, identity).await;
+            git::apply(&sb, identity).await;
         }
     }
 

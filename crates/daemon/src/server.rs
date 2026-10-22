@@ -20,7 +20,7 @@ use crate::api::{
 };
 use crate::clipboard::{HostClipboard, HostTools};
 use crate::forward::ForwardFailure;
-use crate::git_identity;
+use crate::git;
 use crate::mise::MiseUpdate;
 use crate::netlog::{ConnectionEntry, DnsEntry, Protocol, Record};
 use crate::network;
@@ -142,8 +142,8 @@ fn start_sandbox_from<'a>(
 }
 
 /// Reads the git identity of a request.
-fn git_identity(identity: &GitIdentity) -> git_identity::GitIdentity<'_> {
-    git_identity::GitIdentity {
+fn git_identity(identity: &GitIdentity) -> git::GitIdentity<'_> {
+    git::GitIdentity {
         name: identity.name.as_deref(),
         email: identity.email.as_deref(),
     }

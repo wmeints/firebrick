@@ -24,7 +24,7 @@ use crate::api::{
     upgrade_sandbox_response,
 };
 use crate::approval::{Approver, Clipboard, Settings};
-use crate::git_identity;
+use crate::git;
 use crate::progress::{MiseProgressView, PullProgressView};
 use crate::table;
 
@@ -220,7 +220,7 @@ pub(crate) async fn ensure_running(
 ) -> Result<SandboxStarted> {
     check_workspace_owner(&spec.name, workspace, client).await?;
 
-    let git_identity = git_identity::host_identity(workspace).await;
+    let git_identity = git::host_identity(workspace).await;
     let request = existing_start_request(&spec, workspace, git_identity.clone());
     let started = match start_if_exists(request, client).await? {
         Some(started) => started,

@@ -2,7 +2,7 @@ pub mod approval;
 pub mod client;
 #[cfg(test)]
 mod fake_daemon;
-pub mod git_identity;
+pub mod git;
 pub mod init;
 pub mod manage;
 pub mod network;
