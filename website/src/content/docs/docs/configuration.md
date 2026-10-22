@@ -307,12 +307,14 @@ $ fbk run -- git config --global --get user.email
 ada@example.com
 ```
 
-When you change your identity on the host, the sandbox gets it on the next `fbk`
-command. A key you haven't set on the host stays as it is in the sandbox, and so
-does the identity when `fbk start <name>` starts the sandbox, because it has no
-project directory to read it in. A value with a line break isn't copied, and
-`fbk` says so. To commit as someone else in one repository inside the sandbox,
-set a repository-local identity there; it wins over the global one:
+When you change your identity on the host, the sandbox gets it the next time you
+run `fbk start` or `fbk run` in the project directory. A key you haven't set on
+the host stays as it is in the sandbox, and so does the identity when `fbk start
+<name>` starts the sandbox, because it has no project directory to read it in. A
+value with a line break isn't copied, and neither is anything when git can't
+read your config, for example because of a syntax error; `fbk` says so. To
+commit as someone else in one repository inside the sandbox, set a
+repository-local identity there; it wins over the global one:
 
 ```sh
 fbk run -- git -C /workspaces/my-project config user.email agent@example.com

@@ -412,24 +412,28 @@ carries the host's git identity for that workspace in `git_identity`. fbk reads
 it with `git -C <workspace> config --get user.name` and `user.email`, so
 `includeIf` and a repository-local identity on the host apply. It leaves out a
 key that is unset or that it can't read because `git` isn't installed, and, with
-a warning on stderr, a value with a newline or NUL, which git can't store on one
+a warning on stderr, a key git fails to read otherwise, for example on a broken
+config file, and a value with a newline or NUL, which git can't store on one
 line. `fbk start <name>` has no workspace and sends no identity, and an SSH
 connection that starts a stopped sandbox starts it through the tunnel without
 one; the sandbox keeps the identity on its disk from the last start that set it.
 
 Once the sandbox runs, fbkd runs `git config --global user.name <value>` and
-`git config --global user.email <value>` as the image's default user, one exec
-per key and without a shell, so a value such as `O'Brien; $(id)` is stored
-literally in the `agent` user's `~/.gitconfig`. It does this on every start that
-carries an identity: when it creates the sandbox, when a stopped sandbox starts
-and when the sandbox already runs. A changed host identity reaches the sandbox
-on the next fbk command, and a sandbox whose root filesystem `fbk upgrade`
-replaced gets it back on its next start, so nothing is stored with the sandbox.
-A request without `git_identity`, or without one of the keys, leaves that key in
-the sandbox alone; fbkd never unsets a value. A start that fails, for example
-because `mise install` failed, doesn't set it. The `/etc/gitconfig` with the
-GitHub credential helper stays as it is, and a repository-local identity inside
-the sandbox still wins over the global one.
+`git config --global user.email <value>` as the image's default user, over the
+connection it also starts the URL relay with, one exec per key, in `/` and
+without a shell, so a value such as `O'Brien; $(id)` is stored literally in the
+`agent` user's `~/.gitconfig`. In the workspace, git would also read the config
+of its repository, which fails while the host rewrites it. It does this on every
+start that carries an identity: when it creates the sandbox, when a stopped
+sandbox starts and when the sandbox already runs. A changed host identity
+reaches the sandbox on the next `fbk start` or `fbk run` in the workspace, and a
+sandbox whose root filesystem `fbk upgrade` replaced gets it back on its next
+start, so nothing is stored with the sandbox. A request without `git_identity`,
+or without one of the keys, leaves that key in the sandbox alone; fbkd never
+unsets a value. A start that fails, for example because `mise install` failed,
+doesn't set it. The `/etc/gitconfig` with the GitHub credential helper stays as
+it is, and a repository-local identity inside the sandbox still wins over the
+global one.
 
 Only `user.name` and `user.email` are copied, and only from the host to the
 sandbox: other host git config, such as aliases, hooks, `core.sshCommand` or

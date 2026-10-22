@@ -588,11 +588,7 @@ impl SandboxManager {
 
         sync_ssh_config().await;
         let env_pending_restart = result?;
-        self.start_relay(request.name).await;
-
-        if let Some(identity) = request.git_identity {
-            git_identity::apply(request.name, identity).await;
-        }
+        self.set_up_running(request).await;
 
         Ok(Started {
             forwards: self.open_forwards(request.name, request.ports).await,
@@ -1150,9 +1146,30 @@ impl SandboxManager {
     /// Connects to the running sandbox and starts its URL relay unless it has one, logging a
     /// warning when it can't connect.
     async fn start_relay(&self, name: &str) {
-        match async { Sandbox::get(name).await?.connect().await }.await {
+        match connect(name).await {
             Ok(sb) => self.relays.ensure(&sb).await,
             Err(err) => tracing::warn!("failed to start the URL relay of sandbox {name}: {err}"),
+        }
+    }
+
+    /// Connects to the sandbox a start request left running, starts its URL relay unless it has
+    /// one and gives it the request's git identity, logging a warning when it can't connect.
+    async fn set_up_running(&self, request: StartSandbox<'_>) {
+        let sb = match connect(request.name).await {
+            Ok(sb) => sb,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to start the URL relay and set the git identity of sandbox {}: {err}",
+                    request.name
+                );
+                return;
+            }
+        };
+
+        self.relays.ensure(&sb).await;
+
+        if let Some(identity) = request.git_identity {
+            git_identity::apply(&sb, identity).await;
         }
     }
 
@@ -2290,6 +2307,11 @@ async fn assign_hostname(
     }
 
     Ok(())
+}
+
+/// Connects to the running sandbox.
+async fn connect(name: &str) -> Result<Sandbox, MicrosandboxError> {
+    Sandbox::get(name).await?.connect().await
 }
 
 /// Returns every sandbox, following the list cursor across pages.

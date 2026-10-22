@@ -126,9 +126,13 @@ C4Component
   [Outdated sandbox images](08-crosscutting-concepts.md#outdated-sandbox-images)).
 - `git_identity` - Reads the host's `user.name` and `user.email` with `git -C
   <workspace> config --get`, so `includeIf` and repository-local identities
-  apply, for the `git_identity` of a start request. A key that is unset, that
-  can't be read because `git` is missing, or whose value isn't UTF-8 or has a
-  newline or NUL is left out, the last two with a warning on stderr.
+  apply, for the `git_identity` of a start request. It runs git without the
+  `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and `GIT_INDEX_FILE` that git
+  sets for its hooks, so `fbk` run from a hook still reads the workspace. A key
+  that is unset (`git config` exits 1) or that can't be read because `git` is
+  missing is left out silently. A key git fails to read otherwise, for example
+  on a broken config file, or whose value isn't UTF-8 or has a newline or NUL is
+  left out with a warning on stderr, the first with git's error.
 - `session` - Runs a command in the sandbox through the `Attach` stream. It
   makes sure the sandbox runs first, puts the terminal in raw mode and forwards
   input, output and window resizes.

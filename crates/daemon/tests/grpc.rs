@@ -1797,7 +1797,7 @@ async fn new_sandbox_has_the_env_variables_as_written() {
 }
 
 /// Image with git, for the git identity tests.
-const GIT_IMAGE: &str = "buildpack-deps:trixie-scm";
+const GIT_IMAGE: &str = "buildpack-deps:resolute-scm";
 
 /// Returns the identity with the name and email.
 fn identity(name: Option<&str>, email: Option<&str>) -> GitIdentity {
@@ -1833,8 +1833,11 @@ async fn global_identity(name: &str) -> (String, String) {
 
 /// Returns the value of the key in the default user's global git config.
 async fn global_git_config(sb: &Sandbox, key: &str) -> String {
+    // Outside the workspace, whose repository git would read too.
     let output = sb
-        .exec("git", ["config", "--global", "--get", key])
+        .exec_with("git", |exec| {
+            exec.args(["config", "--global", "--get", key]).cwd("/")
+        })
         .await
         .expect("failed to run git");
 
@@ -1895,11 +1898,26 @@ async fn start_succeeds_with_a_git_identity_when_the_image_has_no_git() {
         ..start_request(name)
     };
     let started = start(&mut client, request).await;
+    let status = get_sandbox(&mut client, name).await.status();
+    let sb = Sandbox::get(name)
+        .await
+        .expect("sandbox disappeared")
+        .connect()
+        .await
+        .expect("failed to connect to sandbox");
+    let has_git = sb
+        .exec("sh", ["-c", "command -v git"])
+        .await
+        .expect("failed to look for git")
+        .status()
+        .success;
 
     daemon.stop().await;
     remove_sandbox(name).await;
 
-    assert!(started.is_ok(), "{started:?}");
+    assert!(!has_git, "{TEST_IMAGE} has git");
+    started.expect("the start failed");
+    assert_eq!(status, SandboxStatus::Running);
 }
 
 /// Prints the variables of the sync test, then the exit code of printing the removed one, then

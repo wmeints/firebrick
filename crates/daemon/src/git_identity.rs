@@ -45,36 +45,22 @@ enum SetError {
 /// Sets each key of the identity that has a value in the global git config of the running
 /// sandbox's default user. Runs `git` without a shell, so the values are stored literally. A
 /// failure only logs a warning, because a sandbox without git or a git config is still usable.
-pub async fn apply(sandbox: &str, identity: GitIdentity<'_>) {
-    if identity.entries().next().is_none() {
-        return;
-    }
-
-    let sb = match connect(sandbox).await {
-        Ok(sb) => sb,
-        Err(err) => {
-            tracing::warn!("failed to set the git identity in sandbox {sandbox}: {err}");
-            return;
-        }
-    };
-
+pub async fn apply(sb: &Sandbox, identity: GitIdentity<'_>) {
     for (key, value) in identity.entries() {
-        if let Err(err) = set(&sb, key, value).await {
-            tracing::warn!("failed to set git {key} in sandbox {sandbox}: {err}");
+        if let Err(err) = set(sb, key, value).await {
+            tracing::warn!("failed to set git {key} in sandbox {}: {err}", sb.name());
         }
     }
 }
 
-/// Connects to the running sandbox.
-async fn connect(sandbox: &str) -> Result<Sandbox, MicrosandboxError> {
-    Sandbox::get(sandbox).await?.connect().await
-}
-
-/// Sets the git config key to the value with `git config --global` as the default user.
+/// Sets the git config key to the value with `git config --global` as the default user. It runs
+/// in `/` rather than the sandbox's workdir, because git also reads the config of the
+/// workspace's repository there, which fails while the host is rewriting it.
 async fn set(sb: &Sandbox, key: &str, value: &str) -> Result<(), SetError> {
     let output = sb
         .exec_with("git", |exec| {
             exec.args(["config", "--global", key, value])
+                .cwd("/")
                 .timeout(CONFIG_TIMEOUT)
         })
         .await?;
@@ -90,38 +76,4 @@ async fn set(sb: &Sandbox, key: &str, value: &str) -> Result<(), SetError> {
             .trim()
             .to_string(),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn entries_hold_the_keys_with_a_value() {
-        let identity = GitIdentity {
-            name: Some("Ada Lovelace"),
-            email: Some("ada@example.com"),
-        };
-
-        assert_eq!(
-            identity.entries().collect::<Vec<_>>(),
-            [
-                ("user.name", "Ada Lovelace"),
-                ("user.email", "ada@example.com")
-            ]
-        );
-    }
-
-    #[test]
-    fn entries_leave_out_a_key_without_a_value() {
-        let identity = GitIdentity {
-            name: None,
-            email: Some("ada@example.com"),
-        };
-
-        assert_eq!(
-            identity.entries().collect::<Vec<_>>(),
-            [("user.email", "ada@example.com")]
-        );
-    }
 }

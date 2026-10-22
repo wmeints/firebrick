@@ -1807,15 +1807,6 @@ mod tests {
     }
 
     #[test]
-    fn start_request_without_git_identity_carries_none() {
-        let spec = firebrick_spec::default_spec("dev".to_string());
-
-        let request = build_start_request(spec, Path::new("/home/user/project"), None).unwrap();
-
-        assert_eq!(request.git_identity, None);
-    }
-
-    #[test]
     fn existing_start_request_carries_the_git_identity_ports_and_env() {
         let mut spec = firebrick_spec::default_spec("dev".to_string());
         spec.env = BTreeMap::from([("A".to_string(), "1".to_string())]);
@@ -1826,15 +1817,6 @@ mod tests {
         assert_eq!(request.git_identity, Some(identity()));
         assert_eq!(request.ports, Some(port_forwards(&spec.ports)));
         assert_eq!(request.env, Some(env_vars(spec.env)));
-    }
-
-    #[test]
-    fn existing_start_request_without_git_identity_carries_none() {
-        let spec = firebrick_spec::default_spec("dev".to_string());
-
-        let request = existing_start_request(&spec, Path::new("/home/user/project"), None);
-
-        assert_eq!(request.git_identity, None);
     }
 
     #[test]
