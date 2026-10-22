@@ -6,13 +6,14 @@ use crate::api::sandbox_management_service_server::{
 };
 use crate::api::{
     AttachRequest, AttachResponse, AttachStart, EnvVars, ForwardPortRequest, ForwardPortResponse,
-    GetSandboxRequest, GetSandboxResponse, ImagePullProgress, ListNetworkActivityRequest,
-    ListNetworkActivityResponse, ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest,
-    ListSecretsResponse, MiseInstallProgress, Mount, NetworkActivity, NetworkActivityKind,
-    NetworkPolicy, PortForward, PortForwardFailure, PortForwards, RemovePortRequest,
-    RemovePortResponse, RemoveSandboxRequest, RemoveSandboxResponse, RemoveSecretRequest,
-    RemoveSecretResponse, SandboxResources, SandboxStarted, SandboxStatus, SandboxSummary,
-    SandboxUpgraded, SecretSummary, SetSecretRequest, SetSecretResponse, SshTunnelRequest,
+    GetSandboxRequest, GetSandboxResponse, GetVersionRequest, GetVersionResponse,
+    ImagePullProgress, ListNetworkActivityRequest, ListNetworkActivityResponse,
+    ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse,
+    MiseInstallProgress, Mount, NetworkActivity, NetworkActivityKind, NetworkPolicy, PortForward,
+    PortForwardFailure, PortForwards, RemovePortRequest, RemovePortResponse, RemoveSandboxRequest,
+    RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse, SandboxResources,
+    SandboxStarted, SandboxStatus, SandboxSummary, SandboxUpgraded, SecretSummary,
+    SetSecretRequest, SetSecretResponse, ShutdownRequest, ShutdownResponse, SshTunnelRequest,
     SshTunnelResponse, StartSandboxRequest, StartSandboxResponse, StopSandboxRequest,
     StopSandboxResponse, UpdateNetworkRequest, UpdateNetworkResponse, UpgradeSandboxRequest,
     UpgradeSandboxResponse, attach_request, ssh_tunnel_request, start_sandbox_response,
@@ -43,11 +44,12 @@ use std::io;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tonic::codegen::tokio_stream::Stream;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Server;
@@ -70,6 +72,8 @@ pub enum ServerError {
 pub struct FirebrickServer {
     // Shared with the tasks that start sandboxes, so a start finishes when its client is gone.
     sandboxes: Arc<SandboxManager>,
+    sessions: Sessions,
+    shutdown: Arc<Notify>,
 }
 
 impl FirebrickServer {
@@ -82,7 +86,16 @@ impl FirebrickServer {
     ) -> Self {
         Self {
             sandboxes: Arc::new(SandboxManager::new(secrets, opener, clipboard)),
+            sessions: Sessions::default(),
+            shutdown: Arc::new(Notify::new()),
         }
+    }
+
+    /// Returns a future that completes when a client asks the daemon to shut down with the
+    /// `Shutdown` request. It also completes for a request made before it's awaited.
+    pub fn shutdown_requested(&self) -> impl Future<Output = ()> + use<> {
+        let shutdown = Arc::clone(&self.shutdown);
+        async move { shutdown.notified().await }
     }
 
     /// Listens for the network logs and clipboards of the existing sandboxes that have their
@@ -90,6 +103,56 @@ impl FirebrickServer {
     /// it was down.
     pub async fn restore_listeners(&self) {
         self.sandboxes.restore_listeners().await;
+    }
+}
+
+/// Counts the open streams that stopping the daemon would cut. Each of them holds a
+/// [`Session`] from [`Sessions::open`].
+#[derive(Clone, Default)]
+struct Sessions(Arc<AtomicUsize>);
+
+impl Sessions {
+    /// Opens a session, which counts until it's dropped.
+    fn open(&self) -> Session {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Session(Arc::clone(&self.0))
+    }
+
+    /// Returns the number of open sessions.
+    fn count(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// An open session of [`Sessions`], closed when it's dropped.
+struct Session(Arc<AtomicUsize>);
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// A response stream that keeps its session open until the stream is dropped, which happens
+/// when it ends or its client is gone.
+struct Tracked<S> {
+    stream: S,
+    _session: Session,
+}
+
+impl<S: Stream + Unpin> Stream for Tracked<S> {
+    type Item = S::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<S::Item>> {
+        Pin::new(&mut self.stream).poll_next(cx)
+    }
+}
+
+/// Returns why the daemon refuses to shut down while `count` sessions are open.
+fn open_sessions_message(count: usize) -> String {
+    match count {
+        1 => "1 session is open".to_string(),
+        _ => format!("{count} sessions are open"),
     }
 }
 
@@ -404,9 +467,11 @@ impl SandboxManagementService for FirebrickServer {
         let request_data = request.into_inner();
         let parsed = ParsedStart::of(&request_data)?;
         let sandboxes = Arc::clone(&self.sandboxes);
+        let session = self.sessions.open();
         let (tx, rx) = mpsc::channel(16);
 
         tokio::spawn(async move {
+            let _session = session;
             let progress_tx = tx.clone();
             let result = sandboxes
                 .start(
@@ -468,9 +533,11 @@ impl SandboxManagementService for FirebrickServer {
         check_name(&request_data.name)?;
         check_image(&request_data.image)?;
         let sandboxes = Arc::clone(&self.sandboxes);
+        let session = self.sessions.open();
         let (tx, rx) = mpsc::channel(16);
 
         tokio::spawn(async move {
+            let _session = session;
             let result = sandboxes
                 .upgrade(&request_data.name, &request_data.image, |progress| {
                     // Progress is best-effort: drop it when the client is slow or gone.
@@ -659,6 +726,7 @@ impl SandboxManagementService for FirebrickServer {
         &self,
         request: Request<Streaming<AttachRequest>>,
     ) -> Result<Response<Self::AttachStream>, Status> {
+        let opened = self.sessions.open();
         let mut inbound = request.into_inner();
         let start = attach_start(&mut inbound).await?;
         check_name(&start.name)?;
@@ -670,9 +738,12 @@ impl SandboxManagementService for FirebrickServer {
             args: start.args,
             size,
         };
-        let outbound = session::attach(sb, inbound, command).await?;
+        let stream = session::attach(sb, inbound, command).await?;
 
-        Ok(Response::new(Box::pin(outbound)))
+        Ok(Response::new(Box::pin(Tracked {
+            stream,
+            _session: opened,
+        })))
     }
 
     /// Serves an SSH connection to a sandbox over the stream, starting the sandbox when needed.
@@ -680,12 +751,44 @@ impl SandboxManagementService for FirebrickServer {
         &self,
         request: Request<Streaming<SshTunnelRequest>>,
     ) -> Result<Response<Self::SshTunnelStream>, Status> {
+        let opened = self.sessions.open();
         let mut inbound = request.into_inner();
         let hostname = tunnel_hostname(&mut inbound).await?;
         let sb = self.sandboxes.connect_by_hostname(&hostname).await?;
-        let outbound = tunnel::open(sb, inbound, hostname).await?;
+        let stream = tunnel::open(sb, inbound, hostname).await?;
 
-        Ok(Response::new(Box::pin(outbound)))
+        Ok(Response::new(Box::pin(Tracked {
+            stream,
+            _session: opened,
+        })))
+    }
+
+    /// Returns the package version of the daemon.
+    async fn get_version(
+        &self,
+        _: Request<GetVersionRequest>,
+    ) -> Result<Response<GetVersionResponse>, Status> {
+        Ok(Response::new(GetVersionResponse {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        }))
+    }
+
+    /// Completes [`FirebrickServer::shutdown_requested`], so the daemon stops serving once the
+    /// requests in flight are done. Fails with `FailedPrecondition` while a session is open.
+    async fn shutdown(
+        &self,
+        _: Request<ShutdownRequest>,
+    ) -> Result<Response<ShutdownResponse>, Status> {
+        let open = self.sessions.count();
+
+        if open > 0 {
+            return Err(Status::failed_precondition(open_sessions_message(open)));
+        }
+
+        tracing::info!("shutting down on request");
+        self.shutdown.notify_one();
+
+        Ok(Response::new(ShutdownResponse {}))
     }
 }
 
@@ -787,7 +890,8 @@ const RECREATION_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Reopens the port forwards of the sandboxes that are running, listens for the network logs
 /// and clipboards of the sandboxes and removes the upgrade probes an earlier daemon left behind,
-/// then serves the gRPC API on the socket until SIGINT or SIGTERM is received, opening the URLs
+/// then serves the gRPC API on the socket until SIGINT or SIGTERM is received or a client sends
+/// a `Shutdown` request, opening the URLs
 /// from sandboxes in the host's browser and reading the host clipboard with its desktop's
 /// tools. Afterwards, waits up to [`RECREATION_TIMEOUT`] for the updates and upgrades that are
 /// still running and writes the network records a last time. The caller makes sure no other
@@ -799,11 +903,18 @@ pub async fn run(socket_path: &Path, secrets: SecretStore) -> Result<(), ServerE
         Arc::new(HostTools::from_env()),
     );
     let sandboxes = Arc::clone(&service.sandboxes);
+    let requested = service.shutdown_requested();
     sandboxes.restore_forwards().await;
     sandboxes.restore_listeners().await;
     sandboxes.remove_stale_probes().await;
 
-    let served = serve(socket_path, service, shutdown_signal()).await;
+    let shutdown = async {
+        tokio::select! {
+            () = shutdown_signal() => {}
+            () = requested => {}
+        }
+    };
+    let served = serve(socket_path, service, shutdown).await;
 
     if !sandboxes.finish_recreations(RECREATION_TIMEOUT).await {
         tracing::warn!("stopped while a sandbox was still being updated or upgraded");
@@ -1634,6 +1745,84 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         !ipc::exists(path).await
+    }
+
+    #[tokio::test]
+    async fn get_version_returns_the_package_version() {
+        let response = name_server()
+            .get_version(Request::new(GetVersionRequest {}))
+            .await
+            .unwrap();
+
+        assert_eq!(response.into_inner().version, env!("CARGO_PKG_VERSION"));
+    }
+
+    /// Serves a server on the endpoint until a client asks it to shut down, returning its
+    /// sessions so a test can wait for one to open.
+    fn serve_until_requested(
+        path: PathBuf,
+    ) -> (Sessions, tokio::task::JoinHandle<Result<(), ServerError>>) {
+        let server = name_server();
+        let sessions = server.sessions.clone();
+        let requested = server.shutdown_requested();
+        let handle = tokio::spawn(async move { serve(&path, server, requested).await });
+
+        (sessions, handle)
+    }
+
+    #[tokio::test]
+    async fn shutdown_stops_an_idle_daemon_and_removes_its_endpoint() {
+        let path = test_endpoint("shutdown-request");
+        let (_, handle) = serve_until_requested(path.clone());
+        wait_for_socket(&path).await;
+
+        let result = client(path.clone())
+            .await
+            .shutdown(ShutdownRequest {})
+            .await;
+
+        assert!(result.is_ok(), "shutdown failed: {result:?}");
+        handle.await.unwrap().unwrap();
+        assert!(disappears(&path).await);
+    }
+
+    /// Attaches with the requests from `rx`.
+    async fn attach_from(
+        mut daemon: SandboxManagementServiceClient<Channel>,
+        rx: mpsc::Receiver<AttachRequest>,
+    ) -> Result<Response<Streaming<AttachResponse>>, Status> {
+        daemon.attach(ReceiverStream::new(rx)).await
+    }
+
+    /// Waits until `count` sessions are open.
+    async fn wait_for_sessions(sessions: &Sessions, count: usize) {
+        while sessions.count() != count {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_is_refused_while_a_session_is_open() {
+        let path = test_endpoint("shutdown-busy");
+        let (sessions, handle) = serve_until_requested(path.clone());
+        wait_for_socket(&path).await;
+        let mut daemon = client(path.clone()).await;
+
+        // An attach that never sends its start message keeps its session open.
+        let (input, rx) = mpsc::channel::<AttachRequest>(1);
+        let attach = tokio::spawn(attach_from(daemon.clone(), rx));
+        wait_for_sessions(&sessions, 1).await;
+        let refused = daemon.shutdown(ShutdownRequest {}).await.unwrap_err();
+
+        drop(input);
+        let _ = attach.await.unwrap();
+        wait_for_sessions(&sessions, 0).await;
+        let accepted = daemon.shutdown(ShutdownRequest {}).await;
+
+        assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(refused.message(), "1 session is open");
+        assert!(accepted.is_ok(), "shutdown failed: {accepted:?}");
+        handle.await.unwrap().unwrap();
     }
 
     #[cfg(unix)]

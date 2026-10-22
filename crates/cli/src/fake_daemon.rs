@@ -3,7 +3,9 @@
 //! changes it. It answers an upgrade to [`UPGRADED_IMAGE`] as done from [`OLD_IMAGE`], and an
 //! upgrade to any other image as up to date with it, so a test sees which image a command asks
 //! for. A daemon from [`serve_outdated`] reports its sandbox as running [`OLD_IMAGE`], with
-//! [`UPGRADED_IMAGE`] as the image an upgrade moves it to.
+//! [`UPGRADED_IMAGE`] as the image an upgrade moves it to. A daemon from [`serve_version`]
+//! reports a version and shuts down unless sessions are open; the others predate `GetVersion`
+//! and `Shutdown`, and answer both as unimplemented.
 
 use std::pin::Pin;
 use tokio::net::TcpListener;
@@ -18,13 +20,14 @@ use crate::api::sandbox_management_service_server::{
 };
 use crate::api::{
     AttachRequest, AttachResponse, ForwardPortRequest, ForwardPortResponse, GetSandboxRequest,
-    GetSandboxResponse, ListNetworkActivityRequest, ListNetworkActivityResponse,
-    ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse,
-    NetworkActivity, RemovePortRequest, RemovePortResponse, RemoveSandboxRequest,
-    RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse, SandboxUpgraded,
-    SetSecretRequest, SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
-    StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, UpdateNetworkRequest,
-    UpdateNetworkResponse, UpgradeSandboxRequest, UpgradeSandboxResponse, upgrade_sandbox_response,
+    GetSandboxResponse, GetVersionRequest, GetVersionResponse, ListNetworkActivityRequest,
+    ListNetworkActivityResponse, ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest,
+    ListSecretsResponse, NetworkActivity, RemovePortRequest, RemovePortResponse,
+    RemoveSandboxRequest, RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse,
+    SandboxUpgraded, SetSecretRequest, SetSecretResponse, ShutdownRequest, ShutdownResponse,
+    SshTunnelRequest, SshTunnelResponse, StartSandboxRequest, StartSandboxResponse,
+    StopSandboxRequest, StopSandboxResponse, UpdateNetworkRequest, UpdateNetworkResponse,
+    UpgradeSandboxRequest, UpgradeSandboxResponse, upgrade_sandbox_response,
 };
 
 type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
@@ -37,7 +40,8 @@ pub(crate) fn refusal(rpc: &str, sandbox: &str) -> String {
 
 /// A daemon with one sandbox, `name`, that mounts `workspace_host_path` and has recorded the
 /// network activity `activity`, or has no network log when it's `None`. The sandbox runs
-/// `image`, and `upgrade_image` when it's outdated.
+/// `image`, and `upgrade_image` when it's outdated. It reports `version`, or predates
+/// `GetVersion` and `Shutdown` when that's `None`, and has `open_sessions` sessions open.
 #[derive(Default)]
 struct FakeDaemon {
     name: String,
@@ -45,6 +49,8 @@ struct FakeDaemon {
     activity: Option<Vec<NetworkActivity>>,
     image: String,
     upgrade_image: String,
+    version: Option<String>,
+    open_sessions: usize,
 }
 
 /// Serves a fake daemon with one sandbox without network activity on a free local port and
@@ -84,8 +90,28 @@ pub(crate) async fn serve_outdated(
         activity: Some(Vec::new()),
         image: OLD_IMAGE.to_string(),
         upgrade_image: UPGRADED_IMAGE.to_string(),
+        ..Default::default()
     })
     .await
+}
+
+/// Serves a fake daemon without sandboxes that reports `version` and refuses to shut down
+/// while `open_sessions` is more than zero.
+pub(crate) async fn serve_version(
+    version: &str,
+    open_sessions: usize,
+) -> SandboxManagementServiceClient<Channel> {
+    serve_daemon(FakeDaemon {
+        version: Some(version.to_string()),
+        open_sessions,
+        ..Default::default()
+    })
+    .await
+}
+
+/// Serves a fake daemon without sandboxes from before `GetVersion` and `Shutdown`.
+pub(crate) async fn serve_unversioned() -> SandboxManagementServiceClient<Channel> {
+    serve_daemon(FakeDaemon::default()).await
 }
 
 /// Serves the fake daemon on a free local port and returns a client for it.
@@ -268,6 +294,31 @@ impl SandboxManagementService for FakeDaemon {
                 entries: entries.clone(),
             })),
             None => Err(Status::failed_precondition("no network log")),
+        }
+    }
+
+    async fn get_version(
+        &self,
+        _: Request<GetVersionRequest>,
+    ) -> Result<Response<GetVersionResponse>, Status> {
+        let version = self
+            .version
+            .clone()
+            .ok_or_else(|| Status::unimplemented("GetVersion"))?;
+
+        Ok(Response::new(GetVersionResponse { version }))
+    }
+
+    async fn shutdown(
+        &self,
+        _: Request<ShutdownRequest>,
+    ) -> Result<Response<ShutdownResponse>, Status> {
+        match (&self.version, self.open_sessions) {
+            (None, _) => Err(Status::unimplemented("Shutdown")),
+            (Some(_), 0) => Ok(Response::new(ShutdownResponse {})),
+            (Some(_), open) => Err(Status::failed_precondition(format!(
+                "{open} sessions are open"
+            ))),
         }
     }
 }

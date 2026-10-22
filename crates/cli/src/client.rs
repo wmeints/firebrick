@@ -4,10 +4,12 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
+use crate::api::{GetVersionRequest, ShutdownRequest};
 use anyhow::{Context, Result, bail};
 use firebrick_utils::ipc::{self, Stream};
 use hyper_util::rt::TokioIo;
 use tokio::time::{Instant, sleep};
+use tonic::Code;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 
@@ -15,12 +17,119 @@ const DAEMON_BINARY: &str = "fbkd";
 const DAEMON_START_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// A client of the daemon's gRPC API.
+type Client = SandboxManagementServiceClient<Channel>;
+
 /// Connects to the daemon over its endpoint, a unix socket or a named pipe, starting the daemon
-/// when needed.
-pub async fn connect() -> Result<SandboxManagementServiceClient<Channel>> {
+/// when needed. A daemon of another version than `fbk` is restarted, so `fbk` doesn't talk to
+/// the daemon of an earlier install.
+pub async fn connect() -> Result<Client> {
     let path =
         firebrick_utils::socket_path().context("can't name the firebrick daemon's endpoint")?;
+    let client = connect_to(path.clone()).await?;
+    let restarted = async {
+        wait_for_shutdown(&path).await?;
+        connect_to(path.clone()).await
+    };
 
+    matching_daemon(
+        client,
+        env!("CARGO_PKG_VERSION"),
+        &daemon_binary(),
+        restarted,
+    )
+    .await
+}
+
+/// Returns `client` when its daemon runs version `expected`. Otherwise asks the daemon to shut
+/// down and returns the client from `restarted`, which connects to the daemon that replaces it,
+/// when that one runs `expected`. Fails when the daemon can't shut down, or the one that
+/// replaces it runs another version than `expected`, naming the `binary` it was started from.
+async fn matching_daemon(
+    mut client: Client,
+    expected: &str,
+    binary: &Path,
+    restarted: impl Future<Output = Result<Client>>,
+) -> Result<Client> {
+    let running = daemon_version(&mut client).await?;
+
+    if running.as_deref() == Some(expected) {
+        return Ok(client);
+    }
+
+    let running = version_label(running.as_deref());
+    eprintln!("note: restarting the firebrick daemon (running {running}, fbk is {expected})");
+    shut_down(client, &running, expected).await?;
+
+    let mut client = restarted.await?;
+    let restarted = daemon_version(&mut client).await?;
+
+    if restarted.as_deref() != Some(expected) {
+        bail!(
+            "restarted the firebrick daemon but it runs version {}, not {expected}; make sure \
+             the fbkd executable at {} matches fbk",
+            version_label(restarted.as_deref()),
+            binary.display()
+        );
+    }
+
+    Ok(client)
+}
+
+/// Returns the daemon's version, or `None` for a daemon from before `GetVersion`.
+async fn daemon_version(client: &mut Client) -> Result<Option<String>> {
+    match client.get_version(GetVersionRequest {}).await {
+        Ok(response) => Ok(Some(response.into_inner().version)),
+        Err(status) if status.code() == Code::Unimplemented => Ok(None),
+        Err(status) => Err(status).context("can't read the version of the firebrick daemon"),
+    }
+}
+
+/// Describes a version from [`daemon_version`].
+fn version_label(version: Option<&str>) -> String {
+    version.map_or_else(|| "an older version".to_string(), str::to_string)
+}
+
+/// Asks the daemon, which runs version `running` instead of `expected`, to shut down. Closes
+/// the client, so the daemon doesn't wait for its connection.
+async fn shut_down(mut client: Client, running: &str, expected: &str) -> Result<()> {
+    let status = match client.shutdown(ShutdownRequest {}).await {
+        Ok(_) => return Ok(()),
+        Err(status) => status,
+    };
+
+    match status.code() {
+        Code::Unimplemented => bail!(
+            "the firebrick daemon is older than fbk {expected} and can't be restarted by fbk; \
+             stop the fbkd process and try again"
+        ),
+        Code::FailedPrecondition => bail!(
+            "the firebrick daemon runs version {running} but fbk is {expected}, and it can't \
+             restart while {}; close them and try again",
+            status.message()
+        ),
+        _ => Err(status).context("failed to shut down the firebrick daemon"),
+    }
+}
+
+/// Waits until the daemon that was asked to shut down has removed its endpoint, so the daemon
+/// that replaces it doesn't bind an endpoint the old one is about to remove.
+async fn wait_for_shutdown(socket_path: &Path) -> Result<()> {
+    let deadline = Instant::now() + DAEMON_START_TIMEOUT;
+
+    while ipc::exists(socket_path).await {
+        if Instant::now() >= deadline {
+            bail!("timed out waiting for the firebrick daemon to shut down");
+        }
+
+        sleep(DAEMON_POLL_INTERVAL).await;
+    }
+
+    Ok(())
+}
+
+/// Connects to the daemon on its endpoint, starting the daemon when needed.
+async fn connect_to(path: PathBuf) -> Result<Client> {
     // Note: the HTTP endpoint isn't actually used. It will only show up in the authority header.
     let channel = Endpoint::try_from("http://localhost")
         .unwrap()
@@ -143,8 +252,7 @@ async fn wait_for_daemon(socket_path: &Path, mut child: Child) -> Result<Stream>
 /// Returns the command that starts the daemon detached from the terminal, without stdio. On
 /// Windows it's created with the `extra_flags` too.
 fn daemon_command(extra_flags: u32) -> Command {
-    let dir = std::env::current_exe().ok();
-    let mut command = Command::new(daemon_binary_in(dir.as_deref().and_then(Path::parent)));
+    let mut command = Command::new(daemon_binary());
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -170,6 +278,12 @@ fn detach(command: &mut Command, extra_flags: u32) {
     command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | extra_flags);
 }
 
+/// Returns the daemon binary `fbk` starts: the one next to it, or else the one on `PATH`.
+fn daemon_binary() -> PathBuf {
+    let dir = std::env::current_exe().ok();
+    daemon_binary_in(dir.as_deref().and_then(Path::parent))
+}
+
 /// Returns the daemon binary in `dir`, the directory of the `fbk` binary, or falls back to
 /// looking it up on `PATH` when it isn't there.
 fn daemon_binary_in(dir: Option<&Path>) -> PathBuf {
@@ -182,6 +296,7 @@ fn daemon_binary_in(dir: Option<&Path>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake_daemon;
 
     /// Returns an endpoint unique to this test, in the directory it returns, if any.
     fn test_endpoint(test: &str) -> (Option<tempfile::TempDir>, PathBuf) {
@@ -225,6 +340,115 @@ mod tests {
 
         assert!(path.exists());
         assert!(try_connect(&path).await.unwrap().is_none());
+    }
+
+    const FBKD: &str = "/opt/firebrick/fbkd";
+
+    /// A restart that fails the test when `fbk` restarts the daemon.
+    async fn no_restart() -> Result<Client> {
+        bail!("restarted the daemon")
+    }
+
+    /// A restart to a daemon that runs `version`.
+    async fn restart_to(version: &str) -> Result<Client> {
+        Ok(fake_daemon::serve_version(version, 0).await)
+    }
+
+    /// Checks the version of `client` against 0.9.0, with `restarted` as the restart.
+    async fn check(
+        client: Client,
+        restarted: impl Future<Output = Result<Client>>,
+    ) -> Result<Client> {
+        matching_daemon(client, "0.9.0", Path::new(FBKD), restarted).await
+    }
+
+    async fn version_of(mut client: Client) -> Option<String> {
+        daemon_version(&mut client).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn matching_daemon_keeps_a_daemon_of_the_same_version() {
+        let client = check(fake_daemon::serve_version("0.9.0", 0).await, no_restart())
+            .await
+            .unwrap();
+
+        assert_eq!(version_of(client).await.as_deref(), Some("0.9.0"));
+    }
+
+    #[tokio::test]
+    async fn matching_daemon_restarts_a_daemon_of_another_version() {
+        let client = check(
+            fake_daemon::serve_version("0.8.0", 0).await,
+            restart_to("0.9.0"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(version_of(client).await.as_deref(), Some("0.9.0"));
+    }
+
+    #[tokio::test]
+    async fn matching_daemon_refuses_to_restart_a_daemon_with_open_sessions() {
+        let error = check(fake_daemon::serve_version("0.8.0", 2).await, no_restart())
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "the firebrick daemon runs version 0.8.0 but fbk is 0.9.0, and it can't restart \
+             while 2 sessions are open; close them and try again"
+        );
+    }
+
+    #[tokio::test]
+    async fn matching_daemon_asks_to_stop_a_daemon_from_before_the_version_check() {
+        let error = check(fake_daemon::serve_unversioned().await, no_restart())
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "the firebrick daemon is older than fbk 0.9.0 and can't be restarted by fbk; stop \
+             the fbkd process and try again"
+        );
+    }
+
+    #[tokio::test]
+    async fn matching_daemon_fails_when_the_restarted_daemon_runs_another_version() {
+        let error = check(
+            fake_daemon::serve_version("0.8.0", 0).await,
+            restart_to("0.8.0"),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "restarted the firebrick daemon but it runs version 0.8.0, not 0.9.0; make sure \
+                 the fbkd executable at {} matches fbk",
+                Path::new(FBKD).display()
+            )
+        );
+    }
+
+    /// Closes the listener and removes its endpoint after a moment, like a daemon that shuts
+    /// down.
+    async fn remove_later(listener: ipc::Listener, path: PathBuf) {
+        sleep(Duration::from_millis(100)).await;
+        drop(listener);
+        ipc::remove(&path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_for_shutdown_returns_once_the_endpoint_is_gone() {
+        let (_dir, path) = test_endpoint("gone");
+        let listener = ipc::Listener::bind(&path).unwrap();
+        tokio::spawn(remove_later(listener, path.clone()));
+
+        wait_for_shutdown(&path).await.unwrap();
+
+        assert!(!ipc::exists(&path).await);
     }
 
     #[test]

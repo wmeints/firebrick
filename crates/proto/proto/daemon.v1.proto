@@ -28,6 +28,12 @@ service SandboxManagementService {
   // sandbox whose image already has the pulled digest is left alone. Fails with
   // FAILED_PRECONDITION for a paused sandbox.
   rpc UpgradeSandbox(UpgradeSandboxRequest) returns (stream UpgradeSandboxResponse);
+  // Returns the version of fbkd, so fbk can restart a daemon that doesn't match its own.
+  rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);
+  // Stops fbkd the way SIGTERM does. Sandboxes keep running. Fails with FAILED_PRECONDITION,
+  // and fbkd keeps serving, while an Attach, SshTunnel, StartSandbox or UpgradeSandbox stream
+  // is open, because stopping would cut it.
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
 }
 
 message StartSandboxRequest {
@@ -417,3 +423,14 @@ message SandboxUpgraded {
   // Image the sandbox was upgraded to, or is already up to date with.
   string new_image = 3;
 }
+
+message GetVersionRequest {}
+
+message GetVersionResponse {
+  // The package version of fbkd, such as "0.9.0".
+  string version = 1;
+}
+
+message ShutdownRequest {}
+
+message ShutdownResponse {}

@@ -216,8 +216,8 @@ is included from `%USERPROFILE%\.ssh\config`, so the `.fbk` host names work for
 Windows' OpenSSH and the editors that use it. The clipboard works without extra
 tools, and `~user` in a mount's host path isn't supported.
 
-`fbk` starts the daemon without a console, so nothing can ask it to stop
-cleanly. `Stop-Process -Name fbkd` ends it at once: running sandboxes keep
+`fbk` starts the daemon without a console, so you can't ask it to stop cleanly
+from one. `Stop-Process -Name fbkd` ends it at once: running sandboxes keep
 running, but a network or image upgrade that's still in progress is cut off, and
 the last few seconds of network activity aren't recorded. Stop it when no `fbk`
 command is running. Windows can't replace or remove a running program, so stop
@@ -257,12 +257,26 @@ run inside WSL. Editors on Windows don't see them.
 
 ## Upgrading and uninstalling
 
-To upgrade, repeat step 1 with the new `VERSION`, then stop the running daemon
-so the CLI starts the new one on the next command:
+To upgrade, repeat step 1 with the new `VERSION`. The next `fbk` command finds
+that the running daemon has another version and restarts it:
+
+```text
+note: restarting the firebrick daemon (running 0.9.0, fbk is 0.10.0)
+```
+
+`fbk` doesn't restart the daemon while another `fbk run` session, SSH
+connection, start or upgrade is open; it fails and asks you to close them first.
+Sandboxes keep running across the restart. A daemon of version 0.9.0 or earlier
+can't be restarted by `fbk`, so stop it once after upgrading from such a
+version:
 
 ```sh
 pkill -TERM -x fbkd
 ```
+
+When the restarted daemon still has another version, the `fbkd` next to `fbk`,
+or on your `PATH`, isn't the one you installed: `fbk` names the binary it
+started, so you can replace it.
 
 To uninstall, stop the daemon and remove the binaries:
 
@@ -293,9 +307,10 @@ fbk --version
 
 Cargo installs `fbk` and `fbkd` in `~/.cargo/bin`, so both binaries end up in
 the same directory, as the CLI requires. Install both crates with the same
-version. To upgrade, run the same command again and stop the running daemon with
-`pkill -TERM -x fbkd`. To uninstall, stop the daemon and run `cargo uninstall
-firebrick-cli firebrick-daemon`.
+version. To upgrade, run the same command again; the next `fbk` command restarts
+the daemon, as described in
+[Upgrading and uninstalling](#upgrading-and-uninstalling). To uninstall, stop
+the daemon and run `cargo uninstall firebrick-cli firebrick-daemon`.
 
 ## Building from source
 

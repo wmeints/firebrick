@@ -105,7 +105,9 @@ C4Component
   command.
 - `client` - Connects to the daemon socket. When nobody listens, it removes a
   stale socket, spawns `fbkd` from next to the `fbk` binary (or from `PATH`) and
-  waits at most 5 seconds for the socket.
+  waits at most 5 seconds for the socket. It then compares the daemon's
+  `GetVersion` with its own version and restarts a daemon of another version
+  with `Shutdown` (ADR 0055).
 - `manage` - Resolves the sandbox spec for the working directory and starts,
   stops, lists, upgrades and removes sandboxes. `upgrade` sends the `image` from
   the spec of the sandbox's workspace to `UpgradeSandbox`, or an empty image for
