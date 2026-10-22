@@ -51,6 +51,7 @@ C4Component
         Component(table, "table", "ratatui", "Tables")
         Component(progress, "progress", "indicatif", "Image pull and mise install progress")
         Component(client, "client", "Tonic client", "Daemon client")
+        Component(git, "git", "Rust", "Host git identity")
     }
     Component_Ext(spec, "firebrick-spec", "serde_yaml", "Sandbox spec")
     Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names, text")
@@ -71,6 +72,7 @@ C4Component
     Rel(main, client, "Connects")
     Rel(manage, table, "Renders sandboxes")
     Rel(manage, progress, "Shows image pull and mise install")
+    Rel(manage, git, "Reads host git identity")
     Rel(secret, table, "Renders secrets")
     Rel(session, manage, "Ensures running")
     Rel(manage, spec, "Loads .firebrick.yml")
@@ -117,9 +119,20 @@ C4Component
   request it sends from a spec, also for an existing sandbox, carries the spec's
   `env`, and it prints `env changes in .firebrick.yml apply after the sandbox
   restarts: fbk stop && fbk start` when the daemon reports that a running
-  sandbox keeps other variables. `start`, `run`, the `network` changes and the
-  `port` commands print the outdated image warning from `outdated_warning` (see
+  sandbox keeps other variables. Every start request it sends for a workspace
+  also carries the host's git identity for it from `git`; `fbk start <name>`
+  sends none. `start`, `run`, the `network` changes and the `port` commands
+  print the outdated image warning from `outdated_warning` (see
   [Outdated sandbox images](08-crosscutting-concepts.md#outdated-sandbox-images)).
+- `git` - Reads the host's `user.name` and `user.email` with `git -C <workspace>
+  config --get`, so `includeIf` and repository-local identities apply, for the
+  `git_identity` of a start request. It runs git without the `GIT_DIR`,
+  `GIT_WORK_TREE`, `GIT_COMMON_DIR` and `GIT_INDEX_FILE` that git sets for its
+  hooks, so `fbk` run from a hook still reads the workspace. A key that is unset
+  (`git config` exits 1) or that can't be read because `git` is missing is left
+  out silently. A key git fails to read otherwise, for example on a broken
+  config file, or whose value isn't UTF-8 or has a newline or NUL is left out
+  with a warning on stderr, the first with git's error.
 - `session` - Runs a command in the sandbox through the `Attach` stream. It
   makes sure the sandbox runs first, puts the terminal in raw mode and forwards
   input, output and window resizes.
@@ -230,6 +243,7 @@ C4Component
         Component(vsock, "vsock", "Rust", "Sockets of vsock routes")
         Component(pull, "pull", "Rust", "Image pull progress")
         Component(env, "env", "Rust", "Environment variables")
+        Component(git, "git", "Rust", "Git identity")
     }
     Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names, text")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
@@ -253,6 +267,8 @@ C4Component
     Rel(sandboxes, forward, "Reconciles port forwards")
     Rel(sandboxes, pull, "Reports image pull progress")
     Rel(sandboxes, env, "Sets and syncs spec variables")
+    Rel(sandboxes, git, "Sets the git identity")
+    Rel(git, microsandbox, "Runs git config as an exec")
     Rel(forward, microsandbox, "Opens direct-tcpip channels")
     Rel(sandboxes, open, "Starts URL relays")
     Rel(open, microsandbox, "Runs the relay as an exec stream")
@@ -453,6 +469,13 @@ C4Component
   label doesn't name. A spec variable with the name of an image variable
   replaces it, and removing it from the spec removes the variable altogether.
   The values are passed on as they are, without secret substitution.
+- `git` - Gives a running sandbox the host's git identity from a start request.
+  For each of `user.name` and `user.email` the request has a value for, it runs
+  `git config --global <key> <value>` as the image's default user, without a
+  shell, so the value is stored literally in that user's `~/.gitconfig`, with a
+  timeout of 5 seconds. A key without a value keeps its value in the sandbox.
+  When the image has no `git`, or the command fails, it logs a warning naming
+  the sandbox and the start still succeeds.
 - `pull` - Turns microsandbox's `PullProgress` events into pull updates: it adds
   up the downloaded bytes per layer, takes the total from the manifest, and
   reports at most one update every 100 ms, one for each layer that finishes and

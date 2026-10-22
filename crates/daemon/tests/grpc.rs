@@ -12,7 +12,7 @@ use std::time::Duration;
 use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use firebrick_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, EnvVars,
-    ForwardPortRequest, ForwardPortResponse, GetSandboxRequest, GetSandboxResponse,
+    ForwardPortRequest, ForwardPortResponse, GetSandboxRequest, GetSandboxResponse, GitIdentity,
     ListNetworkActivityRequest, ListSandboxesRequest, ListSecretsRequest, MiseInstallProgress,
     Mount, NetworkActivity, NetworkActivityKind, NetworkPolicy, PortForward, PortForwards,
     RemovePortRequest, RemovePortResponse, RemoveSandboxRequest, RemoveSecretRequest,
@@ -1794,6 +1794,130 @@ async fn new_sandbox_has_the_env_variables_as_written() {
     );
     // The image's own variables are still there.
     assert!(output.contains("/usr/bin"), "{output:?}");
+}
+
+/// Image with git, for the git identity tests.
+const GIT_IMAGE: &str = "buildpack-deps:resolute-scm";
+
+/// Returns the identity with the name and email.
+fn identity(name: Option<&str>, email: Option<&str>) -> GitIdentity {
+    GitIdentity {
+        name: name.map(str::to_string),
+        email: email.map(str::to_string),
+    }
+}
+
+/// Returns the start request of a sandbox with git and the identity.
+fn git_request(name: &str, git_identity: Option<GitIdentity>) -> StartSandboxRequest {
+    StartSandboxRequest {
+        image: GIT_IMAGE.to_string(),
+        git_identity,
+        ..start_request(name)
+    }
+}
+
+/// Returns the default user's global `user.name` and `user.email` in the sandbox.
+async fn global_identity(name: &str) -> (String, String) {
+    let sb = Sandbox::get(name)
+        .await
+        .expect("sandbox disappeared")
+        .connect()
+        .await
+        .expect("failed to connect to sandbox");
+
+    (
+        global_git_config(&sb, "user.name").await,
+        global_git_config(&sb, "user.email").await,
+    )
+}
+
+/// Returns the value of the key in the default user's global git config.
+async fn global_git_config(sb: &Sandbox, key: &str) -> String {
+    // Outside the workspace, whose repository git would read too.
+    let output = sb
+        .exec_with("git", |exec| {
+            exec.args(["config", "--global", "--get", key]).cwd("/")
+        })
+        .await
+        .expect("failed to run git");
+
+    output
+        .stdout()
+        .expect("git printed no UTF-8")
+        .trim_end_matches('\n')
+        .to_string()
+}
+
+#[tokio::test]
+async fn start_writes_the_git_identity_and_updates_it_on_each_start() {
+    let name: &str = &sandbox_name("git-identity");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("git-identity").await;
+    let mut client = daemon.client().await;
+    let first = identity(Some("O'Brien; $(id)"), Some("obrien@example.com"));
+    start_and_wait(&mut client, git_request(name, Some(first))).await;
+    let created = global_identity(name).await;
+
+    // An already running sandbox gets a changed name and keeps the email the request leaves out.
+    start_and_wait(
+        &mut client,
+        git_request(name, Some(identity(Some("Ada"), None))),
+    )
+    .await;
+    let changed = global_identity(name).await;
+
+    // A request without an identity leaves the git config alone.
+    start_and_wait(&mut client, git_request(name, None)).await;
+    let unchanged = global_identity(name).await;
+
+    stop_sandbox(&mut client, name).await;
+    let restart = identity(Some("Grace"), Some("grace@example.com"));
+    start_and_wait(&mut client, git_request(name, Some(restart))).await;
+    let restarted = global_identity(name).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    let expected = |name: &str, email: &str| (name.to_string(), email.to_string());
+    assert_eq!(created, expected("O'Brien; $(id)", "obrien@example.com"));
+    assert_eq!(changed, expected("Ada", "obrien@example.com"));
+    assert_eq!(unchanged, expected("Ada", "obrien@example.com"));
+    assert_eq!(restarted, expected("Grace", "grace@example.com"));
+}
+
+#[tokio::test]
+async fn start_succeeds_with_a_git_identity_when_the_image_has_no_git() {
+    let name: &str = &sandbox_name("git-identity-no-git");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("git-identity-no-git").await;
+    let mut client = daemon.client().await;
+    let request = StartSandboxRequest {
+        git_identity: Some(identity(Some("Ada"), Some("ada@example.com"))),
+        ..start_request(name)
+    };
+    let started = start(&mut client, request).await;
+    let status = get_sandbox(&mut client, name).await.status();
+    let sb = Sandbox::get(name)
+        .await
+        .expect("sandbox disappeared")
+        .connect()
+        .await
+        .expect("failed to connect to sandbox");
+    let has_git = sb
+        .exec("sh", ["-c", "command -v git"])
+        .await
+        .expect("failed to look for git")
+        .status()
+        .success;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert!(!has_git, "{TEST_IMAGE} has git");
+    started.expect("the start failed");
+    assert_eq!(status, SandboxStatus::Running);
 }
 
 /// Prints the variables of the sync test, then the exit code of printing the removed one, then

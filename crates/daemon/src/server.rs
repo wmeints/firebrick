@@ -6,20 +6,21 @@ use crate::api::sandbox_management_service_server::{
 };
 use crate::api::{
     AttachRequest, AttachResponse, AttachStart, EnvVars, ForwardPortRequest, ForwardPortResponse,
-    GetSandboxRequest, GetSandboxResponse, ImagePullProgress, ListNetworkActivityRequest,
-    ListNetworkActivityResponse, ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest,
-    ListSecretsResponse, MiseInstallProgress, Mount, NetworkActivity, NetworkActivityKind,
-    NetworkPolicy, PortForward, PortForwardFailure, PortForwards, RemovePortRequest,
-    RemovePortResponse, RemoveSandboxRequest, RemoveSandboxResponse, RemoveSecretRequest,
-    RemoveSecretResponse, SandboxResources, SandboxStarted, SandboxStatus, SandboxSummary,
-    SandboxUpgraded, SecretSummary, SetSecretRequest, SetSecretResponse, SshTunnelRequest,
-    SshTunnelResponse, StartSandboxRequest, StartSandboxResponse, StopSandboxRequest,
-    StopSandboxResponse, UpdateNetworkRequest, UpdateNetworkResponse, UpgradeSandboxRequest,
-    UpgradeSandboxResponse, attach_request, ssh_tunnel_request, start_sandbox_response,
-    upgrade_sandbox_response,
+    GetSandboxRequest, GetSandboxResponse, GitIdentity, ImagePullProgress,
+    ListNetworkActivityRequest, ListNetworkActivityResponse, ListSandboxesRequest,
+    ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse, MiseInstallProgress, Mount,
+    NetworkActivity, NetworkActivityKind, NetworkPolicy, PortForward, PortForwardFailure,
+    PortForwards, RemovePortRequest, RemovePortResponse, RemoveSandboxRequest,
+    RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse, SandboxResources,
+    SandboxStarted, SandboxStatus, SandboxSummary, SandboxUpgraded, SecretSummary,
+    SetSecretRequest, SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
+    StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, UpdateNetworkRequest,
+    UpdateNetworkResponse, UpgradeSandboxRequest, UpgradeSandboxResponse, attach_request,
+    ssh_tunnel_request, start_sandbox_response, upgrade_sandbox_response,
 };
 use crate::clipboard::{HostClipboard, HostTools};
 use crate::forward::ForwardFailure;
+use crate::git;
 use crate::mise::MiseUpdate;
 use crate::netlog::{ConnectionEntry, DnsEntry, Protocol, Record};
 use crate::network;
@@ -136,6 +137,15 @@ fn start_sandbox_from<'a>(
         mounts: &parsed.mounts,
         clipboard: request.clipboard.unwrap_or(false),
         env: parsed.env.as_ref(),
+        git_identity: request.git_identity.as_ref().map(git_identity),
+    }
+}
+
+/// Reads the git identity of a request.
+fn git_identity(identity: &GitIdentity) -> git::GitIdentity<'_> {
+    git::GitIdentity {
+        name: identity.name.as_deref(),
+        email: identity.email.as_deref(),
     }
 }
 

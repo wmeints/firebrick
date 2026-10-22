@@ -6,6 +6,7 @@
 use crate::clipboard::{self, Clipboards, HostClipboard};
 use crate::env;
 use crate::forward::{self, ForwardReport, Forwards, SshConnector};
+use crate::git::{self, GitIdentity};
 use crate::mise::{self, MiseError, MiseUpdate};
 use crate::netlog::{NetLogs, Record};
 use crate::network;
@@ -157,6 +158,9 @@ pub struct StartSandbox<'a> {
     /// Environment variables of the sandbox, applied when it's created or starts; `None` keeps
     /// the stored ones. No name is also the name of a secret the sandbox gets.
     pub env: Option<&'a BTreeMap<String, String>>,
+    /// The git identity of the sandbox's default user, applied whenever the request leaves the
+    /// sandbox running; `None` leaves its git config alone.
+    pub git_identity: Option<GitIdentity<'a>>,
 }
 
 /// What starting a sandbox did.
@@ -584,7 +588,7 @@ impl SandboxManager {
 
         sync_ssh_config().await;
         let env_pending_restart = result?;
-        self.start_relay(request.name).await;
+        self.set_up_running(request).await;
 
         Ok(Started {
             forwards: self.open_forwards(request.name, request.ports).await,
@@ -1142,9 +1146,30 @@ impl SandboxManager {
     /// Connects to the running sandbox and starts its URL relay unless it has one, logging a
     /// warning when it can't connect.
     async fn start_relay(&self, name: &str) {
-        match async { Sandbox::get(name).await?.connect().await }.await {
+        match connect(name).await {
             Ok(sb) => self.relays.ensure(&sb).await,
             Err(err) => tracing::warn!("failed to start the URL relay of sandbox {name}: {err}"),
+        }
+    }
+
+    /// Connects to the sandbox a start request left running, starts its URL relay unless it has
+    /// one and gives it the request's git identity, logging a warning when it can't connect.
+    async fn set_up_running(&self, request: StartSandbox<'_>) {
+        let sb = match connect(request.name).await {
+            Ok(sb) => sb,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to start the URL relay and set the git identity of sandbox {}: {err}",
+                    request.name
+                );
+                return;
+            }
+        };
+
+        self.relays.ensure(&sb).await;
+
+        if let Some(identity) = request.git_identity {
+            git::apply(&sb, identity).await;
         }
     }
 
@@ -2284,6 +2309,11 @@ async fn assign_hostname(
     Ok(())
 }
 
+/// Connects to the running sandbox.
+async fn connect(name: &str) -> Result<Sandbox, MicrosandboxError> {
+    Sandbox::get(name).await?.connect().await
+}
+
 /// Returns every sandbox, following the list cursor across pages.
 async fn list_all_sandboxes() -> Result<Vec<SandboxHandle>, SandboxError> {
     list_all().await.map_err(|err| {
@@ -2892,6 +2922,7 @@ mod tests {
             mounts: &[],
             clipboard,
             env,
+            git_identity: None,
         };
         let resources = Resources {
             cpus: 1,
