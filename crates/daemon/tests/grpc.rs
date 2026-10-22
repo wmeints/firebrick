@@ -1439,6 +1439,38 @@ async fn attach_disconnect_ends_session() {
 }
 
 #[tokio::test]
+async fn ssh_command_runs_in_the_login_shell_with_shell_set() {
+    let name: &str = &sandbox_name("ssh-shell");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("ssh-shell").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, name).await;
+
+    let sb = Sandbox::get(name)
+        .await
+        .expect("sandbox disappeared")
+        .connect()
+        .await
+        .expect("failed to connect to sandbox");
+    // root's login shell in the test image is /bin/bash; BASH_VERSION is only set in bash.
+    let output = sb
+        .ssh()
+        .connect()
+        .await
+        .expect("failed to connect over SSH")
+        .exec(r#"echo "SHELL=$SHELL"; [ -n "$BASH_VERSION" ] && echo bash"#)
+        .await
+        .expect("failed to run command over SSH");
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert_eq!(output.status, 0, "{output:?}");
+    assert_eq!(output.stdout, "SHELL=/bin/bash\nbash\n", "{output:?}");
+}
+
+#[tokio::test]
 async fn start_sandbox_rejects_relative_workspace() {
     let name: &str = &sandbox_name("relative-workspace");
     remove_sandbox(name).await;

@@ -3,10 +3,13 @@
 //! Every sandbox gets a host name like `project.fbk`. The generated SSH config points that
 //! name at `fbk ssh-proxy`, which tunnels the connection through the daemon socket to the
 //! SSH server microsandbox runs for the sandbox. No sshd, TCP port or DNS record is involved.
+//!
+//! That server runs every session with the sandbox's shell. [`with_login_shell`] makes that
+//! shell a script that starts the session user's login shell with `SHELL` set, as sshd does.
 
 use crate::atomic_file;
 use anyhow::{Context, Result, bail};
-use microsandbox::sandbox::SandboxHandle;
+use microsandbox::sandbox::{SandboxBuilder, SandboxHandle};
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey};
 use std::collections::HashSet;
@@ -26,6 +29,36 @@ const HOST_KEY_FILE: &str = "host_ed25519";
 const KNOWN_HOSTS_FILE: &str = "known_hosts";
 const CONFIG_FILE: &str = "config";
 const CLI_BINARY: &str = "fbk";
+
+/// Name of the script that starts the login shell, under `/.msb/scripts` in the guest.
+const LOGIN_SCRIPT: &str = "firebrick-login";
+
+/// Content of the [`LOGIN_SCRIPT`]: looks up the session user's shell in `/etc/passwd`, falls
+/// back to `/bin/sh`, exports it as `SHELL` and runs it with the session's arguments, or as a
+/// login shell for an interactive session.
+const LOGIN_SCRIPT_CONTENT: &str = r#"#!/bin/sh
+# fbkd runs every SSH session through this script, so it gets the user's login shell and SHELL.
+uid=$(id -u)
+SHELL=/bin/sh
+while IFS=: read -r _ _ id _ _ _ shell; do
+    if [ "$id" = "$uid" ] && [ -x "$shell" ]; then
+        SHELL=$shell
+        break
+    fi
+done </etc/passwd
+export SHELL
+[ "$#" -eq 0 ] && exec "$SHELL" -l
+exec "$SHELL" "$@"
+"#;
+
+/// Returns the builder with the [`LOGIN_SCRIPT`] as the sandbox's shell, so SSH sessions run
+/// in the session user's login shell with `SHELL` set. microsandbox writes the script at every
+/// start.
+pub fn with_login_shell(builder: SandboxBuilder) -> SandboxBuilder {
+    builder
+        .script(LOGIN_SCRIPT, LOGIN_SCRIPT_CONTENT)
+        .shell(format!("/.msb/scripts/{LOGIN_SCRIPT}"))
+}
 
 /// Returns the host key the sandbox SSH servers identify themselves with.
 pub fn host_key_path() -> Result<PathBuf> {
@@ -428,5 +461,21 @@ mod tests {
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         #[cfg(unix)]
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[tokio::test]
+    async fn login_shell_is_the_sandbox_shell() {
+        let builder = microsandbox::Sandbox::builder("login-test").image("ubuntu:26.04");
+
+        let spec = with_login_shell(builder).build().await.unwrap().spec;
+
+        assert_eq!(
+            spec.runtime.shell.as_deref(),
+            Some("/.msb/scripts/firebrick-login")
+        );
+        assert_eq!(
+            spec.runtime.scripts.get(LOGIN_SCRIPT).map(String::as_str),
+            Some(LOGIN_SCRIPT_CONTENT)
+        );
     }
 }

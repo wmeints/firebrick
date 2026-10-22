@@ -699,7 +699,10 @@ C4Component
   `~/.ssh/config` includes. It prepends the `Include` line to `~/.ssh/config`
   through `atomic_file`, so a failed write leaves the config as it was and a
   symlinked config stays a symlink; a symlink to a missing file is left
-  unchanged. An existing config keeps its mode and a new one gets `0600`.
+  unchanged. An existing config keeps its mode and a new one gets `0600`. It
+  also sets the `firebrick-login` script as the shell of every new sandbox, so
+  SSH sessions run in the user's login shell with `SHELL` set
+  ([ADR 0054](decisions/0054-run-ssh-sessions-in-the-users-login-shell.md)).
 - `vscode` - Keeps `remote.SSH.remotePlatform` in the user `settings.json` of VS
   Code, VS Code Insiders, Cursor and VSCodium in sync with the sandbox host
   names, so Remote-SSH doesn't ask for the platform. Every host maps to

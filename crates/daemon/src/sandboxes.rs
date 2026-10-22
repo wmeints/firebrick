@@ -391,6 +391,7 @@ impl SandboxSettings {
         let builder = with_workspace(builder, self.workspace.as_ref());
         let builder = with_mounts(builder, &self.mounts);
         let builder = env::with_env(builder, &self.env);
+        let builder = ssh::with_login_shell(builder);
         let builder = netlogs.add_route(builder, &self.name);
         let builder = if clipboard::is_enabled(&self.labels) {
             clipboards.add_route(builder, &self.name)

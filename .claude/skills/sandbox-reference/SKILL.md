@@ -162,7 +162,8 @@ build on it when `Cargo.lock` has a newer version.
 **Changing existing sandboxes**
 
 - `modify()` changes cpus, memory, disk size, env, labels, workdir and secrets.
-  Use `.next_start()` or `.restart()` to choose when changes apply.
+  Use `.next_start()` or `.restart()` to choose when changes apply. It can't
+  change the shell or the scripts, so those need a recreate.
 - `SandboxBuilder::env` and `modify().env(..)` reject nothing but the `MSB_`
   prefix. At create time microsandbox merges the image's variables into
   `config().spec.env` (`merge_image_defaults`), so the stored list mixes image
@@ -286,6 +287,12 @@ build on it when `Cargo.lock` has a newer version.
 - `direct-tcpip` connects through agentd from inside the guest, so
   `127.0.0.1:<port>` is the guest's loopback; the login user doesn't matter. A
   rejected channel (nothing listening) is logged by microsandbox at `debug`.
+- The server runs every session with `spec.runtime.shell` (default `/bin/sh`):
+  `<shell>` for an interactive session, `<shell> -c <command>` for a command
+  (`start_exec` in `$M/sandbox/ssh.rs`). It sets no `SHELL` and doesn't read the
+  login shell from `/etc/passwd`; the env is `spec.env` plus the client's
+  `SetEnv`. `SandboxBuilder::shell(..)` sets the shell; `fbkd` points it at its
+  `firebrick-login` script (ADR 0054).
 - `server_with(|o| o.host_key(key).authorized_key(base64))` takes in-memory
   keys, so an in-process client needs no key files. `sb.ssh().connect()` returns
   an `SshClient` without access to its `russh` handle, so it can't open
