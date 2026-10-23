@@ -6,6 +6,31 @@ request, and the release workflow copies the section into the GitHub release,
 above the generated list of pull requests. Each section starts with a `##
 vX.Y.Z - YYYY-MM-DD` heading.
 
+## v0.10.0 - 2026-10-23
+
+This release makes sandboxes feel more like a regular machine: commits get the
+host's author identity, SSH sessions run in the user's login shell, and `fbk`
+replaces a daemon left over from an earlier install.
+
+### Features
+
+- `fbk start` and `fbk run` copy the host's git `user.name` and `user.email` for
+  the workspace into the sandbox, so an agent can commit without configuring git
+  first. A changed identity reaches the sandbox on the next start. (#225)
+- `fbk` checks the daemon's version on every command and restarts a `fbkd` of
+  another version when it's idle. When sessions are still open, it asks you to
+  close them and try again. A daemon of 0.9.0 or earlier can't be restarted this
+  way: stop it by hand once after upgrading. (#228)
+- `fbkd --version` prints the version of the daemon. (#227)
+
+### Fixes
+
+- SSH sessions now run in the user's login shell with `SHELL` set, as `sshd`
+  does. The Codex desktop app no longer rejects firebrick hosts, and `ssh
+  <leaf>.fbk` opens `bash` instead of `sh` in `firebrick-base`. Sandboxes
+  created by 0.9 or earlier keep `/bin/sh` until you recreate them with `fbk rm
+  --force` and `fbk start`. (#223)
+
 ## v0.9.0 - 2026-10-21
 
 This release sets plain environment variables in the sandbox from
