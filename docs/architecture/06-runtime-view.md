@@ -7,6 +7,23 @@ removes a stale socket file, spawns `fbkd` and polls the socket for at most 5
 seconds. The diagrams below show this step once, in
 [Running a session](#running-a-session), and leave it out of the others.
 
+Once connected, the CLI asks the daemon for its version with `GetVersion`. When
+it differs from the CLI's own version, the CLI prints `note: restarting the
+firebrick daemon (running 0.8.0, fbk is 0.9.0)`, sends `Shutdown`, waits at most
+5 seconds until it can take the daemon's lock, and connects again, which spawns
+the new `fbkd`. The daemon shuts down as on SIGTERM, but refuses with
+`FAILED_PRECONDITION` while an `Attach`, `SshTunnel`, `StartSandbox` or
+`UpgradeSandbox` stream or an `UpdateNetwork` request is in progress; the CLI
+then fails and asks the user to close the sessions. A daemon from before
+`GetVersion` answers `UNIMPLEMENTED`, and the CLI asks the user to stop `fbkd`
+by hand. When the restarted daemon still runs another version, the CLI fails and
+names the `fbkd` binary it started (ADR 0055).
+
+`fbkd` takes an exclusive lock on `fbkd.lock` in its data directory when it
+starts, and exits when another daemon holds it. The operating system releases
+the lock when the process exits, after the daemon closed its port forwards and
+listeners, so a CLI that waits for the lock knows the replaced daemon is gone.
+
 Before `fbkd` listens, it exits when the socket already exists, and then makes
 sure the microsandbox runtime matches the runtime embedded in its binary. It
 extracts the embedded runtime when the runtime is missing or has another

@@ -450,6 +450,34 @@ pub fn secrets_path() -> Option<PathBuf> {
     data_dir().map(|dir| dir.join("secrets.yml"))
 }
 
+/// Returns the file `fbkd` holds a lock on for as long as its process runs (see
+/// [`try_lock_daemon`]), or `None` when there's no data directory (see `data_dir`).
+pub fn daemon_lock_path() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join("fbkd.lock"))
+}
+
+/// Opens the daemon's lock file at `path`, creating it and its directory when needed, and
+/// takes its exclusive lock. Returns `None` while another process holds the lock. The lock
+/// lasts until the returned file is dropped or the process exits, so `fbkd` keeps it for its
+/// whole life, and `fbk` can tell when a daemon that shuts down is really gone.
+pub fn try_lock_daemon(path: &Path) -> io::Result<Option<fs::File>> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(fs::TryLockError::WouldBlock) => Ok(None),
+        Err(fs::TryLockError::Error(err)) => Err(err),
+    }
+}
+
 /// Returns the file `fbk` records the approved mounts and network settings of each workspace
 /// in: `$XDG_CONFIG_HOME/firebrick/approved.yml`, falling back to
 /// `$HOME/.config/firebrick/approved.yml`, or `%APPDATA%\firebrick\approved.yml` on Windows.
@@ -607,6 +635,20 @@ pub fn strip_control(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn try_lock_daemon_holds_the_lock_until_the_file_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data").join("fbkd.lock");
+
+        let held = try_lock_daemon(&path).unwrap();
+        let while_held = try_lock_daemon(&path).unwrap();
+        drop(held);
+        let after = try_lock_daemon(&path).unwrap();
+
+        assert!(while_held.is_none());
+        assert!(after.is_some());
+    }
 
     /// Returns a lookup for an environment that holds only `vars`.
     pub(crate) fn env<'a>(vars: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 'a {

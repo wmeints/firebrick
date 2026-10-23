@@ -50,3 +50,4 @@ windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_S
 [dev-dependencies]
 indicatif = { version = "0.18.6", features = ["in_memory"] }
 tempfile = "3.27.0"
+tokio = { version = "1.53.2", features = ["test-util"] }
