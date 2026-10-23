@@ -9,12 +9,12 @@ members = [
 ]
 
 [workspace.dependencies]
-firebrick-proto = { path = "crates/proto", version = "0.9.0" }
-firebrick-spec = { path = "crates/spec", version = "0.9.0" }
-firebrick-utils = { path = "crates/utils", version = "0.9.0" }
+firebrick-proto = { path = "crates/proto", version = "0.10.0" }
+firebrick-spec = { path = "crates/spec", version = "0.10.0" }
+firebrick-utils = { path = "crates/utils", version = "0.10.0" }
 
 [workspace.package]
-version = "0.9.0"
+version = "0.10.0"
 authors = ["Willem Meints"]
 edition = "2024"
 license = "MIT"
