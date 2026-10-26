@@ -57,7 +57,7 @@ Keep in mind that:
 - A secret's allowed hosts must be allowed by the network rules too. See
   [Secrets](/docs/secrets/).
 - `mise install` downloads its tools when the sandbox starts, so allow the hosts
-  it needs, or set `mise: false`.
+  it needs, or set `mise.enabled: false`.
 
 ## Changing the rules with `fbk network`
 
@@ -276,7 +276,7 @@ Without a network device, nothing in the sandbox resolves or connects, and
 `enforce`, `allow` and `deny` are validated but ignored. `fbk run`, `ssh
 <leaf>.fbk`, port forwards and the editor integrations keep working, because
 they don't use the sandbox's network. `mise install` can't download tools, so
-install them while the network is on, or set `mise: false`.
+install them while the network is on, or set `mise.enabled: false`.
 
 This is different from `fbk network policy disable`: that keeps the network
 device and only stops enforcing the rules, so the sandbox can reach the internet

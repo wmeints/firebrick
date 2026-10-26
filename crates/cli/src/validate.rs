@@ -9,6 +9,7 @@ use crate::manage::SPEC_FILE_NAME;
 /// can't be read, or it is a symlink.
 pub fn validate_spec(working_dir: &Path) -> Result<bool> {
     let spec_path = working_dir.join(SPEC_FILE_NAME);
+    migrate_spec(&spec_path)?;
 
     match firebrick_spec::from_file(&spec_path) {
         Ok(Some(_)) => {
@@ -27,7 +28,18 @@ pub fn validate_spec(working_dir: &Path) -> Result<bool> {
 /// Loads the spec, or returns `None` when there is no spec file. Reports a problem like
 /// [`spec_error`].
 pub(crate) fn load_spec(spec_path: &Path) -> Result<Option<SandboxSpec>> {
+    migrate_spec(spec_path)?;
     firebrick_spec::from_file(spec_path).map_err(spec_error)
+}
+
+/// Rewrites a `mise: true` or `mise: false` in the spec file to the `mise.enabled` it became,
+/// telling the user on stderr. Does nothing when there is no spec file or nothing to migrate.
+pub(crate) fn migrate_spec(spec_path: &Path) -> Result<()> {
+    if let Some(enabled) = firebrick_spec::migrate_file(spec_path)? {
+        eprintln!("Migrated mise: {enabled} in {SPEC_FILE_NAME} to mise.enabled: {enabled}");
+    }
+
+    Ok(())
 }
 
 /// Turns a problem with the spec file into an error. Invalid content reads the way `fbk
@@ -69,6 +81,28 @@ mod tests {
         let dir = write_spec("image: ubuntu:24.04\n");
 
         assert!(!validate_spec(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn validating_migrates_a_boolean_mise() {
+        let dir = write_spec("name: dev\nmise: true\n");
+
+        assert!(validate_spec(dir.path()).unwrap());
+        assert_eq!(
+            fs::read_to_string(dir.path().join(SPEC_FILE_NAME)).unwrap(),
+            "name: dev\nmise:\n  enabled: true\n"
+        );
+    }
+
+    #[test]
+    fn loading_migrates_a_boolean_mise() {
+        let dir = write_spec("name: dev\nmise: false\n");
+
+        let spec = load_spec(&dir.path().join(SPEC_FILE_NAME))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(spec.mise.and_then(|mise| mise.enabled), Some(false));
     }
 
     #[test]

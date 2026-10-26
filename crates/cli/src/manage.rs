@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
-use firebrick_spec::{MountSpec, NetworkRule, NetworkSpec, PortMapping, SandboxSpec};
+use firebrick_spec::{
+    MISE_DOTFILES_PATH, MiseSpec, MountSpec, NetworkRule, NetworkSpec, PortMapping, SandboxSpec,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -27,6 +29,7 @@ use crate::approval::{Approver, Clipboard, Settings};
 use crate::git;
 use crate::progress::{MiseProgressView, PullProgressView};
 use crate::table;
+use crate::validate;
 
 /// Name of the spec file `fbk` looks for in the working directory.
 pub const SPEC_FILE_NAME: &str = ".firebrick.yml";
@@ -269,11 +272,22 @@ async fn approve_new_sandbox(
 }
 
 /// Returns the settings a new sandbox needs approval for: the request's mounts, whose host
-/// paths are canonical, so a symlink shows up as the directory it points to, and its clipboard
-/// setting.
+/// paths are canonical, so a symlink shows up as the directory it points to, with the read-only
+/// mount of the mise dotfiles, and its clipboard setting.
 fn new_sandbox_settings(request: &StartSandboxRequest, network: NetworkSpec) -> Settings {
+    let dotfiles = (!request.mise_config.is_empty()).then(|| MountSpec {
+        host: request.mise_config.clone(),
+        guest: MISE_DOTFILES_PATH.to_string(),
+        readonly: true,
+    });
+
     Settings {
-        mounts: request.mounts.iter().map(MountSpec::from).collect(),
+        mounts: request
+            .mounts
+            .iter()
+            .map(MountSpec::from)
+            .chain(dotfiles)
+            .collect(),
         network,
         clipboard: Clipboard::shared(request.clipboard.unwrap_or(false)),
     }
@@ -467,20 +481,19 @@ async fn start_existing_sandbox(
 
 /// Builds a start request from the spec, filling in the default image, resources, init, mise,
 /// volumes and clipboard, with the git identity.
-/// The workspace and the extra mounts are mounted into the sandbox when it's created. The
-/// workspace holds the spec file, so relative mount host paths resolve against it. Fails when a
-/// mount host path isn't an existing directory.
+/// The workspace, the extra mounts and the mise dotfiles directory are mounted into the sandbox
+/// when it's created. The workspace holds the spec file, so relative host paths resolve against
+/// it. Fails when a mount host path or the mise config isn't an existing directory.
 fn build_start_request(
     spec: SandboxSpec,
     workspace: &Path,
     git_identity: Option<GitIdentity>,
 ) -> Result<StartSandboxRequest> {
     let resources = spec.resources.unwrap_or_default();
-    let mounts = resolve_mounts(
-        spec.mounts.unwrap_or_default(),
-        workspace,
-        std::env::var_os(firebrick_utils::HOME_VAR),
-    )?;
+    let home = std::env::var_os(firebrick_utils::HOME_VAR);
+    let mounts = resolve_mounts(spec.mounts.unwrap_or_default(), workspace, home.clone())?;
+    let mise = spec.mise.unwrap_or_default();
+    let mise_config = mise_config(&mise, workspace, home.as_deref())?;
 
     Ok(StartSandboxRequest {
         name: spec.name,
@@ -496,7 +509,8 @@ fn build_start_request(
         }),
         workspace: workspace.to_string_lossy().into_owned(),
         init: Some(spec.init.unwrap_or(true)),
-        mise: Some(spec.mise.unwrap_or(true)),
+        mise: Some(mise.is_enabled()),
+        mise_config,
         network: spec.network.map(network_policy),
         ports: Some(port_forwards(&spec.ports)),
         mounts,
@@ -531,6 +545,40 @@ fn resolve_mounts(
             })
         })
         .collect()
+}
+
+/// Returns the canonical `mise.config` directory for the start request, or an empty path when
+/// mise is disabled or the spec sets no dotfiles directory with a `mise.toml`.
+fn mise_config(mise: &MiseSpec, spec_dir: &Path, home: Option<&std::ffi::OsStr>) -> Result<String> {
+    let dir = match mise.config.as_deref() {
+        Some(config) if mise.is_enabled() => dotfiles_dir(config, spec_dir, home)?,
+        _ => None,
+    };
+
+    Ok(dir
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_default())
+}
+
+/// Resolves the `mise.config` directory like a mount host path. Returns `None`, with a warning
+/// on stderr, when the directory has no `mise.toml`, so the sandbox starts without dotfiles.
+fn dotfiles_dir(
+    config: &str,
+    spec_dir: &Path,
+    home: Option<&std::ffi::OsStr>,
+) -> Result<Option<PathBuf>> {
+    let dir = resolve_host_path(config, spec_dir, home)?;
+
+    if dir.join("mise.toml").is_file() {
+        return Ok(Some(dir));
+    }
+
+    eprintln!(
+        "warning: {} has no mise.toml, so the sandbox gets no dotfiles",
+        dir.display()
+    );
+
+    Ok(None)
 }
 
 /// Resolves a mount host path to the canonical path of an existing directory. A leading `~`
@@ -958,6 +1006,8 @@ pub(crate) async fn resolve_spec(
     working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<SandboxSpec> {
+    validate::migrate_spec(&working_dir.join(SPEC_FILE_NAME))?;
+
     if let Some(spec) = read_spec_file(working_dir)? {
         return Ok(spec);
     }
@@ -1831,7 +1881,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(
             dir.path().join(SPEC_FILE_NAME),
-            "name: dev\nimage: alpine:3.22\ninit: false\nmise: false\nresources:\n  cpu: 4\n  memory: 8Gi\nvolumes:\n  docker: 40 GiB\n",
+            "name: dev\nimage: alpine:3.22\ninit: false\nmise:\n  enabled: false\nresources:\n  cpu: 4\n  memory: 8Gi\nvolumes:\n  docker: 40 GiB\n",
         )
         .unwrap();
 
@@ -2082,6 +2132,105 @@ mod tests {
                 guest: "/mnt/lib".to_string(),
                 readonly: false,
             }]
+        );
+    }
+
+    /// Writes a project with a spec whose `mise` section is `mise`, next to a `dotfiles`
+    /// directory, with a `mise.toml` when `with_config` is set. Returns the temp dir, the
+    /// project and the canonical dotfiles directory.
+    fn project_with_dotfiles(mise: &str, with_config: bool) -> (TempDir, PathBuf, String) {
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().join("project");
+        let dotfiles = dir.path().join("dotfiles");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&dotfiles).unwrap();
+        if with_config {
+            fs::write(dotfiles.join("mise.toml"), "[dotfiles]\n").unwrap();
+        }
+        fs::write(
+            project.join(SPEC_FILE_NAME),
+            format!("name: dev\nmise:\n{mise}"),
+        )
+        .unwrap();
+        let canonical = dunce::canonicalize(&dotfiles)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        (dir, project, canonical)
+    }
+
+    fn start_request_of(project: &Path) -> Result<StartSandboxRequest> {
+        build_start_request(read_spec_file(project).unwrap().unwrap(), project, None)
+    }
+
+    #[test]
+    fn start_request_carries_the_mise_config_and_approval_shows_its_mount() {
+        let (_dir, project, dotfiles) = project_with_dotfiles("  config: ../dotfiles\n", true);
+
+        let request = start_request_of(&project).unwrap();
+        let settings = new_sandbox_settings(&request, NetworkSpec::default());
+
+        assert_eq!(request.mise, Some(true));
+        assert_eq!(request.mise_config, dotfiles);
+        assert_eq!(
+            settings.mounts,
+            [MountSpec {
+                host: dotfiles,
+                guest: "/opt/firebrick/dotfiles".to_string(),
+                readonly: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn start_request_without_a_mise_toml_carries_no_mise_config() {
+        let (_dir, project, _) = project_with_dotfiles("  config: ../dotfiles\n", false);
+
+        let request = start_request_of(&project).unwrap();
+
+        assert_eq!(request.mise_config, "");
+        assert!(
+            new_sandbox_settings(&request, NetworkSpec::default())
+                .mounts
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn start_request_with_mise_disabled_carries_no_mise_config() {
+        let (_dir, project, _) =
+            project_with_dotfiles("  enabled: false\n  config: ../dotfiles\n", true);
+
+        let request = start_request_of(&project).unwrap();
+
+        assert_eq!(request.mise, Some(false));
+        assert_eq!(request.mise_config, "");
+    }
+
+    #[test]
+    fn start_request_fails_for_a_missing_mise_config() {
+        let (_dir, project, _) = project_with_dotfiles("  config: ../missing\n", true);
+
+        let err = start_request_of(&project).unwrap_err();
+
+        assert!(err.to_string().starts_with("can't mount"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn resolve_spec_migrates_a_boolean_mise() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(SPEC_FILE_NAME);
+        fs::write(&path, "name: dev\nmise: false\n").unwrap();
+
+        let spec = resolve_spec(dir.path(), &mut unreachable_client())
+            .await
+            .unwrap();
+
+        assert_eq!(spec.mise.and_then(|mise| mise.enabled), Some(false));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "name: dev\nmise:\n  enabled: false\n"
         );
     }
 

@@ -17,7 +17,8 @@ resources:
   cpu: 2
   memory: 4 GiB
 init: true
-mise: true
+mise:
+  enabled: true
 volumes:
   docker: 20 GiB
 ```
@@ -32,7 +33,8 @@ refuses to replace an existing file; `fbk init --force` overwrites it.
 | `name`              | Name of the sandbox, following the rule below the table.                | Required                                    |
 | `image`             | OCI image the sandbox runs.                                             | `ghcr.io/wmeints/firebrick-base:v<version>` |
 | `init`              | Run the image's `/sbin/init` as PID 1.                                  | `true`                                      |
-| `mise`              | Trust and install the project's mise tools when it starts.              | `true`                                      |
+| `mise.enabled`      | Apply your dotfiles and install the project's mise tools on start.      | `true`                                      |
+| `mise.config`       | Host directory with your mise dotfiles, resolved like `mounts[].host`.  | None                                        |
 | `resources.cpu`     | Number of vCPUs.                                                        | `2`                                         |
 | `resources.memory`  | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`.         | `4 GiB`                                     |
 | `volumes.docker`    | Size of the Docker data disk, in the same units as `memory`.            | `20 GiB`                                    |
@@ -149,8 +151,10 @@ review changes you didn't make before you apply them. See
 
 The agent in the sandbox can edit `.firebrick.yml`, because it's part of the
 project. To keep it from giving itself more access, `fbk` remembers the
-`mounts`, `network` and `clipboard` settings you approved for each project, and
-asks before it creates a sandbox with other ones:
+`mounts`, `mise.config`, `network` and `clipboard` settings you approved for
+each project, and asks before it creates a sandbox with other ones. The
+`mise.config` directory shows up as a read-only mount at
+`/opt/firebrick/dotfiles`:
 
 ```console
 $ fbk start
@@ -289,7 +293,59 @@ The line disappears once the tools are installed. When the output isn't a
 terminal, for example in CI, `fbk start` prints `Installing mise tools...` and
 `Installed mise tools` instead. When `mise install` fails, `fbk start` prints
 mise's error and the sandbox keeps running, so you can connect and fix the
-config. Images without mise skip this step. Set `mise: false` to turn it off.
+config. Images without mise skip this step. Set `mise.enabled: false` to turn it
+off:
+
+```yaml
+mise:
+  enabled: false
+```
+
+Earlier versions wrote `mise: true` or `mise: false`. The first `fbk` command
+that reads such a `.firebrick.yml` rewrites that line to `mise:` with `enabled:`
+and tells you so:
+
+```sh
+$ fbk start
+Migrated mise: false in .firebrick.yml to mise.enabled: false
+```
+
+### Dotfiles
+
+When you keep your shell, git and editor setup in a dotfiles repository managed
+with [mise dotfiles](https://mise.jdx.dev/dotfiles.html), point `mise.config` at
+the directory that holds its `mise.toml`:
+
+```yaml
+mise:
+  config: ~/dotfiles
+```
+
+```toml
+# ~/dotfiles/mise.toml
+[dotfiles]
+"~/.gitconfig" = { source = "git/config", mode = "copy" }
+"~/.bashrc" = { source = "bashrc" }
+```
+
+When `fbk start` or `fbk run` creates the sandbox, it mounts the directory
+read-only at `/opt/firebrick/dotfiles`, after you approve it like a mount. Each
+time the sandbox starts, Firebrick trusts that `mise.toml` and the project's
+mise configs, runs `mise dot apply --force` for the dotfiles, and then installs
+the tools, so the tools of a global mise config from your dotfiles are installed
+too. `--force` lets your dotfiles replace files the image ships, such as
+`~/.bashrc`. The agent can't change your dotfiles through the mount.
+
+The agent can read every file in the directory, also the ones `[dotfiles]`
+doesn't name, so keep keys and tokens out of it. Like other mounts, a changed
+`mise.config` only applies to a new sandbox: run `fbk rm` and `fbk start` to
+recreate it.
+
+When the directory has no `mise.toml`, `fbk start` prints `warning: <path> has
+no mise.toml, so the sandbox gets no dotfiles` and starts the sandbox without
+them. When mise can't apply the dotfiles, `fbk start` prints `warning: couldn't
+apply the dotfiles:` with mise's error, and still installs the tools. A
+directory that doesn't exist fails the start like a missing mount.
 
 ## Git identity
 

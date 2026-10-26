@@ -127,11 +127,12 @@ the host, paste only` and `+ clipboard: shared with the host, both ways`. Older
 with `firebrick_utils::write_private`, which `secrets.yml` uses too. The CLI
 turns the request's mounts into `MountSpec`s with the same `From<&Mount>`
 conversion in `firebrick-proto` that the daemon uses to create them, so the
-approved mounts are the ones the daemon applies. A file that can't be read or
-isn't valid YAML fails the command, so a broken file never counts as approving
-nothing. Starting an existing sandbox doesn't check anything, because
-microsandbox only applies mounts, and `fbkd` the clipboard setting, when it
-creates a sandbox.
+approved mounts are the ones the daemon applies. The `mise.config` directory is
+approved as one more mount, read-only at `/opt/firebrick/dotfiles`, because it
+mounts a host directory too. A file that can't be read or isn't valid YAML fails
+the command, so a broken file never counts as approving nothing. Starting an
+existing sandbox doesn't check anything, because microsandbox only applies
+mounts, and `fbkd` the clipboard setting, when it creates a sandbox.
 
 ## Reading and writing the spec file
 
@@ -145,6 +146,14 @@ isn't a regular file; ...`. That covers `fbk init`, with and without `--force`,
 `fbk validate`, `fbk network`, `fbk port`, and `fbk start`, `fbk run` and the
 other commands that resolve the spec. `fbk network` and `fbk port` read the spec
 before they write it, so they fail before they change anything.
+
+Before these commands parse the working directory's spec,
+`validate::migrate_spec` rewrites a top-level `mise: true` or `mise: false` to
+`mise:` with `enabled: <bool>` through `firebrick_spec::migrate_file`, which
+edits only that line and writes with `write_text`, and prints `Migrated mise:
+<bool> in .firebrick.yml to mise.enabled: <bool>` on stderr. Specs of other
+workspaces, such as the one `fbk upgrade <name>` reads, aren't migrated, and
+report the boolean as an error.
 
 `read_text` checks the path with `symlink_metadata`, opens it, and fails when
 the opened file isn't the one it checked, so a symlink swapped in between isn't

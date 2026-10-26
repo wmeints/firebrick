@@ -62,6 +62,9 @@ pub const DEFAULT_IMAGE: &str = concat!(
     env!("CARGO_PKG_VERSION")
 );
 
+/// Guest path the directory of `mise.config` is mounted at, read-only.
+pub const MISE_DOTFILES_PATH: &str = "/opt/firebrick/dotfiles";
+
 /// A problem in a spec file, pinned to the 1-based line and column it occurs at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpecDiagnostic {
@@ -116,10 +119,13 @@ pub struct SandboxSpec {
     /// Whether the sandbox runs the image's `/sbin/init` as PID 1. Defaults to `true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub init: Option<bool>,
-    /// Whether fbkd trusts and installs the workspace's mise tools when the sandbox starts.
-    /// Defaults to `true`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mise: Option<bool>,
+    /// How fbkd uses mise when the sandbox starts. Without it, mise is enabled without dotfiles.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_mise",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub mise: Option<MiseSpec>,
     /// Sizes of the volumes the sandbox gets. Missing fields use their defaults.
     #[serde(default)]
     pub volumes: VolumesSpec,
@@ -169,6 +175,27 @@ pub struct MountSpec {
     /// Whether the directory is mounted read-only. Defaults to `false`.
     #[serde(default)]
     pub readonly: bool,
+}
+
+/// How fbkd uses mise when the sandbox starts.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MiseSpec {
+    /// Whether fbkd applies the dotfiles and trusts and installs the workspace's mise tools when
+    /// the sandbox starts. Defaults to `true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Host directory with a `mise.toml` whose `[dotfiles]` fbkd applies in the sandbox:
+    /// absolute, starting with `~`, or relative to the spec file's directory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<String>,
+}
+
+impl MiseSpec {
+    /// Whether mise is enabled, which it is unless `enabled` is `false`.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
 }
 
 /// CPU and memory resources assigned to a sandbox.
@@ -950,6 +977,90 @@ impl<'de> Visitor<'de> for ImageVisitor {
     }
 }
 
+fn deserialize_mise<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<MiseSpec>, D::Error> {
+    deserializer.deserialize_option(MiseVisitor)
+}
+
+/// Reads the `mise` section, and refuses the boolean it was before it became a map, at the
+/// boolean's line and column.
+struct MiseVisitor;
+
+impl<'de> Visitor<'de> for MiseVisitor {
+    type Value = Option<MiseSpec>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a map with the mise settings")
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+
+    fn visit_bool<E: de::Error>(self, value: bool) -> Result<Self::Value, E> {
+        Err(E::custom(format!(
+            "mise is a map now: write `mise: {{ enabled: {value} }}` to set mise.enabled"
+        )))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+        MiseSpec::deserialize(de::value::MapAccessDeserializer::new(map)).map(Some)
+    }
+}
+
+/// Rewrites a top-level `mise: true` or `mise: false` in the text of a spec file to the map
+/// with `enabled`, keeping the rest of the text as written. Returns the new text and the value
+/// of the boolean, or `None` when the spec has no boolean `mise`.
+pub fn migrate_mise(text: &str) -> Option<(String, bool)> {
+    let mut lines = Lines::of(text);
+    let line = lines.0.iter().position(|line| line.starts_with("mise:"))?;
+    let (enabled, comment) = boolean_value(&lines.0[line]["mise:".len()..])?;
+
+    lines.0[line] = format!("mise:{comment}\n  enabled: {enabled}\n");
+
+    Some((lines.0.concat(), enabled))
+}
+
+/// Reads a YAML boolean from the value after a key, returning it with the trailing comment,
+/// which keeps its leading space.
+fn boolean_value(value: &str) -> Option<(bool, &str)> {
+    let value = value.trim_end_matches(['\r', '\n']);
+    let (scalar, comment) = match value.find(" #") {
+        Some(start) => value.split_at(start),
+        None => (value, ""),
+    };
+
+    let enabled = match scalar.trim() {
+        "true" | "True" | "TRUE" => true,
+        "false" | "False" | "FALSE" => false,
+        _ => return None,
+    };
+
+    Some((enabled, comment))
+}
+
+/// Rewrites a boolean `mise` in the spec file like [`migrate_mise`]. Returns the value of the
+/// boolean when it rewrote the file, or `None` when there is no file or nothing to migrate.
+/// Refuses a symlink like [`read_text`].
+pub fn migrate_file(path: &Path) -> Result<Option<bool>, SandboxSpecError> {
+    let Some((text, enabled)) = read_text(path)?.as_deref().and_then(migrate_mise) else {
+        return Ok(None);
+    };
+
+    write_text(path, &text)?;
+
+    Ok(Some(enabled))
+}
+
 /// Loads and parses a sandbox spec from a YAML file, or returns `None` when it doesn't exist.
 /// Refuses a symlink and other files that aren't regular files, like [`read_text`].
 pub fn from_file(path: &Path) -> Result<Option<SandboxSpec>, SandboxSpecError> {
@@ -1314,7 +1425,10 @@ pub fn default_spec(name: String) -> SandboxSpec {
         image: None,
         resources: Some(SandboxResourcesSpec::default()),
         init: Some(true),
-        mise: Some(true),
+        mise: Some(MiseSpec {
+            enabled: Some(true),
+            config: None,
+        }),
         volumes: VolumesSpec::default(),
         network: None,
         mounts: None,
@@ -1783,7 +1897,13 @@ pub mod tests {
         assert_eq!(spec.image, None);
         assert_eq!((resources.cpu, resources.memory.as_str()), (2, "4 GiB"));
         assert_eq!(spec.init, Some(true));
-        assert_eq!(spec.mise, Some(true));
+        assert_eq!(
+            spec.mise,
+            Some(MiseSpec {
+                enabled: Some(true),
+                config: None
+            })
+        );
         assert_eq!(spec.volumes, VolumesSpec::default());
         assert!(spec.network.is_none());
         assert!(spec.mounts.is_none());
@@ -1834,11 +1954,126 @@ pub mod tests {
 
     #[test]
     fn parses_mise() {
-        let file = write_spec("name: dev\nmise: false\n");
+        let file = write_spec("name: dev\nmise:\n  enabled: false\n  config: ~/dotfiles\n");
 
         let spec = from_file(file.path()).unwrap().unwrap();
 
-        assert_eq!(spec.mise, Some(false));
+        assert_eq!(
+            spec.mise,
+            Some(MiseSpec {
+                enabled: Some(false),
+                config: Some("~/dotfiles".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn mise_fields_are_optional_and_mise_is_enabled_by_default() {
+        let file = write_spec("name: dev\nmise: {}\n");
+
+        let mise = from_file(file.path()).unwrap().unwrap().mise.unwrap();
+
+        assert_eq!(mise, MiseSpec::default());
+        assert!(mise.is_enabled());
+    }
+
+    #[test]
+    fn mise_is_disabled_only_by_enabled_false() {
+        let mise = |enabled| MiseSpec {
+            enabled,
+            config: None,
+        };
+
+        assert!(mise(Some(true)).is_enabled());
+        assert!(!mise(Some(false)).is_enabled());
+    }
+
+    #[test]
+    fn boolean_mise_returns_diagnostic_naming_mise_enabled() {
+        let file = write_spec("name: dev\nmise: false\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (2, 7));
+        assert!(
+            diagnostic.message.contains("mise.enabled"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn unknown_mise_field_returns_diagnostic() {
+        let file = write_spec("name: dev\nmise:\n  dotfiles: ~/dotfiles\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!(diagnostic.line, 3);
+        assert!(
+            diagnostic.message.contains("dotfiles"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn migrate_mise_rewrites_only_the_boolean_line() {
+        let text = "# my sandbox\nname: dev\nmise: false # no tools\nports:\n  - 3000\n";
+
+        let (migrated, enabled) = migrate_mise(text).unwrap();
+
+        assert!(!enabled);
+        assert_eq!(
+            migrated,
+            "# my sandbox\nname: dev\nmise: # no tools\n  enabled: false\nports:\n  - 3000\n"
+        );
+        assert_eq!(
+            from_str(&migrated).unwrap().mise,
+            Some(MiseSpec {
+                enabled: Some(false),
+                config: None,
+            })
+        );
+    }
+
+    #[test]
+    fn migrate_mise_reads_yaml_booleans_without_a_trailing_newline() {
+        assert_eq!(
+            migrate_mise("name: dev\nmise: True"),
+            Some(("name: dev\nmise:\n  enabled: true\n".to_string(), true))
+        );
+    }
+
+    #[test]
+    fn migrate_mise_leaves_other_specs_alone() {
+        for text in [
+            "name: dev\n",
+            "name: dev\nmise:\n  enabled: false\n",
+            "name: dev\nmise: { enabled: false }\n",
+            "name: dev\nenv:\n  mise: false\n",
+            "name: dev\nmise: sometimes\n",
+        ] {
+            assert_eq!(migrate_mise(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn migrate_file_rewrites_the_spec_file() {
+        let file = write_spec("name: dev\nmise: true\n");
+
+        assert_eq!(migrate_file(file.path()).unwrap(), Some(true));
+        assert_eq!(
+            fs::read_to_string(file.path()).unwrap(),
+            "name: dev\nmise:\n  enabled: true\n"
+        );
+        assert_eq!(migrate_file(file.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn migrate_file_without_a_spec_file_does_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert_eq!(migrate_file(&dir.path().join("missing.yml")).unwrap(), None);
     }
 
     #[test]
@@ -2550,7 +2785,13 @@ pub mod tests {
         assert_eq!(loaded.name, "dev");
         assert_eq!(loaded.image, spec.image);
         assert_eq!(loaded.init, Some(true));
-        assert_eq!(loaded.mise, Some(true));
+        assert_eq!(
+            loaded.mise,
+            Some(MiseSpec {
+                enabled: Some(true),
+                config: None
+            })
+        );
         assert_eq!(loaded.volumes, spec.volumes);
         assert_eq!(loaded.network, spec.network);
     }

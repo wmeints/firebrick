@@ -106,17 +106,22 @@ and trust boundaries these risks belong to.
   still opens, so the browser sends the OAuth callback, with its code, to
   whatever listens on the host's port
   ([ADR 0030](decisions/0030-forward-oauth-callback-ports-when-opening-a-url.md)).
+- **The agent reads the dotfiles directory:** `mise.config` mounts the whole
+  directory into the sandbox, read-only, so the agent can read every file in it,
+  also the ones `[dotfiles]` doesn't name, such as an SSH key or a token in a
+  shell profile. Point it only at a directory without secrets
+  ([ADR 0056](decisions/0056-apply-mise-dotfiles-from-a-read-only-mount.md)).
 - **Only mounts, network and clipboard changes need approval:** the agent can
   edit `.firebrick.yml`, and `fbk` only asks before it applies changed `mounts`,
-  `network` or `clipboard` settings. A changed `image`, `init`, `mise`,
-  `resources`, `volumes`, `ports` or `name` applies the next time the sandbox is
-  created, or for `ports` the next time it starts, without asking. `--yes`
-  approves whatever the file contains. A workspace from before approvals existed
-  has no entry, and its first sandbox creation with the default network section
-  doesn't ask: when the agent removes the `network` section and the user runs
-  `fbk rm --force && fbk start`, the new sandbox doesn't enforce the old rules.
-  `fbk` can't compare with the removed sandbox, and `GetSandbox` doesn't return
-  a running sandbox's policy
+  `mise.config`, `network` or `clipboard` settings. A changed `image`, `init`,
+  `mise.enabled`, `resources`, `volumes`, `ports` or `name` applies the next
+  time the sandbox is created, or for `ports` the next time it starts, without
+  asking. `--yes` approves whatever the file contains. A workspace from before
+  approvals existed has no entry, and its first sandbox creation with the
+  default network section doesn't ask: when the agent removes the `network`
+  section and the user runs `fbk rm --force && fbk start`, the new sandbox
+  doesn't enforce the old rules. `fbk` can't compare with the removed sandbox,
+  and `GetSandbox` doesn't return a running sandbox's policy
   ([ADR 0037](decisions/0037-approve-mounts-and-network-changes-in-the-spec.md)).
 - **A shared clipboard crosses the sandbox boundary:** in a sandbox created with
   `clipboard: true`, any process can read the host clipboard through `fbkd` at

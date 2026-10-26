@@ -67,6 +67,10 @@ message StartSandboxRequest {
   // sandbox's default user whenever the sandbox runs after this request. Unset leaves the
   // sandbox's git config alone.
   optional GitIdentity git_identity = 13;
+  // Canonical absolute host path of a directory with a mise.toml whose [dotfiles] fbkd applies
+  // on every start, mounted read-only at /opt/firebrick/dotfiles when the sandbox is created.
+  // Empty means no dotfiles.
+  string mise_config = 14;
 }
 
 message GitIdentity {
@@ -156,6 +160,9 @@ message MiseInstallProgress {
   string line = 1;
   // Set on the last message, once mise installed the tools.
   bool complete = 2;
+  // A problem to show the user that doesn't stop the start, such as dotfiles that couldn't be
+  // applied, without control characters. Empty on the other messages.
+  string warning = 3;
 }
 
 message ImagePullProgress {

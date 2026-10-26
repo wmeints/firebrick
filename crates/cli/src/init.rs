@@ -73,7 +73,12 @@ mod tests {
         assert_eq!(resources.cpu, 2);
         assert_eq!(resources.memory, "4 GiB");
         assert_eq!(spec.init, Some(true));
-        assert_eq!(spec.mise, Some(true));
+        assert_eq!(spec.mise.and_then(|mise| mise.enabled), Some(true));
+        assert!(
+            fs::read_to_string(&spec_path)
+                .unwrap()
+                .contains("mise:\n  enabled: true\n")
+        );
         assert_eq!(spec.volumes, firebrick_spec::VolumesSpec::default());
         assert!(spec.mounts.is_none());
     }

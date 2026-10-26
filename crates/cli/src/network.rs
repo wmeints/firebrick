@@ -671,7 +671,7 @@ mod tests {
         assert_eq!(written.name, "firebrick-abc123");
         assert_eq!(written.image, None);
         assert_eq!(written.init, Some(true));
-        assert_eq!(written.mise, Some(true));
+        assert_eq!(written.mise.and_then(|mise| mise.enabled), Some(true));
         assert_eq!(
             written.network.unwrap(),
             NetworkSpec {

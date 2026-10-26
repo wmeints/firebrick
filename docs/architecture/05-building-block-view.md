@@ -210,9 +210,10 @@ C4Component
   a terminal, and otherwise `Pulling image <ref>...` and `Pulled image <ref>`.
   For the mise install, a spinner with the elapsed time and the latest line of
   mise, truncated to the terminal width and cleared when the install ends, and
-  otherwise `Installing mise tools...` and `Installed mise tools`. It shows
-  nothing for a step that sends no progress, and clears an unfinished bar or
-  spinner when the start fails
+  otherwise `Installing mise tools...` and `Installed mise tools`. A warning,
+  such as dotfiles that couldn't be applied, is printed on a line of its own. It
+  shows nothing for a step that sends no progress, and clears an unfinished bar
+  or spinner when the start fails
   ([ADR 0024](decisions/0024-stream-image-pull-progress-from-startsandbox.md)).
 - `validate` - Checks `.firebrick.yml` and reports problems as
   `file:line:column: error: message`.
@@ -360,25 +361,27 @@ C4Component
   that doesn't exist returns `NOT_FOUND`, and one whose registry can't be
   reached `UNAVAILABLE`, both naming the image. Invalid values are rejected
   before it creates anything. When it creates or starts a sandbox, it uses the
-  `mise` module to trust the mise config files at the workspace root and run
-  `mise install`, unless the sandbox's `firebrick.mise` label, stored at create
-  time, turns mise off. The `mise` module streams mise's output and reports the
-  latest line without control characters, at most one every 100 ms, as start
-  progress (see [Starting a sandbox](06-runtime-view.md#starting-a-sandbox)). It
-  starts, stops, gets, lists and removes sandboxes, gives each sandbox a unique
-  SSH host name, regenerates the SSH config, the editor settings and Zed's
-  remote projects after every start and remove and when the daemon starts, and
-  connects to a sandbox by name or host name. `GetSandbox` returns the sandbox's
-  working directory, which is the workspace mount path, as `workspace_path`, and
-  the host directory bind-mounted there, canonicalized, as
-  `workspace_host_path`. Both are empty for a sandbox without a workspace. The
-  CLI compares `workspace_host_path` with the working directory before it uses
-  an existing sandbox. A failed sync only logs a warning. `SetSecret` stores a
-  secret and adds it to the sandboxes in its scope: a global secret to the
-  existing sandboxes firebrick created, except the ones with a sandbox-scoped
-  secret with that name, and a sandbox-scoped secret to its sandbox only, which
-  must exist. It refuses a secret whose name one of those sandboxes got as an
-  `env` variable from its spec with `FAILED_PRECONDITION` (see
+  `mise` module to trust the dotfiles' `mise.toml` in `/opt/firebrick/dotfiles`
+  and the mise config files at the workspace root, run `mise dot apply` for the
+  dotfiles and then `mise install`, unless the sandbox's `firebrick.mise` label,
+  stored at create time, turns mise off. The `mise` module streams mise's output
+  and reports the latest line without control characters, at most one every 100
+  ms, as start progress (see
+  [Starting a sandbox](06-runtime-view.md#starting-a-sandbox)). It starts,
+  stops, gets, lists and removes sandboxes, gives each sandbox a unique SSH host
+  name, regenerates the SSH config, the editor settings and Zed's remote
+  projects after every start and remove and when the daemon starts, and connects
+  to a sandbox by name or host name. `GetSandbox` returns the sandbox's working
+  directory, which is the workspace mount path, as `workspace_path`, and the
+  host directory bind-mounted there, canonicalized, as `workspace_host_path`.
+  Both are empty for a sandbox without a workspace. The CLI compares
+  `workspace_host_path` with the working directory before it uses an existing
+  sandbox. A failed sync only logs a warning. `SetSecret` stores a secret and
+  adds it to the sandboxes in its scope: a global secret to the existing
+  sandboxes firebrick created, except the ones with a sandbox-scoped secret with
+  that name, and a sandbox-scoped secret to its sandbox only, which must exist.
+  It refuses a secret whose name one of those sandboxes got as an `env` variable
+  from its spec with `FAILED_PRECONDITION` (see
   [Setting environment variables](06-runtime-view.md#setting-environment-variables)).
   `ListSecrets` returns the names, scopes and allowed hosts, sorted by name and
   then scope with the global secret first, never the values. `RemoveSecret`
@@ -773,13 +776,15 @@ C4Component
   into a `firebrick_spec::MountSpec`, so the CLI approves the mounts the way the
   daemon creates them.
 - `firebrick-spec` (`crates/spec`) - Parses `.firebrick.yml` into a
-  `SandboxSpec` with a `name`, an optional `image`, optional `init`, `mise` and
-  `clipboard` flags, optional `resources` (`cpu`, `memory`), `volumes`
-  (`docker`, the size of the Docker data disk), an optional `network` section
-  (`enabled`, default `true`, `enforce`, default `false`, and the `allow` and
-  `deny` rules), an optional `ports` list and optional `mounts` (`host`, `guest`
-  and `readonly`, default `false`), rejects unknown fields and reports the line
-  and column of a problem. A `PortMapping` in `ports` is written like Docker
+  `SandboxSpec` with a `name`, an optional `image`, optional `init` and
+  `clipboard` flags, an optional `mise` map (`enabled`, default `true`, and
+  `config`, a host directory with the user's mise dotfiles, resolved like a
+  mount's `host`), optional `resources` (`cpu`, `memory`), `volumes` (`docker`,
+  the size of the Docker data disk), an optional `network` section (`enabled`,
+  default `true`, `enforce`, default `false`, and the `allow` and `deny` rules),
+  an optional `ports` list and optional `mounts` (`host`, `guest` and
+  `readonly`, default `false`), rejects unknown fields and reports the line and
+  column of a problem. A `PortMapping` in `ports` is written like Docker
   Compose: `3000` forwards host port 3000 to guest port 3000, and `"8080:5173"`
   host port 8080 to guest port 5173. Ports outside 1 to 65535, other forms and a
   host port that appears twice are reported at the entry. `add_port` and
@@ -807,12 +812,16 @@ C4Component
   URLs, ports and paths are invalid. It owns the defaults
   (`ghcr.io/wmeints/firebrick-base:v<version>` as `DEFAULT_IMAGE`, which
   `default_spec` leaves out of the spec so it follows the release, `init: true`,
-  `mise: true`, no shared clipboard, 2 vCPUs, `4 GiB` of memory, a `20 GiB`
-  Docker volume in `VolumesSpec::default()`) and `parse_size_mib`, which reads
-  memory and volume sizes in `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon both
-  use them. `NetworkSpec::allow` and `NetworkSpec::deny` move rules between the
-  lists, `NetworkSpec::is_enabled` reads `enabled` with its default, and
-  `to_file` writes a spec back as YAML, leaving out unset fields.
+  `mise.enabled: true`, no shared clipboard, 2 vCPUs, `4 GiB` of memory, a `20
+  GiB` Docker volume in `VolumesSpec::default()`) and `parse_size_mib`, which
+  reads memory and volume sizes in `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon
+  both use them. `NetworkSpec::allow` and `NetworkSpec::deny` move rules between
+  the lists, `NetworkSpec::is_enabled` reads `enabled` with its default, and
+  `to_file` writes a spec back as YAML, leaving out unset fields. A boolean
+  `mise`, the form before it became a map, is reported at the value with a
+  message naming `mise.enabled`; `migrate_mise` and `migrate_file` rewrite the
+  top-level `mise: <bool>` line of a spec to `mise:` with `enabled: <bool>`,
+  keeping the rest of the text.
 - `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket
   (`$XDG_RUNTIME_DIR/fbkd.sock`), the log directory
   (`$XDG_STATE_HOME/firebrick`), the SSH directory

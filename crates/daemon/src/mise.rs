@@ -1,6 +1,6 @@
-//! Trusts and installs the mise tools of a sandbox's workspace, so a sandbox comes up with the
-//! project's tools ready, and reports the lines mise writes meanwhile as throttled
-//! [`MiseUpdate`]s.
+//! Applies the user's mise dotfiles and trusts and installs the mise tools of a sandbox's
+//! workspace, so a sandbox comes up with the user's setup and the project's tools ready, and
+//! reports the lines mise writes meanwhile as throttled [`MiseUpdate`]s.
 
 use crate::pull::{PROGRESS_INTERVAL, Throttle};
 use firebrick_utils::strip_control;
@@ -16,6 +16,13 @@ use tokio::time::Instant;
 /// Label that stores whether a sandbox installs its workspace's mise tools on start.
 pub const ENABLED_LABEL: &str = "firebrick.mise";
 
+/// Guest path of the host directory with the user's mise dotfiles, mounted read-only when the
+/// sandbox is created.
+pub const DOTFILES_PATH: &str = firebrick_spec::MISE_DOTFILES_PATH;
+
+/// The mise config in [`DOTFILES_PATH`] whose `[dotfiles]` fbkd applies.
+const DOTFILES_CONFIG: &str = "/opt/firebrick/dotfiles/mise.toml";
+
 /// The mise config files at the workspace root that fbkd trusts, relative to the workspace.
 const CONFIG_FILES: [&str; 5] = [
     "mise.toml",
@@ -27,6 +34,9 @@ const CONFIG_FILES: [&str; 5] = [
 
 /// How long `mise install` gets to download and install the tools.
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// How long `mise dot apply` gets to write the dotfiles and run their hooks.
+const APPLY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// How long `mise trust` gets per config file.
 const TRUST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -42,6 +52,9 @@ pub struct MiseUpdate {
     pub line: String,
     /// Whether this is the last update, sent once mise installed the tools.
     pub complete: bool,
+    /// A problem that doesn't stop the start, such as dotfiles that couldn't be applied, sent
+    /// in an update of its own.
+    pub warning: Option<String>,
 }
 
 /// Errors of installing the mise tools.
@@ -98,26 +111,41 @@ fn tail(output: &str, lines: usize) -> String {
     all[all.len().saturating_sub(lines)..].join("\n")
 }
 
-/// Trusts each mise config file at the root of `workspace`, then installs the tools, as the
-/// image's default user, passing the progress to `on_progress`. Does nothing and reports no
-/// progress when the workspace has no mise config file or the image has no mise.
+/// Trusts the dotfiles config in [`DOTFILES_PATH`] and each mise config file at the root of
+/// `workspace`, applies the dotfiles, then installs the tools in `workspace`, as the image's
+/// default user, passing the progress to `on_progress`. Dotfiles that can't be trusted or
+/// applied are reported as a warning, and the tools are still installed. Does nothing and
+/// reports no progress when there are no dotfiles and the workspace has no mise config file.
 pub async fn install_tools(
     sb: &Sandbox,
     workspace: &str,
     on_progress: impl FnMut(MiseUpdate) + Send,
 ) -> Result<(), MiseError> {
+    let dotfiles = exists(sb, DOTFILES_CONFIG).await?;
     let configs = existing_configs(sb, workspace).await?;
 
-    if configs.is_empty() {
+    if !dotfiles && configs.is_empty() {
         return Ok(());
     }
 
     let mise = Mise { sb, workspace };
     let mut reporter = Reporter::new(on_progress);
+    let dotfiles_trusted = dotfiles
+        && warn_on_failure(
+            mise.run(&["trust", DOTFILES_CONFIG], TRUST_TIMEOUT, &mut reporter)
+                .await,
+            &mut reporter,
+        )?;
 
     for config in &configs {
         mise.run(&["trust", config], TRUST_TIMEOUT, &mut reporter)
             .await?;
+    }
+
+    if dotfiles_trusted {
+        let apply = ["-C", DOTFILES_PATH, "dot", "apply", "--yes", "--force"];
+        let applied = mise.run(&apply, APPLY_TIMEOUT, &mut reporter).await;
+        warn_on_failure(applied, &mut reporter)?;
     }
 
     mise.run(&["install", "--yes"], INSTALL_TIMEOUT, &mut reporter)
@@ -127,18 +155,37 @@ pub async fn install_tools(
     Ok(())
 }
 
+/// Turns a dotfiles step that mise failed into a warning, returning whether it succeeded.
+/// Errors other than [`MiseError::Failed`] stop the start as they would for the tools.
+fn warn_on_failure<F: FnMut(MiseUpdate)>(
+    result: Result<(), MiseError>,
+    reporter: &mut Reporter<F>,
+) -> Result<bool, MiseError> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(MiseError::Failed { sandbox, output }) => {
+            tracing::warn!("couldn't apply the dotfiles in sandbox {sandbox}: {output}");
+            reporter.warn(format!("couldn't apply the dotfiles: {output}"));
+            Ok(false)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Whether the guest path exists in the sandbox.
+async fn exists(sb: &Sandbox, path: &str) -> Result<bool, MiseError> {
+    sb.fs()
+        .exists(path)
+        .await
+        .map_err(|source| exec_error(sb, source))
+}
+
 /// Returns the mise config files that exist at the root of the workspace.
 async fn existing_configs(sb: &Sandbox, workspace: &str) -> Result<Vec<String>, MiseError> {
     let mut configs = vec![];
 
     for path in config_paths(workspace) {
-        let exists = sb
-            .fs()
-            .exists(&path)
-            .await
-            .map_err(|source| exec_error(sb, source))?;
-
-        if exists {
+        if exists(sb, &path).await? {
             configs.push(path);
         }
     }
@@ -174,7 +221,7 @@ impl Mise<'_> {
             kill(self.sb, &handle).await;
             return Err(failed(
                 self.sb,
-                format!("mise {} timed out after {timeout:?}", args[0]),
+                format!("mise {} timed out after {timeout:?}", args.join(" ")),
             ));
         };
 
@@ -357,8 +404,22 @@ impl<F: FnMut(MiseUpdate)> Reporter<F> {
         }
     }
 
+    /// Reports a problem that doesn't stop the install, after reporting that it started.
+    fn warn(&mut self, warning: String) {
+        self.begin();
+        (self.on_progress)(MiseUpdate {
+            line: String::new(),
+            complete: false,
+            warning: Some(warning),
+        });
+    }
+
     fn send(&mut self, line: String, complete: bool) {
-        (self.on_progress)(MiseUpdate { line, complete });
+        (self.on_progress)(MiseUpdate {
+            line,
+            complete,
+            warning: None,
+        });
     }
 }
 
@@ -409,6 +470,11 @@ mod tests {
                 "/workspaces/demo/.tool-versions",
             ]
         );
+    }
+
+    #[test]
+    fn dotfiles_config_is_the_mise_toml_of_the_dotfiles_mount() {
+        assert_eq!(DOTFILES_CONFIG, format!("{DOTFILES_PATH}/mise.toml"));
     }
 
     #[test]
@@ -466,6 +532,7 @@ mod tests {
         MiseUpdate {
             line: line.to_string(),
             complete: false,
+            warning: None,
         }
     }
 
@@ -477,6 +544,7 @@ mod tests {
         MiseUpdate {
             line: String::new(),
             complete: true,
+            warning: None,
         }
     }
 
@@ -539,6 +607,48 @@ mod tests {
             *updates.borrow(),
             vec![started(), line("trusted"), line("downloading"), completed()]
         );
+    }
+
+    #[test]
+    fn reporter_sends_a_warning_in_an_update_of_its_own_after_the_start() {
+        let (mut reporter, updates) = recording();
+
+        reporter.warn("couldn't apply the dotfiles: boom".into());
+        reporter.complete();
+
+        let warning = MiseUpdate {
+            warning: Some("couldn't apply the dotfiles: boom".into()),
+            ..started()
+        };
+        assert_eq!(*updates.borrow(), vec![started(), warning, completed()]);
+    }
+
+    #[test]
+    fn failed_dotfiles_step_becomes_a_warning() {
+        let (mut reporter, updates) = recording();
+        let failure = Err(MiseError::Failed {
+            sandbox: "demo".into(),
+            output: "mise ERROR conflict".into(),
+        });
+
+        assert!(!warn_on_failure(failure, &mut reporter).unwrap());
+        assert!(warn_on_failure(Ok(()), &mut reporter).unwrap());
+        assert_eq!(
+            updates.borrow().last().and_then(|u| u.warning.clone()),
+            Some("couldn't apply the dotfiles: mise ERROR conflict".to_string())
+        );
+    }
+
+    #[test]
+    fn missing_mise_still_stops_the_dotfiles_step() {
+        let (mut reporter, updates) = recording();
+        let missing = Err(MiseError::NotInstalled("demo".into()));
+
+        assert!(matches!(
+            warn_on_failure(missing, &mut reporter),
+            Err(MiseError::NotInstalled(_))
+        ));
+        assert_eq!(*updates.borrow(), vec![]);
     }
 
     #[test]
