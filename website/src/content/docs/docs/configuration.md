@@ -263,11 +263,13 @@ mounts:
 ```
 
 A relative `host` resolves against the directory that holds `.firebrick.yml`,
-`~` expands to `$HOME`, and `~user` to that user's home directory. `fbk start`
-and `fbk run` refuse to create the sandbox when a `host` isn't an existing
-directory, or when a `guest` is the workspace path (`/workspaces/<leaf>`) or
-`/var/lib/docker`. A `guest` must not contain `..`, `:`, `;` or `,`. The agent
-user owns the mounted files, like the workspace.
+`~` expands to your home directory (`$HOME` on macOS and Linux, `%USERPROFILE%`,
+such as `C:\Users\<username>`, on Windows), and on macOS and Linux `~user` to
+that user's home directory. `fbk start` and `fbk run` refuse to create the
+sandbox when a `host` isn't an existing directory, or when a `guest` is the
+workspace path (`/workspaces/<leaf>`) or `/var/lib/docker`. A `guest` must not
+contain `..`, `:`, `;` or `,`. The agent user owns the mounted files, like the
+workspace.
 
 Before they create a sandbox with new or changed mounts, `fbk start` and `fbk
 run` show them with the directories they resolve to and ask you to approve them.
@@ -320,6 +322,12 @@ the directory that holds its `mise.toml`:
 mise:
   config: ~/dotfiles
 ```
+
+The path resolves like a mount's `host`: `~` is your home directory, so
+`~/dotfiles` is `$HOME/dotfiles` on macOS and Linux and
+`C:\Users\<username>\dotfiles` on Windows, where `~\dotfiles` works too. A
+relative path resolves against the directory that holds `.firebrick.yml`, and an
+absolute path is used as it is.
 
 ```toml
 # ~/dotfiles/mise.toml
