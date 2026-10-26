@@ -1,12 +1,9 @@
 use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
-use firebrick_spec::{
-    MISE_DOTFILES_PATH, MiseSpec, MountSpec, NetworkRule, NetworkSpec, PortMapping, SandboxSpec,
-};
+use firebrick_spec::{MiseSpec, MountSpec, NetworkRule, NetworkSpec, PortMapping, SandboxSpec};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::io;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
@@ -275,11 +272,8 @@ async fn approve_new_sandbox(
 /// paths are canonical, so a symlink shows up as the directory it points to, with the read-only
 /// mount of the mise dotfiles, and its clipboard setting.
 fn new_sandbox_settings(request: &StartSandboxRequest, network: NetworkSpec) -> Settings {
-    let dotfiles = (!request.mise_config.is_empty()).then(|| MountSpec {
-        host: request.mise_config.clone(),
-        guest: MISE_DOTFILES_PATH.to_string(),
-        readonly: true,
-    });
+    let dotfiles = (!request.mise_config.is_empty())
+        .then(|| MountSpec::mise_dotfiles(request.mise_config.as_str()));
 
     Settings {
         mounts: request
@@ -491,7 +485,7 @@ fn build_start_request(
 ) -> Result<StartSandboxRequest> {
     let resources = spec.resources.unwrap_or_default();
     let home = std::env::var_os(firebrick_utils::HOME_VAR);
-    let mounts = resolve_mounts(spec.mounts.unwrap_or_default(), workspace, home.clone())?;
+    let mounts = resolve_mounts(spec.mounts.unwrap_or_default(), workspace, home.as_deref())?;
     let mise = spec.mise.unwrap_or_default();
     let mise_config = mise_config(&mise, workspace, home.as_deref())?;
 
@@ -531,12 +525,12 @@ fn env_vars(env: BTreeMap<String, String>) -> EnvVars {
 fn resolve_mounts(
     mounts: Vec<MountSpec>,
     spec_dir: &Path,
-    home: Option<OsString>,
+    home: Option<&std::ffi::OsStr>,
 ) -> Result<Vec<Mount>> {
     mounts
         .into_iter()
         .map(|mount| {
-            let host = resolve_host_path(&mount.host, spec_dir, home.as_deref())?;
+            let host = resolve_host_path(&mount.host, spec_dir, home)?;
 
             Ok(Mount {
                 host: host.to_string_lossy().into_owned(),
@@ -568,8 +562,12 @@ fn dotfiles_dir(
     home: Option<&std::ffi::OsStr>,
 ) -> Result<Option<PathBuf>> {
     let dir = resolve_host_path(config, spec_dir, home)?;
+    let config = dir.join("mise.toml");
+    let exists = config
+        .try_exists()
+        .with_context(|| format!("can't check for {}", config.display()))?;
 
-    if dir.join("mise.toml").is_file() {
+    if exists {
         return Ok(Some(dir));
     }
 
@@ -1006,8 +1004,6 @@ pub(crate) async fn resolve_spec(
     working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<SandboxSpec> {
-    validate::migrate_spec(&working_dir.join(SPEC_FILE_NAME))?;
-
     if let Some(spec) = read_spec_file(working_dir)? {
         return Ok(spec);
     }
@@ -1047,12 +1043,13 @@ fn default_name(working_dir: &Path, legacy_exists: bool) -> String {
     }
 }
 
-/// Loads the spec file from the working directory, or returns `None` when there isn't one.
-/// Fails when it is a symlink.
+/// Loads the spec file from the working directory, or returns `None` when there isn't one,
+/// after migrating a boolean `mise` in it. Fails when it is a symlink.
 fn read_spec_file(working_dir: &Path) -> Result<Option<SandboxSpec>> {
-    Ok(firebrick_spec::from_file(
-        &working_dir.join(SPEC_FILE_NAME),
-    )?)
+    let path = working_dir.join(SPEC_FILE_NAME);
+    validate::migrate_spec(&path)?;
+
+    Ok(firebrick_spec::from_file(&path)?)
 }
 
 /// Names the sandbox `firebrick-` followed by the first 6 hex digits of the SHA-256 hash of
@@ -2214,7 +2211,13 @@ mod tests {
 
         let err = start_request_of(&project).unwrap_err();
 
-        assert!(err.to_string().starts_with("can't mount"), "{err}");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "can't mount {}: No such file or directory",
+                project.join("../missing").display()
+            )
+        );
     }
 
     #[tokio::test]

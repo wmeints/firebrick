@@ -2521,14 +2521,14 @@ async fn start_sandbox_sends_no_mise_progress_without_a_mise_config() {
 }
 
 /// Creates the sandbox with a [`dotfiles_dir`] as its mise config directory and gives it a fake `mise`
-/// that logs its working directory and arguments to `mise.log` in the workspace, and runs
-/// `apply` for `mise dot apply`. Then adds a `mise.toml` to the workspace when
+/// that logs its working directory and arguments to `mise.log` in the workspace, then runs the
+/// `case` arms in `arms` against its arguments. Then adds a `mise.toml` to the workspace when
 /// `workspace_config` is set, and restarts the sandbox, so the restart applies the dotfiles.
 /// Returns the dotfiles directory and the progress messages of the restart.
 async fn restart_with_dotfiles(
     client: &mut SandboxManagementServiceClient<Channel>,
     name: &str,
-    apply: &str,
+    arms: &str,
     workspace_config: bool,
 ) -> (tempfile::TempDir, Vec<MiseInstallProgress>) {
     let dotfiles = dotfiles_dir();
@@ -2544,7 +2544,7 @@ async fn restart_with_dotfiles(
     let workspace = workspace_path(name);
     let guest = guest_workspace(&workspace);
     let script = format!(
-        "#!/bin/sh\necho \"$PWD $*\" >> {guest}/mise.log\ncase \"$*\" in *\"dot apply\"*) {apply} ;; esac\nexit 0\n"
+        "#!/bin/sh\necho \"$PWD $*\" >> {guest}/mise.log\ncase \"$*\" in {arms} esac\nexit 0\n"
     );
     std::fs::write(workspace.join("fake-mise"), script).unwrap();
     let copy = format!("cp {guest}/fake-mise /usr/local/bin/mise && chmod +x /usr/local/bin/mise");
@@ -2629,8 +2629,7 @@ async fn start_sandbox_warns_about_dotfiles_it_cant_apply_and_installs_the_tools
 
     let daemon = TestDaemon::start("mise-dotfiles-failed").await;
     let mut client = daemon.client().await;
-    let apply = r"printf 'mise ERROR [31mconflict[0m at ~/.bashrc
-' >&2; exit 1";
+    let apply = r#"*"dot apply"*) printf 'mise ERROR \033[31mconflict\033[0m at ~/.bashrc\n' >&2; exit 1 ;;"#;
 
     let (_dotfiles, progress) = restart_with_dotfiles(&mut client, name, apply, false).await;
 
@@ -2680,6 +2679,45 @@ async fn start_sandbox_rejects_a_mount_at_the_dotfiles_path() {
         .expect_err("the clashing mount started the sandbox");
 
     assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert_eq!(
+        status.message(),
+        "mount /opt/firebrick/dotfiles conflicts with the mise dotfiles mount"
+    );
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+}
+
+#[tokio::test]
+async fn start_sandbox_skips_dotfiles_it_cant_trust_and_installs_the_tools() {
+    let name: &str = &sandbox_name("mise-dotfiles-untrusted");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("mise-dotfiles-untrusted").await;
+    let mut client = daemon.client().await;
+    let trust =
+        r#""trust /opt/firebrick/dotfiles/mise.toml") echo 'mise ERROR untrusted' >&2; exit 1 ;;"#;
+
+    let (_dotfiles, progress) = restart_with_dotfiles(&mut client, name, trust, true).await;
+
+    let warnings: Vec<&str> = progress
+        .iter()
+        .map(|p| p.warning.as_str())
+        .filter(|warning| !warning.is_empty())
+        .collect();
+    assert_eq!(
+        warnings,
+        ["couldn't apply the dotfiles: mise ERROR untrusted"]
+    );
+    let guest = guest_workspace(&workspace_path(name));
+    assert_eq!(
+        mise_log(name),
+        [
+            format!("{guest} trust /opt/firebrick/dotfiles/mise.toml"),
+            format!("{guest} trust {guest}/mise.toml"),
+            format!("{guest} install --yes"),
+        ]
+    );
 
     daemon.stop().await;
     remove_sandbox(name).await;
@@ -3855,6 +3893,32 @@ fn with_image_label(labels: &[(String, String)], image: &str) -> Vec<(String, St
             _ => (key.clone(), value.clone()),
         })
         .collect()
+}
+
+#[tokio::test]
+async fn upgrade_keeps_the_read_only_dotfiles_mount() {
+    let name: &str = &sandbox_name("upgrade-dotfiles");
+    remove_sandbox_and_snapshots(name).await;
+
+    let daemon = TestDaemon::start("upgrade-dotfiles").await;
+    let mut client = daemon.client().await;
+    let dotfiles = dotfiles_dir();
+    let request = StartSandboxRequest {
+        mise_config: dunce::canonicalize(dotfiles.path())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+        ..old_image_request(name)
+    };
+    start_and_wait(&mut client, request).await;
+
+    let upgraded = upgrade(&mut client, name, UPGRADE_IMAGE).await;
+
+    assert!(upgraded.expect("failed to upgrade the sandbox").upgraded);
+    assert_dotfiles_mount_is_read_only(&mut client, name, dotfiles.path()).await;
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
 }
 
 #[tokio::test]

@@ -147,13 +147,14 @@ isn't a regular file; ...`. That covers `fbk init`, with and without `--force`,
 other commands that resolve the spec. `fbk network` and `fbk port` read the spec
 before they write it, so they fail before they change anything.
 
-Before these commands parse the working directory's spec,
-`validate::migrate_spec` rewrites a top-level `mise: true` or `mise: false` to
-`mise:` with `enabled: <bool>` through `firebrick_spec::migrate_file`, which
-edits only that line and writes with `write_text`, and prints `Migrated mise:
-<bool> in .firebrick.yml to mise.enabled: <bool>` on stderr. Specs of other
-workspaces, such as the one `fbk upgrade <name>` reads, aren't migrated, and
-report the boolean as an error.
+Before `fbk` parses a spec, `validate::migrate_spec` rewrites a top-level `mise:
+true` or `mise: false` to `mise:` with `enabled: <bool>`. It reads with
+`read_text`, edits only that line with `firebrick_spec::migrate_mise`, keeping
+its line ending, writes with `write_text`, and prints `Migrated mise: <bool> in
+.firebrick.yml to mise.enabled: <bool>` on stderr. That covers the working
+directory's spec and the specs of other workspaces that `fbk` reads, such as the
+one `fbk upgrade <name>` reads for the image. A write that fails names the
+migration and how to make the change by hand.
 
 `read_text` checks the path with `symlink_metadata`, opens it, and fails when
 the opened file isn't the one it checked, so a symlink swapped in between isn't

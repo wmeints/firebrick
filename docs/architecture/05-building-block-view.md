@@ -819,9 +819,10 @@ C4Component
   the lists, `NetworkSpec::is_enabled` reads `enabled` with its default, and
   `to_file` writes a spec back as YAML, leaving out unset fields. A boolean
   `mise`, the form before it became a map, is reported at the value with a
-  message naming `mise.enabled`; `migrate_mise` and `migrate_file` rewrite the
-  top-level `mise: <bool>` line of a spec to `mise:` with `enabled: <bool>`,
-  keeping the rest of the text.
+  message naming `mise.enabled`; `migrate_mise` rewrites the top-level `mise:
+  <bool>` line in the text of a spec to `mise:` with `enabled: <bool>`, keeping
+  the rest of the text. `MountSpec::mise_dotfiles` returns the read-only mount
+  at `/opt/firebrick/dotfiles`, which the CLI approves and the daemon creates.
 - `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket
   (`$XDG_RUNTIME_DIR/fbkd.sock`), the log directory
   (`$XDG_STATE_HOME/firebrick`), the SSH directory

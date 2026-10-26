@@ -48,9 +48,9 @@ Dotfiles are a convenience, so a missing `mise.toml` and a failing trust or
 apply only warn: the sandbox starts and the tools are installed. A failure of
 the workspace's own trust or install still fails the start.
 
-`fbk` migrates a boolean `mise` in the working directory's spec to `mise:` with
-`enabled: <bool>`, editing only that line, and the parser reports the boolean
-form with a message naming `mise.enabled`.
+`fbk` migrates a boolean `mise` in every spec it reads to `mise:` with `enabled:
+<bool>`, editing only that line, and the parser reports the boolean form with a
+message naming `mise.enabled`.
 
 ## Consequences
 

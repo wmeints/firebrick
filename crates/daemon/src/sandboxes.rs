@@ -154,7 +154,7 @@ pub struct StartSandbox<'a> {
     /// Extra host directories with absolute host paths, mounted when the sandbox is created.
     pub mounts: &'a [MountSpec],
     /// Absolute host path of the directory with the user's mise dotfiles, mounted read-only at
-    /// [`mise::DOTFILES_PATH`] when the sandbox is created.
+    /// [`firebrick_spec::MISE_DOTFILES_PATH`] when the sandbox is created.
     pub dotfiles: Option<&'a str>,
     /// Whether the sandbox can read the host clipboard. Stored when the sandbox is created.
     pub clipboard: bool,
@@ -2557,7 +2557,7 @@ fn check_mount(mount: &MountSpec, workspace_guest_path: &str) -> Result<(), Sand
         )));
     }
 
-    if guest == mise::DOTFILES_PATH {
+    if guest == firebrick_spec::MISE_DOTFILES_PATH {
         return Err(SandboxError::invalid_argument(format!(
             "mount {guest} conflicts with the mise dotfiles mount"
         )));
@@ -2566,7 +2566,7 @@ fn check_mount(mount: &MountSpec, workspace_guest_path: &str) -> Result<(), Sand
     Ok(())
 }
 
-/// Returns the read-only mount of the dotfiles directory at [`mise::DOTFILES_PATH`], failing
+/// Returns the read-only mount of the dotfiles directory, [`MountSpec::mise_dotfiles`], failing
 /// with `InvalidArgument` when its host path is relative.
 fn dotfiles_mount(host: Option<&str>) -> Result<Option<MountSpec>, SandboxError> {
     let Some(host) = host else {
@@ -2579,11 +2579,7 @@ fn dotfiles_mount(host: Option<&str>) -> Result<Option<MountSpec>, SandboxError>
         )));
     }
 
-    Ok(Some(MountSpec {
-        host: host.to_string(),
-        guest: mise::DOTFILES_PATH.to_string(),
-        readonly: true,
-    }))
+    Ok(Some(MountSpec::mise_dotfiles(host)))
 }
 
 /// Bind mounts the extra host directories like the workspace: owned by the agent user, with

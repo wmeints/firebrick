@@ -3,6 +3,7 @@
 //! reports the lines mise writes meanwhile as throttled [`MiseUpdate`]s.
 
 use crate::pull::{PROGRESS_INTERVAL, Throttle};
+use firebrick_spec::MISE_DOTFILES_PATH;
 use firebrick_utils::strip_control;
 use microsandbox::protocol::exec::{ExecFailed, ExecFailureKind};
 use microsandbox::sandbox::exec::{ExecEvent, ExecHandle};
@@ -15,13 +16,6 @@ use tokio::time::Instant;
 
 /// Label that stores whether a sandbox installs its workspace's mise tools on start.
 pub const ENABLED_LABEL: &str = "firebrick.mise";
-
-/// Guest path of the host directory with the user's mise dotfiles, mounted read-only when the
-/// sandbox is created.
-pub const DOTFILES_PATH: &str = firebrick_spec::MISE_DOTFILES_PATH;
-
-/// The mise config in [`DOTFILES_PATH`] whose `[dotfiles]` fbkd applies.
-const DOTFILES_CONFIG: &str = "/opt/firebrick/dotfiles/mise.toml";
 
 /// The mise config files at the workspace root that fbkd trusts, relative to the workspace.
 const CONFIG_FILES: [&str; 5] = [
@@ -111,7 +105,7 @@ fn tail(output: &str, lines: usize) -> String {
     all[all.len().saturating_sub(lines)..].join("\n")
 }
 
-/// Trusts the dotfiles config in [`DOTFILES_PATH`] and each mise config file at the root of
+/// Trusts the dotfiles' `mise.toml` in [`MISE_DOTFILES_PATH`] and each mise config file at the root of
 /// `workspace`, applies the dotfiles, then installs the tools in `workspace`, as the image's
 /// default user, passing the progress to `on_progress`. Dotfiles that can't be trusted or
 /// applied are reported as a warning, and the tools are still installed. Does nothing and
@@ -121,7 +115,8 @@ pub async fn install_tools(
     workspace: &str,
     on_progress: impl FnMut(MiseUpdate) + Send,
 ) -> Result<(), MiseError> {
-    let dotfiles = exists(sb, DOTFILES_CONFIG).await?;
+    let dotfiles_config = format!("{MISE_DOTFILES_PATH}/mise.toml");
+    let dotfiles = exists(sb, &dotfiles_config).await?;
     let configs = existing_configs(sb, workspace).await?;
 
     if !dotfiles && configs.is_empty() {
@@ -132,7 +127,7 @@ pub async fn install_tools(
     let mut reporter = Reporter::new(on_progress);
     let dotfiles_trusted = dotfiles
         && warn_on_failure(
-            mise.run(&["trust", DOTFILES_CONFIG], TRUST_TIMEOUT, &mut reporter)
+            mise.run(&["trust", &dotfiles_config], TRUST_TIMEOUT, &mut reporter)
                 .await,
             &mut reporter,
         )?;
@@ -143,7 +138,7 @@ pub async fn install_tools(
     }
 
     if dotfiles_trusted {
-        let apply = ["-C", DOTFILES_PATH, "dot", "apply", "--yes", "--force"];
+        let apply = ["-C", MISE_DOTFILES_PATH, "dot", "apply", "--yes", "--force"];
         let applied = mise.run(&apply, APPLY_TIMEOUT, &mut reporter).await;
         warn_on_failure(applied, &mut reporter)?;
     }
@@ -470,11 +465,6 @@ mod tests {
                 "/workspaces/demo/.tool-versions",
             ]
         );
-    }
-
-    #[test]
-    fn dotfiles_config_is_the_mise_toml_of_the_dotfiles_mount() {
-        assert_eq!(DOTFILES_CONFIG, format!("{DOTFILES_PATH}/mise.toml"));
     }
 
     #[test]

@@ -198,6 +198,18 @@ impl MiseSpec {
     }
 }
 
+impl MountSpec {
+    /// Returns the read-only mount of the `mise.config` directory at [`MISE_DOTFILES_PATH`],
+    /// which the CLI approves and the daemon creates.
+    pub fn mise_dotfiles(host: impl Into<String>) -> Self {
+        Self {
+            host: host.into(),
+            guest: MISE_DOTFILES_PATH.to_string(),
+            readonly: true,
+        }
+    }
+}
+
 /// CPU and memory resources assigned to a sandbox.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
@@ -1022,16 +1034,21 @@ impl<'de> Visitor<'de> for MiseVisitor {
 /// of the boolean, or `None` when the spec has no boolean `mise`.
 pub fn migrate_mise(text: &str) -> Option<(String, bool)> {
     let mut lines = Lines::of(text);
-    let line = lines.0.iter().position(|line| line.starts_with("mise:"))?;
+    let line = lines.key("mise")?;
     let (enabled, comment) = boolean_value(&lines.0[line]["mise:".len()..])?;
+    let ending = if lines.0[line].ends_with("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
 
-    lines.0[line] = format!("mise:{comment}\n  enabled: {enabled}\n");
+    lines.0[line] = format!("mise:{comment}{ending}  enabled: {enabled}{ending}");
 
     Some((lines.0.concat(), enabled))
 }
 
-/// Reads a YAML boolean from the value after a key, returning it with the trailing comment,
-/// which keeps its leading space.
+/// Reads a YAML boolean from the value after a key, the way the parser reads it, returning it
+/// with the trailing comment, which keeps its leading space.
 fn boolean_value(value: &str) -> Option<(bool, &str)> {
     let value = value.trim_end_matches(['\r', '\n']);
     let (scalar, comment) = match value.find(" #") {
@@ -1039,26 +1056,9 @@ fn boolean_value(value: &str) -> Option<(bool, &str)> {
         None => (value, ""),
     };
 
-    let enabled = match scalar.trim() {
-        "true" | "True" | "TRUE" => true,
-        "false" | "False" | "FALSE" => false,
-        _ => return None,
-    };
+    let enabled = serde_yaml::from_str::<bool>(scalar.trim()).ok()?;
 
     Some((enabled, comment))
-}
-
-/// Rewrites a boolean `mise` in the spec file like [`migrate_mise`]. Returns the value of the
-/// boolean when it rewrote the file, or `None` when there is no file or nothing to migrate.
-/// Refuses a symlink like [`read_text`].
-pub fn migrate_file(path: &Path) -> Result<Option<bool>, SandboxSpecError> {
-    let Some((text, enabled)) = read_text(path)?.as_deref().and_then(migrate_mise) else {
-        return Ok(None);
-    };
-
-    write_text(path, &text)?;
-
-    Ok(Some(enabled))
 }
 
 /// Loads and parses a sandbox spec from a YAML file, or returns `None` when it doesn't exist.
@@ -1279,7 +1279,7 @@ impl Lines {
     /// Finds the `ports` key when it holds a block list with one line per entry, `count` entries
     /// in all.
     fn ports_block(&self, count: usize) -> Option<PortsBlock> {
-        let key = self.ports_key()?;
+        let key = self.key("ports")?;
         let after_key = self.0[key]["ports:".len()..].trim();
         let values: Vec<usize> = (key + 1..key + 1 + self.block_len(key))
             .filter(|line| is_value(&self.0[*line]))
@@ -1296,9 +1296,12 @@ impl Lines {
         })
     }
 
-    /// Returns the line of the top-level `ports` key.
-    fn ports_key(&self) -> Option<usize> {
-        self.0.iter().position(|line| line.starts_with("ports:"))
+    /// Returns the line of the top-level key with the name.
+    fn key(&self, name: &str) -> Option<usize> {
+        self.0.iter().position(|line| {
+            line.strip_prefix(name)
+                .is_some_and(|rest| rest.starts_with(':'))
+        })
     }
 
     /// Replaces the `ports` key and its entries with a block list of the ports, keeping the
@@ -1306,7 +1309,7 @@ impl Lines {
     fn write_block(&mut self, ports: &[PortMapping]) {
         let block = ports_block_text(ports);
 
-        let Some(key) = self.ports_key() else {
+        let Some(key) = self.key("ports") else {
             self.ensure_trailing_newline();
             self.0.push(block);
             return;
@@ -1984,6 +1987,7 @@ pub mod tests {
             config: None,
         };
 
+        assert!(mise(None).is_enabled());
         assert!(mise(Some(true)).is_enabled());
         assert!(!mise(Some(false)).is_enabled());
     }
@@ -2045,6 +2049,29 @@ pub mod tests {
     }
 
     #[test]
+    fn migrate_mise_keeps_crlf_line_endings() {
+        assert_eq!(
+            migrate_mise("name: dev\r\nmise: false\r\n"),
+            Some((
+                "name: dev\r\nmise:\r\n  enabled: false\r\n".to_string(),
+                false
+            ))
+        );
+    }
+
+    #[test]
+    fn mise_dotfiles_mount_is_read_only_at_the_dotfiles_path() {
+        assert_eq!(
+            MountSpec::mise_dotfiles("/home/me/dotfiles"),
+            MountSpec {
+                host: "/home/me/dotfiles".to_string(),
+                guest: "/opt/firebrick/dotfiles".to_string(),
+                readonly: true,
+            }
+        );
+    }
+
+    #[test]
     fn migrate_mise_leaves_other_specs_alone() {
         for text in [
             "name: dev\n",
@@ -2055,25 +2082,6 @@ pub mod tests {
         ] {
             assert_eq!(migrate_mise(text), None, "{text}");
         }
-    }
-
-    #[test]
-    fn migrate_file_rewrites_the_spec_file() {
-        let file = write_spec("name: dev\nmise: true\n");
-
-        assert_eq!(migrate_file(file.path()).unwrap(), Some(true));
-        assert_eq!(
-            fs::read_to_string(file.path()).unwrap(),
-            "name: dev\nmise:\n  enabled: true\n"
-        );
-        assert_eq!(migrate_file(file.path()).unwrap(), None);
-    }
-
-    #[test]
-    fn migrate_file_without_a_spec_file_does_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-
-        assert_eq!(migrate_file(&dir.path().join("missing.yml")).unwrap(), None);
     }
 
     #[test]
