@@ -182,7 +182,8 @@ impl<W: Write> MiseProgressView<W> {
         }
     }
 
-    /// Shows a progress message, and finishes the install when it is the last one.
+    /// Shows a progress message, and finishes the install when it is the last one. A warning
+    /// is printed on a line of its own, which stays when the spinner is cleared.
     pub fn update(&mut self, progress: &MiseInstallProgress) {
         if self.finished {
             return;
@@ -190,6 +191,10 @@ impl<W: Write> MiseProgressView<W> {
 
         if !self.started {
             self.begin();
+        }
+
+        if !progress.warning.is_empty() {
+            self.warn(&progress.warning);
         }
 
         if let (Output::Bar { bar, .. }, false) = (&self.output, progress.line.is_empty()) {
@@ -214,6 +219,14 @@ impl<W: Write> MiseProgressView<W> {
         }
 
         self.finished = true;
+    }
+
+    fn warn(&mut self, warning: &str) {
+        match &mut self.output {
+            Output::Bar { bar, .. } => bar.println(format!("warning: {warning}")),
+            // A failed write to stderr leaves nowhere to report it.
+            Output::Lines(writer) => drop(writeln!(writer, "warning: {warning}")),
+        }
     }
 
     /// Starts showing the install, timing it from now.
@@ -504,15 +517,50 @@ mod tests {
     fn mise_line(line: &str) -> MiseInstallProgress {
         MiseInstallProgress {
             line: line.to_string(),
-            complete: false,
+            ..MiseInstallProgress::default()
         }
     }
 
     fn mise_completed() -> MiseInstallProgress {
         MiseInstallProgress {
-            line: String::new(),
             complete: true,
+            ..MiseInstallProgress::default()
         }
+    }
+
+    fn mise_warning(warning: &str) -> MiseInstallProgress {
+        MiseInstallProgress {
+            warning: warning.to_string(),
+            ..MiseInstallProgress::default()
+        }
+    }
+
+    #[test]
+    fn mise_lines_show_a_warning_on_a_line_of_its_own() {
+        let messages = [
+            mise_line(""),
+            mise_warning("couldn't apply the dotfiles: boom"),
+            mise_completed(),
+        ];
+
+        assert_eq!(
+            mise_lines(&messages, true),
+            "Installing mise tools...\nwarning: couldn't apply the dotfiles: boom\nInstalled mise tools\n"
+        );
+    }
+
+    #[test]
+    fn spinner_keeps_a_warning_when_the_install_completes() {
+        let (mut view, term) = mise_terminal_view(120);
+
+        view.update(&mise_line(""));
+        view.update(&mise_warning("couldn't apply the dotfiles: boom"));
+        view.update(&mise_completed());
+
+        assert_eq!(
+            term.contents(),
+            "warning: couldn't apply the dotfiles: boom"
+        );
     }
 
     fn mise_terminal_view(width: u16) -> (MiseProgressView<Vec<u8>>, InMemoryTerm) {

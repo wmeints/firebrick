@@ -191,6 +191,7 @@ fn start_sandbox_from<'a>(
         network: &parsed.network,
         ports: parsed.ports.as_deref(),
         mounts: &parsed.mounts,
+        dotfiles: Some(request.mise_config.as_str()).filter(|path| !path.is_empty()),
         clipboard: request.clipboard.unwrap_or(false),
         env: parsed.env.as_ref(),
         git_identity: request.git_identity.as_ref().map(git_identity),
@@ -308,6 +309,7 @@ fn mise_progress_response(update: MiseUpdate) -> StartSandboxResponse {
         MiseInstallProgress {
             line: update.line,
             complete: update.complete,
+            warning: update.warning.unwrap_or_default(),
         },
     ))
 }
@@ -1339,6 +1341,7 @@ mod tests {
         StartProgress::Mise(MiseUpdate {
             line: line.to_string(),
             complete,
+            warning: None,
         })
     }
 
@@ -1347,6 +1350,7 @@ mod tests {
             MiseInstallProgress {
                 line: line.to_string(),
                 complete,
+                warning: String::new(),
             },
         ))
     }

@@ -81,8 +81,25 @@ mise ERROR Failed to install npm:@openai/codexx@latest: package not found: @open
 ```
 
 The sandbox keeps running, so you can connect and fix the config. Correct the
-tool name in `mise.toml` and run `fbk start` again, or set `mise: false` in
-`.firebrick.yml` to skip the install.
+tool name in `mise.toml` and run `fbk start` again, or set `mise.enabled: false`
+in `.firebrick.yml` to skip the install.
+
+## Bringing your dotfiles
+
+An agent's settings, such as `~/.claude/settings.json`, and your shell and git
+setup can come from your own dotfiles repository instead of being set up again
+in each sandbox. Manage it with
+[mise dotfiles](https://mise.jdx.dev/dotfiles.html) and set `mise.config` to its
+directory:
+
+```yaml
+mise:
+  config: ~/dotfiles
+```
+
+Firebrick applies the dotfiles each time the sandbox starts, before it installs
+the mise tools, so an agent your dotfiles' global mise config names is installed
+in every sandbox. See [Dotfiles](/docs/configuration/#dotfiles).
 
 ## Logging in
 

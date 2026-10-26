@@ -142,6 +142,7 @@ impl<'a> SpecFile<'a> {
         client: &mut SandboxManagementServiceClient<Channel>,
     ) -> Result<Self> {
         let path = working_dir.join(SPEC_FILE_NAME);
+        validate::migrate_spec(&path)?;
 
         let (name, text) = match firebrick_spec::read_text(&path).map_err(validate::spec_error)? {
             Some(text) => (
@@ -219,6 +220,24 @@ mod tests {
         remove(8080, dir.path(), &mut client).await.unwrap();
 
         assert!(!spec_text(&dir).contains("8080"), "{}", spec_text(&dir));
+    }
+
+    #[tokio::test]
+    async fn remove_migrates_a_boolean_mise() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join(SPEC_FILE_NAME),
+            "name: dev\nmise: false\nports:\n  - 8080:80\n",
+        )
+        .unwrap();
+        let mut client = fake_daemon::serve("other", OTHER_WORKSPACE).await;
+
+        remove(8080, dir.path(), &mut client).await.unwrap();
+
+        assert_eq!(
+            spec_text(&dir),
+            "name: dev\nmise:\n  enabled: false\nports: []\n"
+        );
     }
 
     async fn assert_forward_and_remove_refuse_symlink(content: Option<&str>) {

@@ -153,6 +153,9 @@ pub struct StartSandbox<'a> {
     pub ports: Option<&'a [PortMapping]>,
     /// Extra host directories with absolute host paths, mounted when the sandbox is created.
     pub mounts: &'a [MountSpec],
+    /// Absolute host path of the directory with the user's mise dotfiles, mounted read-only at
+    /// [`firebrick_spec::MISE_DOTFILES_PATH`] when the sandbox is created.
+    pub dotfiles: Option<&'a str>,
     /// Whether the sandbox can read the host clipboard. Stored when the sandbox is created.
     pub clipboard: bool,
     /// Environment variables of the sandbox, applied when it's created or starts; `None` keeps
@@ -1472,12 +1475,14 @@ impl SandboxManager {
     ) -> Result<(Sandbox, String), SandboxError> {
         let guest_path = workspace_mount_path(request.workspace)?;
         check_mounts(request.mounts, &guest_path)?;
+        let dotfiles = dotfiles_mount(request.dotfiles)?;
         let resources = resources()?;
         let hostname = ssh::pick_hostname(request.workspace, &taken_hostnames().await?);
         let _secrets_guard = self.secrets_lock.lock().await;
         let secrets = self.load_secrets_for(request.name)?;
 
-        let settings = new_sandbox_settings(request, &guest_path, &hostname, resources);
+        let mut settings = new_sandbox_settings(request, &guest_path, &hostname, resources);
+        settings.mounts.extend(dotfiles);
         let builder = settings
             .builder(&self.netlogs, &self.clipboards)
             .image(sandbox_image(request.image));
@@ -2552,7 +2557,29 @@ fn check_mount(mount: &MountSpec, workspace_guest_path: &str) -> Result<(), Sand
         )));
     }
 
+    if guest == firebrick_spec::MISE_DOTFILES_PATH {
+        return Err(SandboxError::invalid_argument(format!(
+            "mount {guest} conflicts with the mise dotfiles mount"
+        )));
+    }
+
     Ok(())
+}
+
+/// Returns the read-only mount of the dotfiles directory, [`MountSpec::mise_dotfiles`], failing
+/// with `InvalidArgument` when its host path is relative.
+fn dotfiles_mount(host: Option<&str>) -> Result<Option<MountSpec>, SandboxError> {
+    let Some(host) = host else {
+        return Ok(None);
+    };
+
+    if !Path::new(host).is_absolute() {
+        return Err(SandboxError::invalid_argument(format!(
+            "mise config path {host} must be an absolute path"
+        )));
+    }
+
+    Ok(Some(MountSpec::mise_dotfiles(host)))
 }
 
 /// Bind mounts the extra host directories like the workspace: owned by the agent user, with
@@ -2920,6 +2947,7 @@ mod tests {
             network: &NetworkSpec::default(),
             ports: None,
             mounts: &[],
+            dotfiles: None,
             clipboard,
             env,
             git_identity: None,
@@ -3180,6 +3208,44 @@ mod tests {
                 "mount /var/lib/docker conflicts with the Docker data volume".into()
             ))
         );
+    }
+
+    #[test]
+    fn check_mounts_rejects_the_dotfiles_path() {
+        let mounts = [mount(
+            &host("/home/user/dotfiles"),
+            "/opt/firebrick/dotfiles/",
+        )];
+
+        assert_eq!(
+            check_mounts(&mounts, "/workspaces/project"),
+            Err(SandboxError::InvalidArgument(
+                "mount /opt/firebrick/dotfiles conflicts with the mise dotfiles mount".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn dotfiles_mount_is_read_only_at_the_dotfiles_path() {
+        let dotfiles = host("/home/user/dotfiles");
+
+        assert_eq!(
+            dotfiles_mount(Some(&dotfiles)),
+            Ok(Some(MountSpec {
+                host: dotfiles.clone(),
+                guest: "/opt/firebrick/dotfiles".to_string(),
+                readonly: true,
+            }))
+        );
+        assert_eq!(dotfiles_mount(None), Ok(None));
+    }
+
+    #[test]
+    fn dotfiles_mount_rejects_a_relative_host_path() {
+        assert!(matches!(
+            dotfiles_mount(Some("dotfiles")),
+            Err(SandboxError::InvalidArgument(_))
+        ));
     }
 
     #[test]

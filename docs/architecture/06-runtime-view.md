@@ -97,13 +97,13 @@ sequenceDiagram
     loop Until the sandbox runs (max 120s)
         CLI->>D: GetSandbox(name)
         alt NOT_FOUND
-            CLI->>D: StartSandbox(name, image, init, mise, resources, network, mounts, workspace)
+            CLI->>D: StartSandbox(name, image, init, mise, mise_config, resources, network, mounts, workspace)
             Note over D,MS: Creates the sandbox, see Starting a sandbox
             opt Image isn't cached
                 D-->>CLI: ImagePullProgress (stream)
                 CLI-->>Dev: Progress bar on stderr
             end
-            opt Workspace has a mise config
+            opt Workspace has a mise config or the sandbox has dotfiles
                 D-->>CLI: MiseInstallProgress (stream)
                 CLI-->>Dev: Spinner on stderr
             end
@@ -111,7 +111,7 @@ sequenceDiagram
         else Stopped or Crashed
             CLI->>D: StartSandbox(name, workspace)
             Note over D,MS: Starts the sandbox, see Starting a sandbox
-            opt Workspace has a mise config
+            opt Workspace has a mise config or the sandbox has dotfiles
                 D-->>CLI: MiseInstallProgress (stream)
                 CLI-->>Dev: Spinner on stderr
             end
@@ -316,6 +316,16 @@ anything, and otherwise bind mounts each directory like the workspace: owned by
 `1000:1000`, with host permissions mirrored, and read-only when `readonly` is
 set. Starting an existing sandbox sends no mounts.
 
+The CLI resolves `mise.config` the same way, as long as mise isn't disabled.
+When the directory has a `mise.toml`, it sends its canonical path as
+`mise_config`, and the approval lists it as a read-only mount at
+`/opt/firebrick/dotfiles`. When it has none, the CLI prints `warning: <path> has
+no mise.toml, so the sandbox gets no dotfiles` and sends no `mise_config`. The
+daemon rejects a relative `mise_config` and a user mount at
+`/opt/firebrick/dotfiles` with `INVALID_ARGUMENT`, and otherwise bind mounts the
+directory read-only at that path when it creates the sandbox
+([ADR 0056](decisions/0056-apply-mise-dotfiles-from-a-read-only-mount.md)).
+
 `StartSandbox` is a server-streaming RPC. When fbkd creates a sandbox whose
 image isn't cached, microsandbox downloads it first, which can take minutes for
 the `firebrick-base` image. fbkd creates the sandbox with
@@ -370,13 +380,26 @@ without asking is safe because mise runs inside the sandbox and can reach no
 more than the agent already can: the guest, the workspace and the network (see
 [ADR 0017](decisions/0017-trust-the-workspaces-mise-config-inside-the-sandbox.md)).
 Nothing runs when the sandbox was already running or starting, when a start lost
-the race with another start, or when the workspace has none of the files.
+the race with another start, or when the workspace has none of the files and the
+sandbox has no dotfiles.
 
-The `mise` option in `.firebrick.yml` (default `true`) turns this off. fbkd
-stores it as the `firebrick.mise` label when it creates the sandbox and every
-later `StartSandbox` follows the label, because `fbk start <name>` and `fbk run`
-send `StartSandbox` without the spec. A sandbox without the label was created
-before the option existed and installs the tools, like a request without `mise`.
+When `/opt/firebrick/dotfiles/mise.toml` exists in the guest, fbkd applies the
+user's dotfiles in the same step, in this order: `mise trust` on the dotfiles'
+`mise.toml`, `mise trust` on each workspace config, `mise -C
+/opt/firebrick/dotfiles dot apply --yes --force`, and then `mise install --yes`
+in the workspace, also when the workspace has no mise config, so the tools of a
+global config from the dotfiles are installed too. `--force` lets the dotfiles
+replace files the image ships, such as `~/.bashrc`. The mount stays for the life
+of the sandbox, so this runs on every start and after an upgrade, and symlinks
+into it stay valid
+([ADR 0056](decisions/0056-apply-mise-dotfiles-from-a-read-only-mount.md)).
+
+The `mise.enabled` option in `.firebrick.yml` (default `true`) turns this off,
+the dotfiles included. fbkd stores it as the `firebrick.mise` label when it
+creates the sandbox and every later `StartSandbox` follows the label, because
+`fbk start <name>` and `fbk run` send `StartSandbox` without the spec. A sandbox
+without the label was created before the option existed and installs the tools,
+like a request without `mise`.
 
 `mise install` can take many minutes, so fbkd streams its progress on the start
 stream, next to the image pull progress. It runs mise with `exec_stream_with`
@@ -402,7 +425,8 @@ Creating sandbox firebrick...
 
 When stderr isn't a terminal, fbk prints `Installing mise tools...` when the
 install starts and `Installed mise tools` when it ends, without the lines in
-between.
+between. A `MiseInstallProgress` with a `warning` is printed as `warning:
+<warning>` on a line of its own, which stays when the spinner is cleared.
 
 An SSH connection to a stopped sandbox starts it through the tunnel instead of
 `StartSandbox`, and doesn't install the mise tools, so the SSH handshake never
@@ -413,6 +437,10 @@ sandbox's disk; run `fbk start` to install changed ones.
   minutes: `StartSandbox` returns `FAILED_PRECONDITION` with `mise install
   failed in sandbox <name>:` and the last 10 lines of mise's stderr. The sandbox
   keeps running, so the developer can connect and fix the config.
+- Trusting the dotfiles' `mise.toml` or `mise dot apply` exits non-zero or times
+  out: fbkd logs a warning and sends a `MiseInstallProgress` with the warning
+  `couldn't apply the dotfiles:` and the last 10 lines of mise's stderr, then
+  installs the tools as usual.
 - The image has no `mise` executable: fbkd logs a warning and `StartSandbox`
   succeeds without telling the client.
 - The exec into the guest fails: fbkd logs the error and returns `INTERNAL`.
