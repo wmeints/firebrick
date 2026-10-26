@@ -6,6 +6,7 @@
 use firebrick_spec::{NetworkRule, NetworkSpec};
 use microsandbox::MicrosandboxError;
 use microsandbox::sandbox::{SandboxBuilder, SandboxSpec};
+use microsandbox_network::config::HttpDenyResponseFormat;
 use microsandbox_network::policy::{
     Action, NetworkPolicy, Rule, RuleBuilder, RuleDestinationBuilder,
 };
@@ -177,10 +178,13 @@ pub fn add_to_builder(
     let policy = policy(network)?;
 
     // `tls(|t| t)` intercepts TLS on port 443, so HTTPS requests can get the deny response too.
+    // Only the text format renders `deny_message`; the default JSON format ignores it.
     Ok(builder.network(|n| {
-        n.policy(policy)
-            .tls(|t| t)
-            .http(|h| h.deny_response(true).deny_message(DENY_MESSAGE))
+        n.policy(policy).tls(|t| t).http(|h| {
+            h.deny_response(true)
+                .deny_response_format(HttpDenyResponseFormat::Text)
+                .deny_message(DENY_MESSAGE)
+        })
     }))
 }
 
@@ -414,6 +418,16 @@ mod tests {
         let config = config_with(&enforced(&["github.com"], &[]), &[]).await;
 
         assert!(config.spec.network.enabled);
+    }
+
+    #[tokio::test]
+    async fn enforced_network_answers_denied_requests_with_the_deny_message() {
+        let config = config_with(&enforced(&["github.com"], &[]), &[]).await;
+        let http = &config.spec.network.http;
+
+        assert!(http.deny_response);
+        assert_eq!(http.deny_response_format, HttpDenyResponseFormat::Text);
+        assert_eq!(http.deny_message.as_deref(), Some(DENY_MESSAGE));
     }
 
     #[test]

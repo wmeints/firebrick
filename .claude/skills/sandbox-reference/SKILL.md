@@ -264,12 +264,17 @@ build on it when `Cargo.lock` has a newer version.
   intercepted HTTPS.
 - `.http(|h| h.deny_response(true).deny_message(..))` answers a denied HTTP/1.x
   request, also over intercepted HTTPS, with `403 Forbidden` and the message
-  (`{host}` is the denied host). It only does so when the walk ends at the
-  default deny. A domain deny rule defers when the connection opens, and when no
-  later rule can allow the flow microsandbox treats it as an explicit deny: the
-  connection is reset without the page, for every denied host, as soon as the
-  policy has any domain deny rule. IP and CIDR denies and non-HTTP traffic are
-  reset or closed.
+  (`{host}` is the denied host). Since 0.7.11 this needs
+  `.deny_response_format(HttpDenyResponseFormat::Text)`: the default JSON format
+  ignores `deny_message` and answers
+  `{"code":"network_policy_denied","message":..,"domain":..}`, with the message
+  from `network_deny_message` used as-is, without `{host}`. Secret violations
+  only get a deny response in JSON format. It only does so when the walk ends at
+  the default deny. A domain deny rule defers when the connection opens, and
+  when no later rule can allow the flow microsandbox treats it as an explicit
+  deny: the connection is reset without the page, for every denied host, as soon
+  as the policy has any domain deny rule. IP and CIDR denies and non-HTTP
+  traffic are reset or closed.
 - Strict mode (`NetworkConfig::strict`) is on by default: a host allowed only by
   a domain rule is only reachable over HTTP(S) whose host name can be checked,
   so SSH to `github.com:22` needs an IP or CIDR rule. With interception on, QUIC

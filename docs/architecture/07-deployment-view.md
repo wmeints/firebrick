@@ -92,7 +92,7 @@ distribution.
 which needs KVM on Linux, Apple Silicon on macOS, or the Windows Hypervisor
 Platform (WHP) on Windows 11, where microsandbox's support is a preview. On
 Windows the runtime is `msb.exe` and `libkrunfw.dll`. `fbkd` embeds the runtime
-that matches the `microsandbox` crate it's built with (currently `0.7.6`). On
+that matches the `microsandbox` crate it's built with (currently `0.7.11`). On
 startup it extracts that runtime when none is installed, and replaces an
 installed runtime with another version. See
 [ADR 0002](decisions/0002-embed-the-microsandbox-runtime-in-anvild.md).
