@@ -195,6 +195,24 @@ mod tests {
         assert_eq!(&reply, b"pong");
     }
 
+    // Reproduces the ENOTCONN that refused such clients on macOS; Linux passed without the fix.
+    // Windows drops a pipe client that is gone before it's accepted by design.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_listener_accepts_a_client_that_wrote_and_closed_before_it_accepted() {
+        let (_temp, path) = test_endpoint("closed");
+        let mut listener = Listener::bind(&path).unwrap();
+
+        let mut client = connect(&path).await.unwrap();
+        client.write_all(b"ping").await.unwrap();
+        drop(client);
+        let mut stream = listener.accept().await.unwrap();
+        let mut buf = vec![];
+        stream.read_to_end(&mut buf).await.unwrap();
+
+        assert_eq!(buf, b"ping");
+    }
+
     #[tokio::test]
     async fn the_listener_accepts_one_client_after_another() {
         let (_temp, path) = test_endpoint("sequence");

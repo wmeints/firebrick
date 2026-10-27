@@ -15,7 +15,7 @@ console = { version = "0.16.6", default-features = false, features = ["alloc", "
 tokio = { version = "1.53.2", features = ["fs", "net", "time"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31.3", default-features = false, features = ["user"] }
+nix = { version = "0.31.3", default-features = false, features = ["socket", "user"] }
 
 [target.'cfg(windows)'.dependencies]
 # The version tokio uses, so the build keeps a single copy (ADR 0050).

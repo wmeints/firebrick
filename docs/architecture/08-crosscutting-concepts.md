@@ -276,7 +276,12 @@ effective UID of `fbk` or `0`, for the same reason the daemon allows root.
 Otherwise it fails with `refusing to use the firebrick daemon: <socket path>:
 the server runs as UID <uid> (PID <pid>), not as you` before it sends a request.
 On macOS the temp dir is a private per-user directory, so the check matters on
-Linux without `XDG_RUNTIME_DIR`. Both checks live in `firebrick_utils::ipc`.
+Linux without `XDG_RUNTIME_DIR`. Both checks live in `firebrick_utils::ipc`. On
+macOS they read the peer's UID with `getpeereid`, which returns the credentials
+the kernel saved when the peer connected. Tokio's `peer_cred` also asks for the
+PID there, which fails with `ENOTCONN` once a client has written and closed
+before it was accepted, so a short-lived client such as the network logger would
+lose its events. The error messages then read `(PID None)`.
 
 On Windows the daemon's endpoint is a named pipe whose name anybody can predict
 and list, so both checks matter there
