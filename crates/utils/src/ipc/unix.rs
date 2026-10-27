@@ -74,21 +74,33 @@ pub fn prepare_dir(dir: &Path) -> io::Result<()> {
 /// Fails with [`io::ErrorKind::PermissionDenied`] when the peer of the stream, the `role` of the
 /// connection, runs as another user than this process and isn't root.
 fn check_peer(stream: &UnixStream, role: &str) -> io::Result<()> {
-    let peer = stream.peer_cred()?;
+    let (peer_uid, peer_pid) = peer(stream)?;
     let own_uid = nix::unistd::geteuid().as_raw();
 
-    if crate::is_trusted_peer(peer.uid(), own_uid) {
+    if crate::is_trusted_peer(peer_uid, own_uid) {
         return Ok(());
     }
 
     Err(io::Error::new(
         io::ErrorKind::PermissionDenied,
-        format!(
-            "the {role} runs as UID {} (PID {:?}), not as you",
-            peer.uid(),
-            peer.pid()
-        ),
+        format!("the {role} runs as UID {peer_uid} (PID {peer_pid:?}), not as you"),
     ))
+}
+
+/// Returns the UID and, when known, the PID of the stream's peer.
+#[cfg(not(target_os = "macos"))]
+fn peer(stream: &UnixStream) -> io::Result<(u32, Option<i32>)> {
+    let cred = stream.peer_cred()?;
+    Ok((cred.uid(), cred.pid()))
+}
+
+/// Returns the UID of the stream's peer, which the kernel saved when it connected. On macOS
+/// `peer_cred` also asks for the PID, which fails with `ENOTCONN` once the peer has closed, so a
+/// client that wrote and closed before the listener accepted it would be refused.
+#[cfg(target_os = "macos")]
+fn peer(stream: &UnixStream) -> io::Result<(u32, Option<i32>)> {
+    let (uid, _) = nix::unistd::getpeereid(stream)?;
+    Ok((uid.as_raw(), None))
 }
 
 /// Returns the error with the socket's path in front of its message.
