@@ -718,8 +718,9 @@ C4Component
   of all deny rules, then all allow rules, then microsandbox's DNS rule, with
   deny as the default for egress. Host names map to a `Domain`, `*.domain` to a
   `DomainSuffix`, and IP addresses and CIDR ranges to a `Cidr`. It also turns on
-  TLS interception for port 443 and microsandbox's HTTP deny response, whose
-  body names the host and `fbk network allow <host>`
+  TLS interception for port 443 and microsandbox's HTTP deny response in its
+  text format, whose body names the host and `fbk network allow <host>`; the
+  default JSON format ignores the message
   ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
 - `ssh` - Creates the ed25519 client and host keys, pins the host key for
   `*.fbk` in a `known_hosts` file, picks a unique `<leaf>.fbk` host name per

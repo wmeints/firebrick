@@ -26,21 +26,21 @@ Run `cargo fetch` if the directories don't exist. Search with `grep -rn` and
 read with the Read tool. To answer a broad question, give an `Explore` agent the
 paths above.
 
-| Topic                           | Where                                                           |
-| ------------------------------- | --------------------------------------------------------------- |
-| `Sandbox` (get, list, remove)   | `$M/sandbox/mod.rs`                                             |
-| Create-time settings            | `$M/sandbox/builder.rs` (`SandboxBuilder`)                      |
-| Start, stop, status of a handle | `$M/sandbox/handle.rs` (`SandboxHandle`)                        |
-| Change an existing sandbox      | `$M/sandbox/modify.rs`                                          |
-| Exec and PTY sessions           | `$M/sandbox/exec.rs`, `exec_stream_with` in `$M/sandbox/mod.rs` |
-| SSH server                      | `$M/sandbox/ssh.rs`                                             |
-| Runtime install and version     | `$M/setup/`                                                     |
-| Errors                          | `$M/error.rs` (`MicrosandboxError`)                             |
-| Home dir, db and config paths   | `${R}microsandbox-utils-$V/lib/lib.rs`, `$M/config/`            |
-| Network rules                   | `$N/model/policy/` (`builder.rs`, `types.rs`)                   |
-| Secret substitution in requests | `$N/engine/secrets/handler.rs`                                  |
-| Policy evaluation, DNS queries  | `$N/model/policy/types.rs`, `$N/engine/dns/forwarder.rs`        |
-| Deny responses                  | `$N/engine/tcp/proxy.rs`, `$N/engine/netstack/poll.rs`          |
+| Topic                           | Where                                                         |
+| ------------------------------- | ------------------------------------------------------------- |
+| `Sandbox` (get, list, remove)   | `$M/sandbox/mod.rs`                                           |
+| Create-time settings            | `$M/sandbox/builder.rs` (`SandboxBuilder`)                    |
+| Start, stop, status of a handle | `$M/sandbox/handle.rs` (`SandboxHandle`)                      |
+| Change an existing sandbox      | `$M/sandbox/modify.rs`                                        |
+| Exec and PTY sessions           | `$M/sandbox/exec/`, `exec_stream_with` in `$M/sandbox/mod.rs` |
+| SSH server                      | `$M/sandbox/ssh.rs`                                           |
+| Runtime install and version     | `$M/setup/`                                                   |
+| Errors                          | `$M/error.rs` (`MicrosandboxError`)                           |
+| Home dir, db and config paths   | `${R}microsandbox-utils-$V/lib/lib.rs`, `$M/config/`          |
+| Network rules                   | `$N/model/policy/` (`builder.rs`, `types.rs`)                 |
+| Secret substitution in requests | `$N/engine/secrets/handler.rs`                                |
+| Policy evaluation, DNS queries  | `$N/model/policy/types.rs`, `$N/engine/dns/forwarder.rs`      |
+| Deny responses                  | `$N/engine/tcp/proxy.rs`, `$N/engine/netstack/poll.rs`        |
 
 ## How firebrick uses it
 
@@ -69,8 +69,11 @@ All calls live in `crates/daemon/src`. Reuse these before adding new ones:
 
 ## Known behavior
 
-Verified against microsandbox 0.7.8. Recheck an item in the source before you
-build on it when `Cargo.lock` has a newer version.
+Verified against microsandbox 0.7.11. Items about the guest agent or the
+embedded runtime, such as the exec `PATH`, `/run`, vsock, devpts and the TTY
+exit race, were verified on 0.7.8 by running VMs and only checked against the
+0.7.11 host source. Recheck an item in the source before you build on it when
+`Cargo.lock` has a newer version.
 
 **Lifecycle**
 
@@ -161,27 +164,31 @@ build on it when `Cargo.lock` has a newer version.
 
 **Changing existing sandboxes**
 
-- `modify()` changes cpus, memory, disk size, env, labels, workdir and secrets.
-  Use `.next_start()` or `.restart()` to choose when changes apply. It can't
-  change the shell or the scripts, so those need a recreate.
-- `SandboxBuilder::env` and `modify().env(..)` reject nothing but the `MSB_`
-  prefix. At create time microsandbox merges the image's variables into
-  `config().spec.env` (`merge_image_defaults`), so the stored list mixes image
-  and builder variables; `fbkd` names its own in the `firebrick.env` label. Env
-  has no live path: `modify().env(..)` / `.remove_env(..)` on a running sandbox
-  need `.next_start()` or `.restart()`, and every exec merges `spec.env` with
-  its own env (`build_exec_request`).
+- `modify()` changes cpus, max_cpus, memory, max_memory, root disk size, env,
+  labels, workdir, secrets and published ports. Use `.next_start()` or
+  `.restart()` to choose when changes apply. It can't change the shell or the
+  scripts, so those need a recreate.
+- `SandboxBuilder::env` and `modify().env(..)` reject the `MSB_` prefix, an
+  empty key, `=` or NUL in a key and NUL in a value (`validate_env`); create,
+  start and modify all check this. At create time microsandbox merges the
+  image's variables into `config().spec.env` (`merge_image_defaults`), so the
+  stored list mixes image and builder variables; `fbkd` names its own in the
+  `firebrick.env` label. Env has no live path: `modify().env(..)` /
+  `.remove_env(..)` on a running sandbox need `.next_start()` or `.restart()`,
+  and every exec merges `spec.env` with its own env (`build_exec_request`).
 - The network policy has no `modify()` setting: it's fixed when the sandbox is
   created. Changing rules means recreating the sandbox, which `fbkd` does from a
   disk snapshot (ADR 0021).
-- A label change on a running sandbox is "restart-required": `apply()` without a
-  policy fails with `cannot apply modification: label requires restart`. With
-  `.next_start()` it's stored right away and visible through `Sandbox::get(..)
-  .config()`, without restarting the VM; `fbkd` stores `firebrick.ports` this
-  way.
-- Published ports (`SandboxBuilder::port`) are fixed at create time and target
-  the guest's interface IP, not its loopback, so `fbkd` forwards ports through
-  SSH `direct-tcpip` instead (ADR 0019).
+- A label change on a running sandbox applies live: `apply()` without a policy
+  stores it in both the saved and the active config, without restarting the VM.
+  Only a running sandbox without an active config snapshot still needs
+  `.restart()`. With `.next_start()` it's stored right away and visible through
+  `Sandbox::get(..) .config()`, without restarting the VM; `fbkd` stores
+  `firebrick.ports` this way.
+- Published ports (`SandboxBuilder::port`) target the guest's interface IP, not
+  its loopback, so `fbkd` forwards ports through SSH `direct-tcpip` instead (ADR
+  0019). `modify().port(..)` / `.remove_port(..)` can change them, but only with
+  `.restart()` or `.next_start()`.
 
 **Snapshots**
 
@@ -198,15 +205,17 @@ build on it when `Cargo.lock` has a newer version.
   labels, init, workdir, mounts, resources, secrets and network. The snapshot's
   owned volumes replace builder mounts at the same guest path, so a
   `.volume(..owned..)` at the same path gets the captured disk back. Calling
-  `.image(..)` afterwards drops the pending snapshot. The new sandbox copies the
-  snapshot's payloads, so the snapshot can be removed right after it boots.
+  `.image(..)` afterwards makes the create fail with `from_snapshot is mutually
+  exclusive with explicit rootfs configuration`; `.override_image(..)` drops the
+  pending snapshot instead. The new sandbox copies the snapshot's payloads, so
+  the snapshot can be removed right after it boots.
 - A snapshot pins its image by manifest digest, so it can't move to another
   image: a create with another resolved digest fails with `snapshot image digest
-  mismatch`, `.image(..)` drops a pending snapshot, and `RestoreBuilder` has no
-  image setter. Owned volumes are formatted empty at create time and only come
-  back together with the snapshot's root filesystem; a sandbox created from a
-  snapshot keeps its owned disk as a qcow2 chain (`runtime/owned-disks/`)
-  instead of a `disk.raw` (ADR 0041).
+  mismatch`, `.image(..)` after `override_snapshot` fails the create, and
+  `RestoreBuilder` has no image setter. Owned volumes are formatted empty at
+  create time and only come back together with the snapshot's root filesystem; a
+  sandbox created from a snapshot keeps its owned disk as a qcow2 chain
+  (`runtime/owned-disks/`) instead of a `disk.raw` (ADR 0041).
 - `RestoreBuilder` also restores a snapshot, but has no setters for init,
   labels, env, workdir or secrets.
 - `Sandbox::remove()` doesn't remove the sandbox's snapshots.
@@ -264,12 +273,18 @@ build on it when `Cargo.lock` has a newer version.
   intercepted HTTPS.
 - `.http(|h| h.deny_response(true).deny_message(..))` answers a denied HTTP/1.x
   request, also over intercepted HTTPS, with `403 Forbidden` and the message
-  (`{host}` is the denied host). It only does so when the walk ends at the
-  default deny. A domain deny rule defers when the connection opens, and when no
-  later rule can allow the flow microsandbox treats it as an explicit deny: the
-  connection is reset without the page, for every denied host, as soon as the
-  policy has any domain deny rule. IP and CIDR denies and non-HTTP traffic are
-  reset or closed.
+  (`{host}` is the denied host). Since 0.7.11 this needs
+  `.deny_response_format(HttpDenyResponseFormat::Text)`: the default JSON format
+  ignores `deny_message` and answers
+  `{"code":"network_policy_denied","message":..,"domain":..}`, with the message
+  from `network_deny_message` used as-is, without `{host}`. Deny responses are
+  on by default, so a sandbox without `.http(..)` gets the JSON page. Secret
+  violations only get a deny response in JSON format. The network deny response
+  is only sent when the walk ends at the default deny. A domain deny rule defers
+  when the connection opens, and when no later rule can allow the flow
+  microsandbox treats it as an explicit deny: the connection is reset without
+  the page, for every denied host, as soon as the policy has any domain deny
+  rule. IP and CIDR denies and non-HTTP traffic are reset or closed.
 - Strict mode (`NetworkConfig::strict`) is on by default: a host allowed only by
   a domain rule is only reachable over HTTP(S) whose host name can be checked,
   so SSH to `github.com:22` needs an IP or CIDR rule. With interception on, QUIC
@@ -305,12 +320,12 @@ build on it when `Cargo.lock` has a newer version.
   from. `session.rs` sets `TERM` explicitly.
 - The SSH server sets `TERM` in the guest from the client's PTY request
   (`ssh.rs`), so the host side can't choose it for SSH sessions.
-- An exec stream ends at `ExecExited`: the reader in `$M/sandbox/exec.rs` stops
-  there and drops anything after it. On a TTY exec the guest agent can report
-  the exit before it has read the last terminal output, so output written as the
-  process exits, such as curl's `-w` status code, is sometimes lost. The
-  `vm-tests` wait in the shell after such a command (`fetch` in
-  `tests/grpc.rs`).
+- An exec stream ends at `ExecExited`: the reader in
+  `$M/sandbox/exec/session.rs` stops there and drops anything after it. On a TTY
+  exec the guest agent can report the exit before it has read the last terminal
+  output, so output written as the process exits, such as curl's `-w` status
+  code, is sometimes lost. The `vm-tests` wait in the shell after such a command
+  (`fetch` in `tests/grpc.rs`).
 
 - agentd opens a TTY exec's terminal as root and doesn't chown it to the session
   user, and mounts devpts without `gid` or `mode`, so `/dev/pts/N` is
