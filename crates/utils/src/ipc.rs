@@ -195,6 +195,9 @@ mod tests {
         assert_eq!(&reply, b"pong");
     }
 
+    // Reproduces the ENOTCONN that refused such clients on macOS; Linux passed without the fix.
+    // Windows drops a pipe client that is gone before it's accepted by design.
+    #[cfg(unix)]
     #[tokio::test]
     async fn the_listener_accepts_a_client_that_wrote_and_closed_before_it_accepted() {
         let (_temp, path) = test_endpoint("closed");

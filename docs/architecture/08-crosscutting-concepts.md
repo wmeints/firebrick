@@ -281,7 +281,7 @@ macOS they read the peer's UID with `getpeereid`, which returns the credentials
 the kernel saved when the peer connected. Tokio's `peer_cred` also asks for the
 PID there, which fails with `ENOTCONN` once a client has written and closed
 before it was accepted, so a short-lived client such as the network logger would
-lose its events. The error messages then show no PID.
+lose its events. The error messages then read `(PID None)`.
 
 On Windows the daemon's endpoint is a named pipe whose name anybody can predict
 and list, so both checks matter there
