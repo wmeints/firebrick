@@ -10,7 +10,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-use crate::manage::SPEC_FILE_NAME;
+use crate::spec_file::SPEC_FILE_NAME;
 
 /// The error every command fails with when `.firebrick.yml` is a symlink.
 pub const SYMLINK_ERROR: &str =

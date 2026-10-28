@@ -55,7 +55,7 @@ it is used, and look for what lets it cross the boundary.
    `fbk start`, `fbk network` or `fbk port`: host paths in `mounts`, turning off
    `network.enforce`, widening `allow`, changing `image`, `ports` or `name`, and
    whether the user is warned before such a change applies
-   (`crates/spec/src/lib.rs`, `crates/cli/src/approval.rs`,
+   (`crates/spec/src/lib.rs`, `crates/cli/src/approval/`,
    `crates/daemon/src/sandboxes/`). Check that every setting that lets more
    cross the boundary is part of the approved settings, and that what `fbk`
    approves is what `fbkd` applies. `fbk init`, `fbk network` and `fbk port`

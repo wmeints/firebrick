@@ -2,7 +2,7 @@
 //! it spawns host processes.
 
 use firebrick_cli::api::GitIdentity;
-use firebrick_cli::git::{REPOSITORY_VARS, host_identity, read_identity};
+use firebrick_cli::sandbox::git::{REPOSITORY_VARS, host_identity, read_identity};
 use std::path::Path;
 use std::process::Command;
 

@@ -5,10 +5,13 @@ use anyhow::Result;
 use clap::builder::PossibleValuesParser;
 use clap::{Args, Parser, Subcommand};
 use firebrick_cli::api::sandbox_management_service_client::SandboxManagementServiceClient;
-use firebrick_cli::manage::OutputFormat;
+use firebrick_cli::network::presets;
 use firebrick_cli::network::{self, NetworkChange};
+use firebrick_cli::remote::{session, ssh};
+use firebrick_cli::sandbox::OutputFormat;
 use firebrick_cli::secret::Scope;
-use firebrick_cli::{client, init, manage, port, presets, secret, session, ssh, validate};
+use firebrick_cli::spec_file::{self, init, validate};
+use firebrick_cli::{client, port, sandbox, secret};
 use firebrick_spec::PortMapping;
 use tonic::transport::Channel;
 
@@ -249,7 +252,7 @@ async fn main() -> Result<()> {
         // Changes the spec file first and only needs the daemon to apply it.
         Commands::Network(command) => run_network_command(command, &working_dir).await,
         Commands::Upgrade { name } => {
-            manage::upgrade_sandbox(name, &working_dir, &mut client::connect().await?).await
+            sandbox::upgrade_sandbox(name, &working_dir, &mut client::connect().await?).await
         }
         command => run_with_daemon(command, working_dir).await,
     }
@@ -281,7 +284,7 @@ fn validate_spec(working_dir: &Path) -> Result<()> {
 /// Writes the default spec to the working directory.
 fn init_spec(working_dir: &Path, force: bool) -> Result<()> {
     init::init_spec(working_dir, force)?;
-    println!("Created {}", manage::SPEC_FILE_NAME);
+    println!("Created {}", spec_file::SPEC_FILE_NAME);
 
     Ok(())
 }
@@ -309,12 +312,12 @@ async fn run_with_daemon(command: Commands, working_dir: PathBuf) -> Result<()> 
 
     match command {
         Commands::Start { name, yes } => {
-            manage::start_sandbox(name, &working_dir, yes, client_instance).await
+            sandbox::start_sandbox(name, &working_dir, yes, client_instance).await
         }
-        Commands::Stop { name } => manage::stop_sandbox(name, &working_dir, client_instance).await,
-        Commands::Ls { format } => manage::list_sandboxes(client_instance, format).await,
+        Commands::Stop { name } => sandbox::stop_sandbox(name, &working_dir, client_instance).await,
+        Commands::Ls { format } => sandbox::list_sandboxes(client_instance, format).await,
         Commands::Rm { name, force } => {
-            manage::remove_sandbox(name, force, &working_dir, client_instance).await
+            sandbox::remove_sandbox(name, force, &working_dir, client_instance).await
         }
         Commands::Run(run_args) => run_command(working_dir, run_args, client_instance).await,
         Commands::SshProxy { hostname } => ssh_proxy(hostname, client_instance).await,

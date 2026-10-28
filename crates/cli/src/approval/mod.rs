@@ -3,31 +3,19 @@
 //! `fbk` records the settings the user approved per workspace outside every mounted directory,
 //! and asks before it applies other ones.
 
-use anyhow::{Context, Result, anyhow, bail};
-use firebrick_spec::{MountSpec, NetworkRule, NetworkSpec};
+mod diff;
+mod prompt;
+mod store;
+
+use anyhow::{Context, Result, anyhow};
+use firebrick_spec::{MountSpec, NetworkSpec};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::BTreeMap;
-use std::fs;
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
-/// Error for an answer other than yes.
-const ABORTED: &str =
-    "aborted: the changes to mounts, network and clipboard in .firebrick.yml weren't approved";
-
-/// Error when there is no terminal to ask on and `--yes` isn't passed.
-const NOT_INTERACTIVE: &str = ".firebrick.yml changes mounts, network or clipboard since you \
-                               last approved them; run the command in a terminal to review the \
-                               changes, or pass --yes";
-
-/// Header above the changes to approve.
-const CHANGES_HEADER: &str =
-    ".firebrick.yml changes settings you haven't approved for this workspace:";
-
-/// Header above the settings of a workspace without approved settings.
-const FIRST_HEADER: &str = ".firebrick.yml sets mounts, network or clipboard settings you haven't \
-                            approved for this workspace yet:";
+use prompt::Prompt;
+use store::Approvals;
 
 /// How a sandbox shares the host clipboard.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -107,123 +95,6 @@ pub struct Settings {
     pub clipboard: Clipboard,
 }
 
-/// Layout of the approvals file.
-#[derive(Serialize, Deserialize, Debug, Default)]
-#[serde(deny_unknown_fields)]
-struct ApprovalsFile {
-    /// Approved settings by canonical workspace path.
-    #[serde(default)]
-    workspaces: BTreeMap<PathBuf, Settings>,
-}
-
-/// The approved settings of one workspace, stored in a file shared by all workspaces.
-#[derive(Debug, Clone)]
-pub struct Approvals {
-    path: PathBuf,
-    workspace: PathBuf,
-}
-
-impl Approvals {
-    /// Returns the approvals of the workspace stored in the file at `path`. They're stored under
-    /// the canonical workspace path, so a symlink to the workspace shares them.
-    pub fn at(path: PathBuf, workspace: &Path) -> Result<Self> {
-        let workspace = dunce::canonicalize(workspace)
-            .with_context(|| format!("failed to resolve workspace {}", workspace.display()))?;
-
-        Ok(Self { path, workspace })
-    }
-
-    /// Returns the approved settings, or `None` when the workspace has none yet. Fails when the
-    /// file can't be read or isn't valid.
-    pub fn approved(&self) -> Result<Option<Settings>> {
-        Ok(self.load()?.workspaces.remove(&self.workspace))
-    }
-
-    /// Records the settings as approved.
-    pub fn record(&self, settings: Settings) -> Result<()> {
-        let mut file = self.load()?;
-        file.workspaces.insert(self.workspace.clone(), settings);
-
-        self.save(&file)
-            .with_context(|| format!("failed to write {}", self.path.display()))
-    }
-
-    /// Makes sure the user approved the settings a new sandbox gets. Asks when they differ from
-    /// the approved ones, and records them once approved. A workspace without approved settings
-    /// gets no mounts and the default network section without asking; other settings are shown
-    /// in full, because the sandbox they replace may have had stricter ones.
-    pub fn approve_sandbox<R: BufRead, W: Write>(
-        &self,
-        requested: Settings,
-        prompt: &mut Prompt<R, W>,
-    ) -> Result<()> {
-        let approved = self.approved()?;
-        prompt.review(approved.as_ref(), approved.as_ref(), &requested)?;
-
-        self.record_changed(approved.as_ref(), requested)
-    }
-
-    /// Makes sure the user approved the network section sent to a sandbox. `expected` turns the
-    /// approved section into the one the user asked for; when the sent section differs from it,
-    /// asks about the difference with the approved one. Records the sent section once approved,
-    /// keeping the approved mounts. A workspace without approved settings is asked about any
-    /// section but the default, like [`Approvals::approve_sandbox`].
-    pub fn approve_network<R: BufRead, W: Write>(
-        &self,
-        sent: NetworkSpec,
-        expected: impl FnOnce(&NetworkSpec) -> NetworkSpec,
-        prompt: &mut Prompt<R, W>,
-    ) -> Result<()> {
-        let approved = self.approved()?;
-        let base = approved.clone().unwrap_or_default();
-        let expected = Settings {
-            network: expected(&base.network),
-            ..base.clone()
-        };
-        let requested = Settings {
-            network: sent,
-            ..base
-        };
-        prompt.review(approved.as_ref(), Some(&expected), &requested)?;
-
-        self.record_changed(approved.as_ref(), requested)
-    }
-
-    /// Records the requested settings when they differ from the approved ones. Default settings
-    /// need no entry.
-    fn record_changed(&self, approved: Option<&Settings>, requested: Settings) -> Result<()> {
-        if approved.cloned().unwrap_or_default() == requested {
-            return Ok(());
-        }
-
-        self.record(requested)
-    }
-
-    /// Reads the file, or returns no approvals when it doesn't exist.
-    fn load(&self) -> Result<ApprovalsFile> {
-        let content = match fs::read_to_string(&self.path) {
-            Ok(content) => content,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                return Ok(ApprovalsFile::default());
-            }
-            Err(err) => {
-                return Err(err).with_context(|| format!("failed to read {}", self.path.display()));
-            }
-        };
-
-        serde_yaml::from_str(&content)
-            .with_context(|| format!("{} isn't a valid approvals file", self.path.display()))
-    }
-
-    /// Writes the file with mode `0600` through a temp file and a rename, so a failed write
-    /// leaves the old approvals in place.
-    fn save(&self, file: &ApprovalsFile) -> Result<()> {
-        firebrick_utils::write_private(&self.path, &serde_yaml::to_string(file)?)?;
-
-        Ok(())
-    }
-}
-
 /// Gets approval on the terminal, with the approvals stored in a file.
 #[derive(Debug, Clone)]
 pub struct Approver {
@@ -242,6 +113,7 @@ impl Approver {
     }
 
     /// Returns an approver for the approvals in the file at `path`.
+    #[cfg(test)]
     pub fn at(path: PathBuf, assume_yes: bool) -> Self {
         Self {
             path: Some(path),
@@ -272,238 +144,13 @@ impl Approver {
     }
 }
 
-/// Returns a line per added or removed mount, per changed network field and for a changed
-/// clipboard setting between the approved and requested settings. Mounts and rules are compared
-/// as sets, so their order doesn't count as a change.
-pub fn difference(approved: &Settings, requested: &Settings) -> Vec<String> {
-    let mut lines = list_difference(&approved.mounts, &requested.mounts, mount_line);
-    lines.extend(network_difference(&approved.network, &requested.network));
-    lines.extend(clipboard_difference(approved, requested));
-
-    lines
-}
-
-/// Returns, when the clipboard modes differ, a `-` line for the approved mode and a `+` line
-/// for the requested one, leaving out a mode that is off.
-fn clipboard_difference(approved: &Settings, requested: &Settings) -> Vec<String> {
-    if approved.clipboard == requested.clipboard {
-        return Vec::new();
-    }
-
-    let removed = approved.clipboard.line().map(|line| format!("- {line}"));
-    let added = requested.clipboard.line().map(|line| format!("+ {line}"));
-
-    removed.into_iter().chain(added).collect()
-}
-
-/// Returns the lines for the network fields that differ.
-fn network_difference(approved: &NetworkSpec, requested: &NetworkSpec) -> Vec<String> {
-    let switches = [
-        switch_difference("enabled", approved, requested, NetworkSpec::is_enabled),
-        switch_difference("enforce", approved, requested, |network| network.enforce),
-    ];
-    let mut lines: Vec<String> = switches.into_iter().flatten().collect();
-
-    lines.extend(list_difference(
-        &approved.allow,
-        &requested.allow,
-        |sign, rule| rule_line(sign, "allow", rule),
-    ));
-    lines.extend(list_difference(
-        &approved.deny,
-        &requested.deny,
-        |sign, rule| rule_line(sign, "deny", rule),
-    ));
-
-    lines
-}
-
-/// Returns a `-` line per item only in `approved`, then a `+` line per item only in
-/// `requested`.
-fn list_difference<T: PartialEq>(
-    approved: &[T],
-    requested: &[T],
-    line: impl Fn(char, &T) -> String,
-) -> Vec<String> {
-    let removed = approved.iter().filter(|item| !requested.contains(item));
-    let added = requested.iter().filter(|item| !approved.contains(item));
-
-    removed
-        .map(|item| line('-', item))
-        .chain(added.map(|item| line('+', item)))
-        .collect()
-}
-
-/// Describes an added or removed mount.
-fn mount_line(sign: char, mount: &MountSpec) -> String {
-    let access = if mount.readonly {
-        "read-only"
-    } else {
-        "read/write"
-    };
-
-    format!("{sign} mount {} -> {} ({access})", mount.host, mount.guest)
-}
-
-/// Returns a line per mount and network field of settings that have nothing to compare with,
-/// and one for the clipboard when it's shared.
-fn listing(settings: &Settings) -> Vec<String> {
-    let network = &settings.network;
-    let mut lines = list_difference(&[], &settings.mounts, mount_line);
-    lines.push(format!("network.enabled: {}", network.is_enabled()));
-    lines.push(format!("network.enforce: {}", network.enforce));
-    lines.extend(list_difference(&[], &network.allow, |sign, rule| {
-        rule_line(sign, "allow", rule)
-    }));
-    lines.extend(list_difference(&[], &network.deny, |sign, rule| {
-        rule_line(sign, "deny", rule)
-    }));
-    lines.extend(clipboard_difference(&Settings::default(), settings));
-
-    lines
-}
-
-/// Describes an added or removed network rule.
-fn rule_line(sign: char, list: &str, rule: &NetworkRule) -> String {
-    format!("{sign} network.{list}: {rule}")
-}
-
-/// Describes a network switch whose value differs, or returns `None` when it's the same.
-fn switch_difference(
-    field: &str,
-    approved: &NetworkSpec,
-    requested: &NetworkSpec,
-    value: impl Fn(&NetworkSpec) -> bool,
-) -> Option<String> {
-    let (from, to) = (value(approved), value(requested));
-
-    (from != to).then(|| format!("~ network.{field}: {from} -> {to}"))
-}
-
-/// How a prompt gets its answer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Answer {
-    /// Approve the changes without asking, for `--yes`.
-    Yes,
-    /// Ask the user.
-    Ask,
-    /// Nobody can answer, because stdin isn't a terminal.
-    NoTerminal,
-}
-
-/// Asks the user to approve changes.
-pub struct Prompt<R, W> {
-    answer: Answer,
-    input: R,
-    output: W,
-}
-
-impl Prompt<io::StdinLock<'static>, io::Stderr> {
-    /// Returns a prompt that asks on the terminal, or approves without asking with
-    /// `assume_yes`.
-    pub fn terminal(assume_yes: bool) -> Self {
-        let stdin = io::stdin();
-        let answer = match (assume_yes, stdin.is_terminal()) {
-            (true, _) => Answer::Yes,
-            (false, true) => Answer::Ask,
-            (false, false) => Answer::NoTerminal,
-        };
-
-        Self::new(answer, stdin.lock(), io::stderr())
-    }
-}
-
-impl<R: BufRead, W: Write> Prompt<R, W> {
-    /// Returns a prompt that reads the answer from `input` and writes to `output`.
-    pub fn new(answer: Answer, input: R, output: W) -> Self {
-        Self {
-            answer,
-            input,
-            output,
-        }
-    }
-
-    /// Asks about the difference between the approved and requested settings when the
-    /// requested ones differ from the expected ones. Settings equal to the approved ones never
-    /// need asking. Without approved settings, asks about all requested settings unless they're
-    /// the defaults.
-    fn review(
-        &mut self,
-        approved: Option<&Settings>,
-        expected: Option<&Settings>,
-        requested: &Settings,
-    ) -> Result<()> {
-        let Some(approved) = approved else {
-            return self.review_first(requested);
-        };
-
-        let changes = difference(approved, requested);
-        let expected = expected.unwrap_or(approved);
-
-        if changes.is_empty() || difference(expected, requested).is_empty() {
-            return Ok(());
-        }
-
-        self.confirm(CHANGES_HEADER, &changes)
-    }
-
-    /// Asks about all requested settings of a workspace without approved ones, unless they're
-    /// the defaults.
-    fn review_first(&mut self, requested: &Settings) -> Result<()> {
-        if difference(&Settings::default(), requested).is_empty() {
-            return Ok(());
-        }
-
-        self.confirm(FIRST_HEADER, &listing(requested))
-    }
-
-    /// Prints the lines under the header and asks to apply them, unless the answer is `Yes`.
-    /// Fails when the user doesn't answer yes, or nobody can answer.
-    fn confirm(&mut self, header: &str, lines: &[String]) -> Result<()> {
-        self.show(header, lines)
-            .context("failed to show the settings to approve")?;
-
-        match self.answer {
-            Answer::Yes => return Ok(()),
-            Answer::NoTerminal => bail!(NOT_INTERACTIVE),
-            Answer::Ask => {}
-        }
-
-        let answer = self
-            .ask()
-            .context("failed to read the answer to the approval prompt")?;
-
-        match answer.trim().to_lowercase().as_str() {
-            "y" | "yes" => Ok(()),
-            _ => bail!(ABORTED),
-        }
-    }
-
-    /// Writes the header and an indented line per setting.
-    fn show(&mut self, header: &str, lines: &[String]) -> io::Result<()> {
-        writeln!(self.output, "{header}")?;
-        for line in lines {
-            writeln!(self.output, "  {line}")?;
-        }
-
-        Ok(())
-    }
-
-    /// Asks to apply the changes and returns the answer.
-    fn ask(&mut self) -> io::Result<String> {
-        write!(self.output, "Apply these changes? [y/N] ")?;
-        self.output.flush()?;
-
-        let mut answer = String::new();
-        self.input.read_line(&mut answer)?;
-
-        Ok(answer)
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::diff::difference;
+    use super::prompt::{ABORTED, Answer, NOT_INTERACTIVE};
     use super::*;
+    use firebrick_spec::NetworkRule;
+    use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
@@ -602,7 +249,7 @@ mod tests {
     fn workspace_is_stored_under_its_canonical_path() {
         let fixture = Fixture::new();
         let link = fixture.config.path().join("link");
-        if !crate::symlinked_spec::symlink_dir(fixture.workspace.path(), &link) {
+        if !crate::test_support::symlinked_spec::symlink_dir(fixture.workspace.path(), &link) {
             return;
         }
 

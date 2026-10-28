@@ -147,8 +147,8 @@ isn't a regular file; ...`. That covers `fbk init`, with and without `--force`,
 other commands that resolve the spec. `fbk network` and `fbk port` read the spec
 before they write it, so they fail before they change anything.
 
-Before `fbk` parses a spec, `validate::migrate_spec` rewrites a top-level `mise:
-true` or `mise: false` to `mise:` with `enabled: <bool>`. It reads with
+Before `fbk` parses a spec, `spec_file::migrate_spec` rewrites a top-level
+`mise: true` or `mise: false` to `mise:` with `enabled: <bool>`. It reads with
 `read_text`, edits only that line with `firebrick_spec::migrate_mise`, keeping
 its line ending, writes with `write_text`, and prints `Migrated mise: <bool> in
 .firebrick.yml to mise.enabled: <bool>` on stderr. That covers the working
@@ -165,7 +165,7 @@ spec reads as `None`. `fbk init` without `--force` checks with `exists` and
 refuses to replace an existing file; with `--force` it only writes. Read and
 write errors name the spec's path and keep the OS error as their cause; the CLI
 reports invalid content as `file:line:column: error: message` through
-`validate::spec_error`.
+`spec_file::spec_error`.
 
 ## Outdated sandbox images
 

@@ -94,6 +94,16 @@ Why:
 
 ## cli: 17 → 10 top-level modules
 
+**Done** (ADR 0057). The result differs from the plan below in a few places:
+
+- `resolve_spec` asks the daemon whether a sandbox with the legacy name exists,
+  so it lives in `sandbox/workspace.rs`; `spec_file` only holds the file
+  handling and the name derivation it uses.
+- `ensure_running` and the progress stream helpers (`follow_pull`, `Streamed`)
+  live in `sandbox/start.rs`, which `upgrade` uses.
+- The `approval` tests go through `Approvals` and `Approver` with a shared
+  fixture, so they stay in `approval/mod.rs`; only the code moved.
+
 ```
 lib.rs
 ├── client.rs

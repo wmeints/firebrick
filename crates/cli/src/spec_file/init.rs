@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
-use crate::manage::SPEC_FILE_NAME;
+use crate::spec_file::SPEC_FILE_NAME;
 
 /// Writes the default spec, named after the working directory, to `.firebrick.yml` in the
 /// working directory and returns its path. Refuses to replace an existing file unless `force`
@@ -37,7 +37,7 @@ fn spec_name(working_dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symlinked_spec;
+    use crate::test_support::symlinked_spec;
     use std::fs;
     use tempfile::TempDir;
 

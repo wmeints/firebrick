@@ -1,28 +1,63 @@
-use anyhow::{Context, Result, anyhow, bail};
+//! The workspace's `.firebrick.yml`: finds, migrates and loads it, reports its problems the way
+//! `fbk validate` does, and names the sandbox of a workspace without one. `fbk init` writes it
+//! and `fbk validate` checks it.
+
+pub mod init;
+pub mod validate;
+
+use anyhow::{Context, Result, anyhow};
 use firebrick_spec::{SandboxSpec, SandboxSpecError};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
-use crate::manage::SPEC_FILE_NAME;
+/// Name of the spec file `fbk` looks for in the working directory.
+pub const SPEC_FILE_NAME: &str = ".firebrick.yml";
 
-/// Validates the spec file in the working directory and reports any problem with its
-/// line and column. Returns whether the spec is valid. Fails when there is no spec file, it
-/// can't be read, or it is a symlink.
-pub fn validate_spec(working_dir: &Path) -> Result<bool> {
-    let spec_path = working_dir.join(SPEC_FILE_NAME);
-    migrate_spec(&spec_path)?;
-
-    match firebrick_spec::from_file(&spec_path) {
-        Ok(Some(_)) => {
-            println!("{SPEC_FILE_NAME} is valid");
-            Ok(true)
-        }
-        Ok(None) => bail!("can't find {SPEC_FILE_NAME} in {}", working_dir.display()),
-        Err(err) if err.diagnostic().is_some() => {
-            eprintln!("{}", spec_error(err));
-            Ok(false)
-        }
-        Err(err) => Err(err.into()),
+/// Returns the legacy name when a sandbox with it exists, and the hashed name otherwise.
+pub(crate) fn default_name(working_dir: &Path, legacy_exists: bool) -> String {
+    match legacy_name(working_dir) {
+        Some(name) if legacy_exists => name,
+        _ => hashed_name(working_dir),
     }
+}
+
+/// Loads the spec file from the working directory, or returns `None` when there isn't one,
+/// after migrating a boolean `mise` in it. Fails when it is a symlink.
+pub(crate) fn read_spec_file(working_dir: &Path) -> Result<Option<SandboxSpec>> {
+    let path = working_dir.join(SPEC_FILE_NAME);
+    migrate_spec(&path)?;
+
+    Ok(firebrick_spec::from_file(&path)?)
+}
+
+/// Names the sandbox `firebrick-` followed by the first 6 hex digits of the SHA-256 hash of
+/// the full path.
+fn hashed_name(working_dir: &Path) -> String {
+    let digest = Sha256::digest(working_dir.as_os_str().as_encoded_bytes());
+    let prefix: String = digest[..3]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+
+    format!("firebrick-{prefix}")
+}
+
+/// Encodes the full path as ASCII alphanumerics and underscores, the way sandboxes were named
+/// before names were hashed. Returns `None` when the path has no alphanumerics.
+pub(crate) fn legacy_name(working_dir: &Path) -> Option<String> {
+    let mut name = String::new();
+
+    for c in working_dir.to_string_lossy().chars() {
+        if c.is_ascii_alphanumeric() {
+            name.push(c);
+        } else if !name.is_empty() && !name.ends_with('_') {
+            name.push('_');
+        }
+    }
+
+    let name = name.trim_end_matches('_');
+
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Loads the spec, or returns `None` when there is no spec file. Reports a problem like
@@ -70,39 +105,62 @@ pub(crate) fn spec_error(err: SandboxSpecError) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symlinked_spec;
     use std::fs;
     use tempfile::TempDir;
 
-    fn write_spec(content: &str) -> TempDir {
+    /// Returns a working directory with a spec file with the content.
+    pub(super) fn write_spec(content: &str) -> TempDir {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(SPEC_FILE_NAME), content).unwrap();
         dir
     }
 
     #[test]
-    fn valid_spec_passes() {
-        let dir = write_spec("name: dev\nimage: ubuntu:24.04\n");
+    fn hashed_name_uses_first_six_hex_digits_of_sha256() {
+        let name = hashed_name(Path::new("/home/user/my-project.v2"));
 
-        assert!(validate_spec(dir.path()).unwrap());
+        assert_eq!(name, "firebrick-d9f287");
     }
 
     #[test]
-    fn invalid_spec_fails() {
-        let dir = write_spec("image: ubuntu:24.04\n");
-
-        assert!(!validate_spec(dir.path()).unwrap());
-    }
-
-    #[test]
-    fn validating_migrates_a_boolean_mise() {
-        let dir = write_spec("name: dev\nmise: true\n");
-
-        assert!(validate_spec(dir.path()).unwrap());
-        assert_eq!(
-            fs::read_to_string(dir.path().join(SPEC_FILE_NAME)).unwrap(),
-            "name: dev\nmise:\n  enabled: true\n"
+    fn hashed_name_differs_per_path() {
+        assert_ne!(
+            hashed_name(Path::new("/home/user/a/project")),
+            hashed_name(Path::new("/home/user/b/project"))
         );
+    }
+
+    #[test]
+    fn legacy_name_encodes_full_path() {
+        let name = legacy_name(Path::new("/home/user/my-project.v2"));
+
+        assert_eq!(name.as_deref(), Some("home_user_my_project_v2"));
+    }
+
+    #[test]
+    fn legacy_name_collapses_and_trims_separators() {
+        let name = legacy_name(Path::new("//home//user/--project--/"));
+
+        assert_eq!(name.as_deref(), Some("home_user_project"));
+    }
+
+    #[test]
+    fn default_name_keeps_existing_legacy_name() {
+        let name = default_name(Path::new("/home/user/my-project.v2"), true);
+
+        assert_eq!(name, "home_user_my_project_v2");
+    }
+
+    #[test]
+    fn default_name_hashes_path_without_legacy_sandbox() {
+        let name = default_name(Path::new("/home/user/my-project.v2"), false);
+
+        assert_eq!(name, "firebrick-d9f287");
+    }
+
+    #[test]
+    fn root_path_has_no_legacy_name() {
+        assert_eq!(legacy_name(Path::new("/")), None);
     }
 
     #[test]
@@ -137,13 +195,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_spec_returns_error() {
-        let dir = TempDir::new().unwrap();
-
-        assert!(validate_spec(dir.path()).is_err());
-    }
-
-    #[test]
     fn report_includes_line_and_column() {
         let dir = write_spec("name: dev\nresources:\n  cpu: 2\n  memroy: 4Gi\n");
 
@@ -167,24 +218,5 @@ mod tests {
             "{err:?}"
         );
         assert!(!err.to_string().contains(char::is_control));
-    }
-
-    #[test]
-    fn symlinked_spec_returns_error() {
-        for content in [Some("name: dev\n"), None] {
-            assert_refuses_symlinked_spec(content);
-        }
-    }
-
-    /// Asserts that validating refuses a `.firebrick.yml` that links to a file with `content`,
-    /// or a missing one.
-    fn assert_refuses_symlinked_spec(content: Option<&str>) {
-        let Some((dir, _target)) = symlinked_spec::workspace(content) else {
-            return;
-        };
-
-        let err = validate_spec(dir.path()).unwrap_err();
-
-        assert_eq!(err.to_string(), symlinked_spec::SYMLINK_ERROR);
     }
 }

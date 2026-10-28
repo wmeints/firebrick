@@ -6,7 +6,7 @@
 use anyhow::{Result, bail};
 use firebrick_spec::NetworkRule;
 
-use crate::table;
+use crate::ui::table;
 
 /// The name that selects every preset.
 pub const ALL: &str = "all";

@@ -9,8 +9,8 @@ use tonic::transport::Channel;
 
 use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use crate::api::{ListSecretsRequest, RemoveSecretRequest, SecretSummary, SetSecretRequest};
-use crate::manage::{self, OutputFormat};
-use crate::table;
+use crate::sandbox::{self, OutputFormat};
+use crate::ui::table;
 
 /// Which sandboxes a secret belongs to.
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -158,7 +158,7 @@ async fn scoped_sandbox(
     match scope {
         Scope::Global => Ok(None),
         Scope::Sandbox => Ok(Some(
-            manage::resolve_owned_spec(working_dir, client).await?.name,
+            sandbox::resolve_owned_spec(working_dir, client).await?.name,
         )),
     }
 }
@@ -225,7 +225,7 @@ pub fn read_value(mut reader: impl Read) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fake_daemon::{self, OTHER_WORKSPACE};
+    use crate::test_support::fake_daemon::{self, OTHER_WORKSPACE};
     use std::fs;
     use tempfile::TempDir;
 
@@ -256,7 +256,11 @@ mod tests {
     #[tokio::test]
     async fn sandbox_scope_refuses_sandbox_of_other_workspace() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join(manage::SPEC_FILE_NAME), "name: dev\n").unwrap();
+        fs::write(
+            dir.path().join(crate::spec_file::SPEC_FILE_NAME),
+            "name: dev\n",
+        )
+        .unwrap();
         let mut client = fake_daemon::serve("dev", OTHER_WORKSPACE).await;
 
         let set_result = set(sandbox_secret(), dir.path(), &mut client).await;
@@ -270,7 +274,11 @@ mod tests {
     #[tokio::test]
     async fn sandbox_scope_accepts_sandbox_that_does_not_exist_yet() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join(manage::SPEC_FILE_NAME), "name: dev\n").unwrap();
+        fs::write(
+            dir.path().join(crate::spec_file::SPEC_FILE_NAME),
+            "name: dev\n",
+        )
+        .unwrap();
         let mut client = fake_daemon::serve("other", OTHER_WORKSPACE).await;
 
         let error = set(sandbox_secret(), dir.path(), &mut client)

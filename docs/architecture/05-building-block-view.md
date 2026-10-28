@@ -38,53 +38,43 @@ and daemon both depend on it.
 C4Component
     Container_Boundary(cli, "fbk (crates/cli)") {
         Component(main, "main", "Clap", "Commands")
-        Component(manage, "manage", "Rust", "Sandbox lifecycle")
-        Component(session, "session", "crossterm", "Terminal sessions")
-        Component(ssh, "ssh", "Rust", "SSH proxy")
-        Component(validate, "validate", "Rust", "Spec validation")
-        Component(init, "init", "serde_yaml", "Default spec")
-        Component(secret, "secret", "Rust", "Secrets")
-        Component(network, "network", "Rust", "Network rules")
-        Component(presets, "presets", "Rust", "Network presets")
-        Component(port, "port", "Rust", "Port forwards")
-        Component(approval, "approval", "serde_yaml", "Approved spec settings")
-        Component(table, "table", "ratatui", "Tables")
-        Component(progress, "progress", "indicatif", "Image pull and mise install progress")
         Component(client, "client", "Tonic client", "Daemon client")
-        Component(git, "git", "Rust", "Host git identity")
+        Component(sandbox, "sandbox", "Rust", "Sandbox lifecycle, host git identity")
+        Component(specfile, "spec_file", "serde_yaml", "Spec file, validation, default spec")
+        Component(network, "network", "Rust", "Network rules, activity log, presets")
+        Component(port, "port", "Rust", "Port forwards")
+        Component(secret, "secret", "Rust", "Secrets")
+        Component(approval, "approval", "serde_yaml", "Approved spec settings")
+        Component(remote, "remote", "crossterm", "Terminal sessions, SSH proxy")
+        Component(ui, "ui", "ratatui, indicatif", "Tables and progress")
     }
     Component_Ext(spec, "firebrick-spec", "serde_yaml", "Sandbox spec")
     Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names, text")
     Container_Ext(fbkd, "fbkd")
 
-    Rel(main, manage, "Uses")
-    Rel(main, session, "Uses")
-    Rel(main, ssh, "Uses")
-    Rel(main, validate, "Uses")
-    Rel(main, init, "Uses")
-    Rel(main, secret, "Uses")
-    Rel(main, network, "Uses")
-    Rel(main, presets, "Selects preset rules")
-    Rel(presets, table, "Renders presets")
-    Rel(main, port, "Uses")
-    Rel(port, manage, "Resolves sandbox name")
-    Rel(port, spec, "Edits ports in .firebrick.yml")
     Rel(main, client, "Connects")
-    Rel(manage, table, "Renders sandboxes")
-    Rel(manage, progress, "Shows image pull and mise install")
-    Rel(manage, git, "Reads host git identity")
-    Rel(secret, table, "Renders secrets")
-    Rel(session, manage, "Ensures running")
-    Rel(manage, spec, "Loads .firebrick.yml")
-    Rel(validate, spec, "Loads .firebrick.yml")
-    Rel(init, spec, "Writes default spec")
-    Rel(network, spec, "Edits .firebrick.yml")
-    Rel(network, validate, "Reports invalid spec")
-    Rel(network, manage, "Names a new spec")
-    Rel(manage, approval, "Approves new sandbox settings")
+    Rel(main, sandbox, "Uses")
+    Rel(main, specfile, "Validates and writes the spec")
+    Rel(main, network, "Uses")
+    Rel(main, port, "Uses")
+    Rel(main, secret, "Uses")
+    Rel(main, remote, "Uses")
+    Rel(sandbox, specfile, "Loads .firebrick.yml, names a sandbox")
+    Rel(sandbox, approval, "Approves new sandbox settings")
+    Rel(sandbox, ui, "Renders sandboxes, shows image pull and mise install")
+    Rel(network, specfile, "Loads and reports .firebrick.yml")
+    Rel(network, sandbox, "Resolves the working directory's sandbox")
     Rel(network, approval, "Approves network section")
+    Rel(network, spec, "Edits .firebrick.yml")
+    Rel(network, ui, "Renders activity and presets")
+    Rel(port, sandbox, "Resolves sandbox name")
+    Rel(port, spec, "Edits ports in .firebrick.yml")
+    Rel(secret, sandbox, "Resolves sandbox scope")
+    Rel(secret, ui, "Renders secrets")
+    Rel(remote, sandbox, "Ensures running")
+    Rel(specfile, spec, "Loads, migrates and writes .firebrick.yml")
+    Rel(specfile, utils, "Sanitizes name")
     Rel(approval, utils, "Finds approved.yml")
-    Rel(init, utils, "Sanitizes name")
     Rel(client, utils, "Finds socket")
     Rel(client, fbkd, "gRPC")
 ```
@@ -110,57 +100,59 @@ C4Component
   waits at most 5 seconds for the socket. It then compares the daemon's
   `GetVersion` with its own version and restarts a daemon of another version
   with `Shutdown` (ADR 0055).
-- `manage` - Resolves the sandbox spec for the working directory and starts,
-  stops, lists, upgrades and removes sandboxes. `upgrade` sends the `image` from
-  the spec of the sandbox's workspace to `UpgradeSandbox`, or an empty image for
-  the daemon's default, and shows the pull progress. Without `.firebrick.yml`,
-  it names the sandbox after the full working directory path. Before it creates
-  a sandbox, it has `approval` check the resolved mounts, the network section
-  and the clipboard setting. `ls` prints the name, status and host name of each
-  sandbox as a table, or as a JSON array with `--format json`. Every start
-  request it sends from a spec, also for an existing sandbox, carries the spec's
-  `env`, and it prints `env changes in .firebrick.yml apply after the sandbox
-  restarts: fbk stop && fbk start` when the daemon reports that a running
-  sandbox keeps other variables. Every start request it sends for a workspace
-  also carries the host's git identity for it from `git`; `fbk start <name>`
-  sends none. `start`, `run`, the `network` changes and the `port` commands
-  print the outdated image warning from `outdated_warning` (see
+- `sandbox` - Resolves the sandbox spec for the working directory and starts,
+  stops, lists, upgrades and removes sandboxes. Private submodules hold the
+  start flow (`start`), the host paths of mounts and the mise config
+  (`host_paths`), `upgrade`, `ls` (`list`) and the sandbox of the working
+  directory, with its owner check and outdated image warning (`workspace`).
+  `upgrade` sends the `image` from the spec of the sandbox's workspace to
+  `UpgradeSandbox`, or an empty image for the daemon's default, and shows the
+  pull progress. Without `.firebrick.yml`, it names the sandbox after the full
+  working directory path. Before it creates a sandbox, it has `approval` check
+  the resolved mounts, the network section and the clipboard setting. `ls`
+  prints the name, status and host name of each sandbox as a table, or as a JSON
+  array with `--format json`. Every start request it sends from a spec, also for
+  an existing sandbox, carries the spec's `env`, and it prints `env changes in
+  .firebrick.yml apply after the sandbox restarts: fbk stop && fbk start` when
+  the daemon reports that a running sandbox keeps other variables. Every start
+  request it sends for a workspace also carries the host's git identity for it
+  from `git`; `fbk start <name>` sends none. `start`, `run`, the `network`
+  changes and the `port` commands print the outdated image warning from
+  `outdated_warning` (see
   [Outdated sandbox images](08-crosscutting-concepts.md#outdated-sandbox-images)).
-- `git` - Reads the host's `user.name` and `user.email` with `git -C <workspace>
-  config --get`, so `includeIf` and repository-local identities apply, for the
-  `git_identity` of a start request. It runs git without the `GIT_DIR`,
-  `GIT_WORK_TREE`, `GIT_COMMON_DIR` and `GIT_INDEX_FILE` that git sets for its
-  hooks, so `fbk` run from a hook still reads the workspace. A key that is unset
-  (`git config` exits 1) or that can't be read because `git` is missing is left
-  out silently. A key git fails to read otherwise, for example on a broken
-  config file, or whose value isn't UTF-8 or has a newline or NUL is left out
-  with a warning on stderr, the first with git's error.
-- `session` - Runs a command in the sandbox through the `Attach` stream. It
-  makes sure the sandbox runs first, puts the terminal in raw mode and forwards
-  input, output and window resizes.
-- `ssh` - Tunnels SSH protocol bytes between stdin/stdout and the `SshTunnel`
-  stream. The generated SSH config uses it as `ProxyCommand`.
-- `secret` - Sends a secret to the daemon with `SetSecret`. With `--from-stdin`,
-  it reads the value from stdin and removes one trailing line ending. With
-  `--scope sandbox`, `secret set` and `secret rm` send the name of the working
-  directory's sandbox, resolved like `fbk stop` without a name; the default
-  `--scope global` sends none. `secret ls` prints the names, scopes (`global` or
-  the sandbox name) and allowed hosts from `ListSecrets` as a table or, with
-  `--format json`, as a JSON array. `secret rm` removes a secret with
-  `RemoveSecret`. It warns about sandboxes the daemon couldn't add the secret to
-  or remove it from.
+  - `git` - Reads the host's `user.name` and `user.email` with `git -C
+    <workspace> config --get`, so `includeIf` and repository-local identities
+    apply, for the `git_identity` of a start request. It runs git without the
+    `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and `GIT_INDEX_FILE` that git
+    sets for its hooks, so `fbk` run from a hook still reads the workspace. A
+    key that is unset (`git config` exits 1) or that can't be read because `git`
+    is missing is left out silently. A key git fails to read otherwise, for
+    example on a broken config file, or whose value isn't UTF-8 or has a newline
+    or NUL is left out with a warning on stderr, the first with git's error.
+- `spec_file` - Finds, migrates and loads `.firebrick.yml` in the working
+  directory, turns its problems into `file:line:column: error: message`, and
+  names the sandbox of a workspace without one: after the full working directory
+  path, or the legacy name when a sandbox with it exists.
+  - `validate` - Checks `.firebrick.yml` and reports problems as
+    `file:line:column: error: message`.
+  - `init` - Writes `firebrick_spec::default_spec` as YAML to `.firebrick.yml`
+    in the working directory, named after the working directory's leaf with
+    `firebrick_utils::sanitize_label`, the rule that also makes the SSH host
+    names, and cut to the 128 bytes a sandbox name may have. It refuses to
+    replace an existing file unless `--force` is passed.
 - `network` - Keeps the network settings in `.firebrick.yml` and the sandbox in
-  sync. It validates the rules, applies the change to the network section of the
-  spec in the working directory and writes the file, before it sends the whole
-  section to the daemon with `UpdateNetwork`. `allow` and `deny` add rules to
-  one list and remove them from the other, without duplicates. `policy` sets
-  `enforce`, which decides whether the rules are enforced. `enable` and
-  `disable` set `enabled`, which decides whether the sandbox has a network
-  device at all; a missing `enabled` counts as `true`. Without `.firebrick.yml`,
-  it writes `default_spec` with the name `manage` would pick, including a legacy
-  name, plus the change. An invalid file is reported like `validate` reports it,
-  and nothing changes. When the network section didn't change, it leaves the
-  file alone but still asks the daemon, so the sandbox catches up with the file.
+  sync. `update` changes them and `log` shows the recorded activity. It
+  validates the rules, applies the change to the network section of the spec in
+  the working directory and writes the file, before it sends the whole section
+  to the daemon with `UpdateNetwork`. `allow` and `deny` add rules to one list
+  and remove them from the other, without duplicates. `policy` sets `enforce`,
+  which decides whether the rules are enforced. `enable` and `disable` set
+  `enabled`, which decides whether the sandbox has a network device at all; a
+  missing `enabled` counts as `true`. Without `.firebrick.yml`, it writes
+  `default_spec` with the name `sandbox` would pick, including a legacy name,
+  plus the change. An invalid file is reported like `validate` reports it, and
+  nothing changes. When the network section didn't change, it leaves the file
+  alone but still asks the daemon, so the sandbox catches up with the file.
   Before it sends the section, it has `approval` compare it with the approved
   section with the change applied, and asks about any other difference.
   `NOT_FOUND` from the daemon means the sandbox doesn't exist yet, so the file
@@ -176,20 +168,16 @@ C4Component
   recorded for <sandbox> yet.`, `NOT_FOUND` that the sandbox doesn't exist, and
   `FAILED_PRECONDITION` that the sandbox was created before network logging and
   how to turn it on.
-- `presets` - Holds the network presets: named groups of `allow` rules for
-  coding agents (`claude`, `copilot`, `codex`), GitHub and the package
-  registries and installers of toolchains (`node`, `dotnet`, `java`, `rust`,
-  `go`, `python`, `mise`, `ruby`), compiled in as constants (see
-  [ADR 0040](decisions/0040-compile-the-network-presets-into-fbk.md)). `names`
-  lists `all` and every preset, `rules` returns the rules of the named presets,
-  or of every preset for `all`, each rule once and in the order of the presets,
-  and `show` renders every preset and its rules as a table. A unit test parses
-  every rule as a `NetworkRule`, so an invalid constant can't ship.
-- `approval` - Keeps the `mounts`, `network` and `clipboard` settings the user
-  approved per workspace in `approved.yml` in the config directory, prints the
-  difference with the settings a command is about to apply and asks `Apply these
-  changes? [y/N]` (see
-  [Approving spec changes](08-crosscutting-concepts.md#approving-spec-changes)).
+  - `presets` - Holds the network presets: named groups of `allow` rules for
+    coding agents (`claude`, `copilot`, `codex`), GitHub and the package
+    registries and installers of toolchains (`node`, `dotnet`, `java`, `rust`,
+    `go`, `python`, `mise`, `ruby`), compiled in as constants (see
+    [ADR 0040](decisions/0040-compile-the-network-presets-into-fbk.md)). `names`
+    lists `all` and every preset, `rules` returns the rules of the named
+    presets, or of every preset for `all`, each rule once and in the order of
+    the presets, and `show` renders every preset and its rules as a table. A
+    unit test parses every rule as a `NetworkRule`, so an invalid constant can't
+    ship.
 - `port` - Forwards a host port to the working directory's sandbox with
   `ForwardPort`, or removes a forward with `RemovePort`, and records the change
   in `.firebrick.yml` with `firebrick_spec::add_port` and `remove_port`. It
@@ -201,27 +189,41 @@ C4Component
   `FAILED_PRECONDITION` as `couldn't forward localhost:<port>: <reason>` and a
   `NOT_FOUND` as `port <port> isn't forwarded for sandbox <name>`. See
   [Forwarding a port](06-runtime-view.md#forwarding-a-port).
-- `table` - Renders rows as a bordered table with `ratatui` into an in-memory
-  buffer and returns it as plain text lines
-  ([ADR 0003](decisions/0003-render-cli-tables-with-ratatui.md)).
-- `progress` - Shows the image pull and mise install progress from the
-  `StartSandbox` stream on stderr. For the pull, a progress bar made with
-  `indicatif` with the downloaded and total MiB and a percentage when stderr is
-  a terminal, and otherwise `Pulling image <ref>...` and `Pulled image <ref>`.
-  For the mise install, a spinner with the elapsed time and the latest line of
-  mise, truncated to the terminal width and cleared when the install ends, and
-  otherwise `Installing mise tools...` and `Installed mise tools`. A warning,
-  such as dotfiles that couldn't be applied, is printed on a line of its own. It
-  shows nothing for a step that sends no progress, and clears an unfinished bar
-  or spinner when the start fails
-  ([ADR 0024](decisions/0024-stream-image-pull-progress-from-startsandbox.md)).
-- `validate` - Checks `.firebrick.yml` and reports problems as
-  `file:line:column: error: message`.
-- `init` - Writes `firebrick_spec::default_spec` as YAML to `.firebrick.yml` in
-  the working directory, named after the working directory's leaf with
-  `firebrick_utils::sanitize_label`, the rule that also makes the SSH host
-  names, and cut to the 128 bytes a sandbox name may have. It refuses to replace
-  an existing file unless `--force` is passed.
+- `secret` - Sends a secret to the daemon with `SetSecret`. With `--from-stdin`,
+  it reads the value from stdin and removes one trailing line ending. With
+  `--scope sandbox`, `secret set` and `secret rm` send the name of the working
+  directory's sandbox, resolved like `fbk stop` without a name; the default
+  `--scope global` sends none. `secret ls` prints the names, scopes (`global` or
+  the sandbox name) and allowed hosts from `ListSecrets` as a table or, with
+  `--format json`, as a JSON array. `secret rm` removes a secret with
+  `RemoveSecret`. It warns about sandboxes the daemon couldn't add the secret to
+  or remove it from.
+- `approval` - Keeps the `mounts`, `network` and `clipboard` settings the user
+  approved per workspace in `approved.yml` in the config directory, prints the
+  difference with the settings a command is about to apply and asks `Apply these
+  changes? [y/N]` (see
+  [Approving spec changes](08-crosscutting-concepts.md#approving-spec-changes)).
+- `remote` - Connects the terminal to a running sandbox through the daemon.
+  - `session` - Runs a command in the sandbox through the `Attach` stream. It
+    makes sure the sandbox runs first, puts the terminal in raw mode and
+    forwards input, output and window resizes.
+  - `ssh` - Tunnels SSH protocol bytes between stdin/stdout and the `SshTunnel`
+    stream. The generated SSH config uses it as `ProxyCommand`.
+- `ui` - Output for people on the terminal.
+  - `table` - Renders rows as a bordered table with `ratatui` into an in-memory
+    buffer and returns it as plain text lines
+    ([ADR 0003](decisions/0003-render-cli-tables-with-ratatui.md)).
+  - `progress` - Shows the image pull and mise install progress from the
+    `StartSandbox` stream on stderr. For the pull, a progress bar made with
+    `indicatif` with the downloaded and total MiB and a percentage when stderr
+    is a terminal, and otherwise `Pulling image <ref>...` and `Pulled image
+    <ref>`. For the mise install, a spinner with the elapsed time and the latest
+    line of mise, truncated to the terminal width and cleared when the install
+    ends, and otherwise `Installing mise tools...` and `Installed mise tools`. A
+    warning, such as dotfiles that couldn't be applied, is printed on a line of
+    its own. It shows nothing for a step that sends no progress, and clears an
+    unfinished bar or spinner when the start fails
+    ([ADR 0024](decisions/0024-stream-image-pull-progress-from-startsandbox.md)).
 
 ## Level 2 - Daemon
 

@@ -14,7 +14,7 @@ use crate::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, attach_request,
     attach_response, sandbox_management_service_client::SandboxManagementServiceClient,
 };
-use crate::manage::{ensure_running, resolve_spec, warn_if_outdated};
+use crate::sandbox::{ensure_running, resolve_spec, warn_if_outdated};
 
 const DEFAULT_SIZE: (u16, u16) = (80, 24);
 
