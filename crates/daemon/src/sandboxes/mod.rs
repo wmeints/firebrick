@@ -876,13 +876,19 @@ async fn taken_hostnames() -> Result<HashSet<String>, SandboxError> {
 
 /// Regenerates the SSH config, the editors' Remote-SSH settings and Zed's remote projects from
 /// the current sandboxes, logging a warning when that fails. SSH access is a convenience, so a
-/// failure here doesn't fail the request.
+/// failure here doesn't fail the request. The files are written on a blocking thread, so a slow
+/// home directory doesn't stall the runtime.
 pub async fn sync_ssh_config() {
-    match list_all_sandboxes().await {
-        Ok(sandboxes) => {
-            host_config::sync(&sandboxes.iter().filter_map(ssh_host).collect::<Vec<_>>())
+    let hosts: Vec<host_config::Host> = match list_all_sandboxes().await {
+        Ok(sandboxes) => sandboxes.iter().filter_map(ssh_host).collect(),
+        Err(err) => {
+            tracing::warn!("failed to update SSH config: {err}");
+            return;
         }
-        Err(err) => tracing::warn!("failed to update SSH config: {err}"),
+    };
+
+    if let Err(err) = tokio::task::spawn_blocking(move || host_config::sync(&hosts)).await {
+        tracing::warn!("failed to update SSH config: {err}");
     }
 }
 

@@ -88,7 +88,7 @@ fn platform_config_root() -> Option<PathBuf> {
 /// Maps every host name to `"linux"` in the user settings of each editor installed under
 /// `config_root`, and removes the stale `*.fbk` hosts. Returns the errors of the editors
 /// whose settings couldn't be synced; their files are left unchanged.
-pub fn sync_settings(config_root: &Path, hostnames: &[String]) -> Vec<SettingsError> {
+pub fn sync_settings(config_root: &Path, hostnames: &[&str]) -> Vec<SettingsError> {
     let _guard = settings_file::lock();
 
     EDITORS
@@ -100,7 +100,7 @@ pub fn sync_settings(config_root: &Path, hostnames: &[String]) -> Vec<SettingsEr
 }
 
 /// Syncs the host names into one settings file, writing it only when it changes.
-fn sync_file(path: &Path, hostnames: &[String]) -> Result<(), SettingsError> {
+fn sync_file(path: &Path, hostnames: &[&str]) -> Result<(), SettingsError> {
     let text = settings_file::read(path).map_err(|source| SettingsError::Read {
         path: path.to_path_buf(),
         source,
@@ -122,7 +122,7 @@ fn sync_file(path: &Path, hostnames: &[String]) -> Result<(), SettingsError> {
 fn update_platforms(
     path: &Path,
     text: &str,
-    hostnames: &[String],
+    hostnames: &[&str],
 ) -> Result<Option<String>, SettingsError> {
     let root = CstRootNode::parse(text, &PARSE_OPTIONS).map_err(|err| SettingsError::Parse {
         path: path.to_path_buf(),
@@ -145,7 +145,7 @@ fn update_platforms(
 fn platforms_object(
     root: &CstRootNode,
     path: &Path,
-    hostnames: &[String],
+    hostnames: &[&str],
 ) -> Result<Option<CstObject>, SettingsError> {
     let settings = match root.value() {
         None if hostnames.is_empty() => return Ok(None),
@@ -176,11 +176,11 @@ fn platforms_object(
 }
 
 /// Removes the firebrick hosts that aren't in `hostnames`, keeping every other host.
-fn remove_stale_hosts(platforms: &CstObject, hostnames: &[String]) {
+fn remove_stale_hosts(platforms: &CstObject, hostnames: &[&str]) {
     for prop in platforms.properties() {
         if prop
             .decoded_name()
-            .is_some_and(|name| name.ends_with(HOST_SUFFIX) && !hostnames.contains(&name))
+            .is_some_and(|name| name.ends_with(HOST_SUFFIX) && !hostnames.contains(&name.as_str()))
         {
             prop.remove();
         }
@@ -188,8 +188,8 @@ fn remove_stale_hosts(platforms: &CstObject, hostnames: &[String]) {
 }
 
 /// Maps every host name to `"linux"`, appending the missing ones in sorted order.
-fn add_hosts(platforms: &CstObject, hostnames: &[String]) {
-    let mut hostnames: Vec<&String> = hostnames.iter().collect();
+fn add_hosts(platforms: &CstObject, hostnames: &[&str]) {
+    let mut hostnames = hostnames.to_vec();
     hostnames.sort();
 
     for hostname in hostnames {
@@ -217,10 +217,6 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn hosts(names: &[&str]) -> Vec<String> {
-        names.iter().map(|name| name.to_string()).collect()
-    }
-
     /// Returns a config root with a `User` directory for VS Code, and the path of its settings.
     fn vscode_root() -> (TempDir, PathBuf) {
         let root = TempDir::new().unwrap();
@@ -240,7 +236,7 @@ mod tests {
         )
         .unwrap();
 
-        let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
+        let errors = sync_settings(root.path(), &["project.fbk"]);
 
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(
@@ -261,7 +257,7 @@ mod tests {
         )
         .unwrap();
 
-        sync_settings(root.path(), &hosts(&["web.fbk"]));
+        sync_settings(root.path(), &["web.fbk"]);
 
         assert_eq!(
             fs::read_to_string(&settings).unwrap(),
@@ -274,7 +270,7 @@ mod tests {
     fn creates_missing_settings_file() {
         let (root, settings) = vscode_root();
 
-        sync_settings(root.path(), &hosts(&["project.fbk"]));
+        sync_settings(root.path(), &["project.fbk"]);
 
         let content = fs::read_to_string(&settings).unwrap();
         let value: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
@@ -295,7 +291,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         fs::create_dir_all(root.path().join("Cursor")).unwrap();
 
-        let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
+        let errors = sync_settings(root.path(), &["project.fbk"]);
 
         assert!(errors.is_empty(), "{errors:?}");
         assert!(!root.path().join("Cursor/User").exists());
@@ -309,7 +305,7 @@ mod tests {
             fs::create_dir_all(root.path().join(editor).join("User")).unwrap();
         }
 
-        sync_settings(root.path(), &hosts(&["project.fbk"]));
+        sync_settings(root.path(), &["project.fbk"]);
 
         for editor in ["Code - Insiders", "Cursor", "VSCodium"] {
             let settings = root.path().join(editor).join("User/settings.json");
@@ -329,7 +325,7 @@ mod tests {
         fs::write(&settings, invalid).unwrap();
         fs::create_dir_all(root.path().join("Cursor/User")).unwrap();
 
-        let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
+        let errors = sync_settings(root.path(), &["project.fbk"]);
 
         assert!(
             matches!(errors.as_slice(), [SettingsError::Parse { path, .. }] if *path == settings),
@@ -345,7 +341,7 @@ mod tests {
         let content = "{ \"remote.SSH.remotePlatform\": \"linux\" }\n";
         fs::write(&settings, content).unwrap();
 
-        let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
+        let errors = sync_settings(root.path(), &["project.fbk"]);
 
         assert!(
             matches!(
@@ -366,7 +362,7 @@ mod tests {
             return;
         }
 
-        sync_settings(root.path(), &hosts(&["project.fbk"]));
+        sync_settings(root.path(), &["project.fbk"]);
 
         assert!(fs::symlink_metadata(&settings).unwrap().is_symlink());
         assert!(
@@ -387,7 +383,7 @@ mod tests {
         ] {
             fs::write(&settings, invalid).unwrap();
 
-            let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
+            let errors = sync_settings(root.path(), &["project.fbk"]);
 
             assert!(
                 matches!(errors.as_slice(), [SettingsError::Parse { .. }]),
@@ -404,7 +400,7 @@ mod tests {
                        \"remote.SSH.remotePlatform\": {}\n}\n";
         fs::write(&settings, content).unwrap();
 
-        let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
+        let errors = sync_settings(root.path(), &["project.fbk"]);
 
         assert!(
             matches!(
@@ -424,7 +420,7 @@ mod tests {
             return;
         }
 
-        let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
+        let errors = sync_settings(root.path(), &["project.fbk"]);
 
         assert!(
             matches!(errors.as_slice(), [SettingsError::Read { .. }]),
@@ -440,7 +436,7 @@ mod tests {
         let content = "{\"remote.SSH.remotePlatform\": {\"project.fbk\": \"linux\"}}";
         fs::write(&settings, content).unwrap();
 
-        sync_settings(root.path(), &hosts(&["project.fbk"]));
+        sync_settings(root.path(), &["project.fbk"]);
 
         assert_eq!(fs::read_to_string(&settings).unwrap(), content);
     }

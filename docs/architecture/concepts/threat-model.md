@@ -168,13 +168,13 @@ Grouped by STRIDE category. The status of each threat is one of:
 
 ### Tampering: the spec
 
-| Threat                                                                                                | Mitigation                                                                  | Status    |
-| ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- | --------- |
-| The agent adds a host path to `mounts`, widens `network`, turns off `enforce` or turns on `clipboard` | Approval in `approval.rs` before the sandbox is created or rules change     | Mitigated |
-| A new spec setting that widens access isn't added to the approved settings                            | Review rule: every setting that lets more cross the boundary needs approval | Check     |
-| The agent changes `image`, `init`, `mise.enabled`, `resources`, `volumes`, `ports` or `name`          | None; these only change what runs inside the VM, or loopback listeners      | Accepted  |
-| The agent removes `network` and the user recreates a sandbox that predates approvals                  | None                                                                        | Accepted  |
-| The approved settings differ from what `fbkd` applies                                                 | The CLI converts mounts with the same `From<&Mount>` as the daemon          | Mitigated |
+| Threat                                                                                                | Mitigation                                                                           | Status    |
+| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | --------- |
+| The agent adds a host path to `mounts`, widens `network`, turns off `enforce` or turns on `clipboard` | Approval in `crates/cli/src/approval/` before the sandbox is created or rules change | Mitigated |
+| A new spec setting that widens access isn't added to the approved settings                            | Review rule: every setting that lets more cross the boundary needs approval          | Check     |
+| The agent changes `image`, `init`, `mise.enabled`, `resources`, `volumes`, `ports` or `name`          | None; these only change what runs inside the VM, or loopback listeners               | Accepted  |
+| The agent removes `network` and the user recreates a sandbox that predates approvals                  | None                                                                                 | Accepted  |
+| The approved settings differ from what `fbkd` applies                                                 | The CLI converts mounts with the same `From<&Mount>` as the daemon                   | Mitigated |
 
 ### Information disclosure
 

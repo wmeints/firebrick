@@ -715,7 +715,9 @@ C4Component
 - `host_config` - Keeps the host's own config files that list the sandboxes in
   sync with them. Its one function, `sync`, takes the sandboxes that have an SSH
   host name and rewrites the SSH config, the editors' Remote-SSH settings and
-  Zed's remote projects, logging a warning for each one that fails.
+  Zed's remote projects, logging a warning for each one that fails. `sandboxes`
+  runs it on a blocking thread, so a slow home directory doesn't stall the
+  runtime.
   - `ssh_config` - Writes the generated SSH config that `~/.ssh/config`
     includes, with a host block per sandbox that tunnels through `fbk ssh-proxy`
     with the keys of `ssh`. It prepends the `Include` line to `~/.ssh/config`

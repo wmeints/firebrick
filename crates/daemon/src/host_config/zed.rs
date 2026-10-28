@@ -6,6 +6,7 @@
 //! Remote Projects. The daemon owns the entries whose `host` ends in `.fbk`, and leaves the
 //! rest of the file, comments and formatting included, as the user wrote it.
 
+use super::Host;
 use super::settings_file::{self, PARSE_OPTIONS};
 use jsonc_parser::cst::{CstArray, CstInputValue, CstObject, CstRootNode};
 use jsonc_parser::parse_to_value;
@@ -61,17 +62,6 @@ pub enum SettingsError {
     },
 }
 
-/// A sandbox as a Zed remote project.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemoteProject {
-    /// SSH host name of the sandbox, e.g. `project.fbk`.
-    pub host: String,
-    /// Name Zed shows for the connection: the sandbox name.
-    pub nickname: String,
-    /// Guest path of the sandbox's workspace, e.g. `/workspaces/project`, if it has one.
-    pub workspace_path: Option<String>,
-}
-
 const CONNECTIONS_KEY: &str = "ssh_connections";
 const HOST_KEY: &str = "host";
 const HOST_SUFFIX: &str = ".fbk";
@@ -106,7 +96,7 @@ fn platform_config_root() -> Option<PathBuf> {
 /// Writes one `ssh_connections` entry per project into `<config_root>/zed/settings.json`,
 /// rewrites the `*.fbk` entries that differ and removes the stale ones. Does nothing when Zed
 /// isn't installed, that is when the `zed` directory doesn't exist.
-pub fn sync_settings(config_root: &Path, projects: &[RemoteProject]) -> Result<(), SettingsError> {
+pub fn sync_settings(config_root: &Path, projects: &[Host]) -> Result<(), SettingsError> {
     let zed_dir = config_root.join(ZED_DIR);
 
     if !zed_dir.is_dir() {
@@ -136,7 +126,7 @@ pub fn sync_settings(config_root: &Path, projects: &[RemoteProject]) -> Result<(
 fn update_connections(
     path: &Path,
     text: &str,
-    projects: &[RemoteProject],
+    projects: &[Host],
 ) -> Result<Option<String>, SettingsError> {
     let root = CstRootNode::parse(text, &PARSE_OPTIONS).map_err(|err| SettingsError::Parse {
         path: path.to_path_buf(),
@@ -148,8 +138,8 @@ fn update_connections(
     };
     let entries = connection_objects(&connections, path)?;
 
-    let mut missing: Vec<&RemoteProject> = projects.iter().collect();
-    missing.sort_by(|a, b| a.host.cmp(&b.host));
+    let mut missing: Vec<&Host> = projects.iter().collect();
+    missing.sort_by(|a, b| a.hostname.cmp(&b.hostname));
 
     for entry in entries {
         sync_entry(entry, &mut missing);
@@ -168,7 +158,7 @@ fn update_connections(
 fn connections_array(
     root: &CstRootNode,
     path: &Path,
-    projects: &[RemoteProject],
+    projects: &[Host],
 ) -> Result<Option<CstArray>, SettingsError> {
     let settings = match root.value() {
         None if projects.is_empty() => return Ok(None),
@@ -218,12 +208,12 @@ fn connection_objects(
 
 /// Syncs one entry: keeps other hosts, rewrites a firebrick host that is still `missing` when it
 /// differs, and removes the stale and duplicate firebrick hosts.
-fn sync_entry(entry: CstObject, missing: &mut Vec<&RemoteProject>) {
+fn sync_entry(entry: CstObject, missing: &mut Vec<&Host>) {
     let Some(host) = entry_host(&entry).filter(|host| host.ends_with(HOST_SUFFIX)) else {
         return;
     };
 
-    let Some(index) = missing.iter().position(|project| project.host == host) else {
+    let Some(index) = missing.iter().position(|project| project.hostname == host) else {
         entry.remove();
         return;
     };
@@ -246,7 +236,7 @@ fn entry_host(entry: &CstObject) -> Option<String> {
 }
 
 /// Returns the `ssh_connections` entry of a project.
-fn connection_value(project: &RemoteProject) -> CstInputValue {
+fn connection_value(project: &Host) -> CstInputValue {
     let projects = match &project.workspace_path {
         Some(workspace_path) => vec![CstInputValue::Object(vec![(
             "paths".to_string(),
@@ -256,14 +246,14 @@ fn connection_value(project: &RemoteProject) -> CstInputValue {
     };
 
     CstInputValue::Object(vec![
-        (HOST_KEY.to_string(), project.host.as_str().into()),
-        ("nickname".to_string(), project.nickname.as_str().into()),
+        (HOST_KEY.to_string(), project.hostname.as_str().into()),
+        ("nickname".to_string(), project.sandbox.as_str().into()),
         ("projects".to_string(), CstInputValue::Array(projects)),
     ])
 }
 
 /// Returns the `ssh_connections` entry of a project as JSON text.
-fn connection_text(project: &RemoteProject) -> String {
+fn connection_text(project: &Host) -> String {
     let root = CstRootNode::parse("", &PARSE_OPTIONS);
 
     root.map(|root| {
@@ -290,10 +280,10 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn project(leaf: &str) -> RemoteProject {
-        RemoteProject {
-            host: format!("{leaf}.fbk"),
-            nickname: leaf.to_string(),
+    fn project(leaf: &str) -> Host {
+        Host {
+            hostname: format!("{leaf}.fbk"),
+            sandbox: leaf.to_string(),
             workspace_path: Some(format!("/workspaces/{leaf}")),
         }
     }
@@ -383,7 +373,7 @@ mod tests {
     #[test]
     fn writes_empty_projects_without_workspace_path() {
         let (root, settings) = zed_root();
-        let project = RemoteProject {
+        let project = Host {
             workspace_path: None,
             ..project("named")
         };

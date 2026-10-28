@@ -54,13 +54,12 @@ it is used, and look for what lets it cross the boundary.
    can edit it. Check what `fbk` and `fbkd` do with an edited spec on the next
    `fbk start`, `fbk network` or `fbk port`: host paths in `mounts`, turning off
    `network.enforce`, widening `allow`, changing `image`, `ports` or `name`, and
-   whether the user is warned before such a change applies
-   (`crates/spec/src/lib.rs`, `crates/cli/src/approval/`,
-   `crates/daemon/src/sandboxes/`). Check that every setting that lets more
-   cross the boundary is part of the approved settings, and that what `fbk`
-   approves is what `fbkd` applies. `fbk init`, `fbk network` and `fbk port`
-   write the spec: check what happens when the agent replaced it with a symlink
-   to a host file.
+   whether the user is warned before such a change applies (`crates/spec/src/`,
+   `crates/cli/src/approval/`, `crates/daemon/src/sandboxes/`). Check that every
+   setting that lets more cross the boundary is part of the approved settings,
+   and that what `fbk` approves is what `fbkd` applies. `fbk init`, `fbk
+   network` and `fbk port` write the spec: check what happens when the agent
+   replaced it with a symlink to a host file.
 3. **Injection into host files.** `fbkd` writes the SSH config and edits VS Code
    and Zed settings (`crates/daemon/src/host_config/`). Check whether names,
    paths or other values from the spec or the guest can inject directives, such
@@ -110,10 +109,11 @@ it is used, and look for what lets it cross the boundary.
    snapshot or upgrading it (ADRs 0021 and 0041) takes its labels, routes and
    secrets from the host, not from state the guest could change.
 10. **The daemon socket and gRPC input.** Check the socket's permissions and
-    peer check (`server.rs`), the fallback to the shared temp dir, races on
-    files `fbkd` creates in shared or user-writable directories, and that names
-    and paths in requests are validated before they reach the file system or
-    microsandbox.
+    peer check (`crates/utils/src/ipc/`,
+    `crates/daemon/src/server/transport.rs`), the fallback to the shared temp
+    dir, races on files `fbkd` creates in shared or user-writable directories,
+    and that names and paths in requests are validated before they reach the
+    file system or microsandbox.
 11. **Files at rest.** The permissions of `secrets.yml`, microsandbox's state
     directory and the SSH key directory when they are created, and whether a
     restrictive umask or an existing file with looser permissions changes that.

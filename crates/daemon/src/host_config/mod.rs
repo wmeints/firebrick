@@ -9,12 +9,14 @@ mod vscode;
 mod zed;
 
 /// A sandbox that is reachable over SSH, as the host's config files list it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Host {
     /// The SSH host name of the sandbox, such as `project.fbk`.
     pub hostname: String,
     /// The name of the sandbox, which Zed shows for the remote project.
     pub sandbox: String,
-    /// The guest path of the sandbox's workspace, which Zed opens.
+    /// The guest path of the sandbox's workspace, such as `/workspaces/project`, which Zed
+    /// opens. `None` for a sandbox without a workspace.
     pub workspace_path: Option<String>,
 }
 
@@ -22,7 +24,7 @@ pub(crate) struct Host {
 /// the given hosts, logging a warning for each one that fails. SSH access is a convenience, so
 /// a failure here doesn't fail the request that triggered the sync.
 pub(crate) fn sync(hosts: &[Host]) {
-    let hostnames: Vec<String> = hosts.iter().map(|host| host.hostname.clone()).collect();
+    let hostnames: Vec<&str> = hosts.iter().map(|host| host.hostname.as_str()).collect();
 
     if let Err(err) = ssh_config::sync_config(&hostnames) {
         tracing::warn!("failed to update SSH config: {err:#}");
@@ -34,7 +36,7 @@ pub(crate) fn sync(hosts: &[Host]) {
 
 /// Syncs the host names into the editors' Remote-SSH settings, logging a warning per editor
 /// that fails.
-fn sync_editor_settings(hostnames: &[String]) {
+fn sync_editor_settings(hostnames: &[&str]) {
     let Some(config_root) = vscode::config_root() else {
         tracing::warn!("failed to update editor settings: HOME is not set");
         return;
@@ -54,16 +56,8 @@ fn sync_zed_settings(hosts: &[Host]) {
         tracing::warn!("failed to update Zed settings: HOME is not set");
         return;
     };
-    let projects: Vec<zed::RemoteProject> = hosts
-        .iter()
-        .map(|host| zed::RemoteProject {
-            host: host.hostname.clone(),
-            nickname: host.sandbox.clone(),
-            workspace_path: host.workspace_path.clone(),
-        })
-        .collect();
 
-    if let Err(err) = zed::sync_settings(&config_root, &projects) {
+    if let Err(err) = zed::sync_settings(&config_root, hosts) {
         tracing::warn!(
             "failed to update Zed settings: {:#}",
             anyhow::Error::from(err)
