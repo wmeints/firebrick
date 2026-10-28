@@ -3,7 +3,7 @@
 //! Shared by the editor modules that keep sandbox hosts in an editor's user settings. Edits go
 //! through `jsonc-parser`'s CST, so comments and formatting stay as the user wrote them.
 
-use crate::atomic_file;
+use super::atomic_file;
 use jsonc_parser::ParseOptions;
 use jsonc_parser::cst::CstObject;
 use std::fs;

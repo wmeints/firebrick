@@ -56,3 +56,4 @@
 - [ADR 0054 - Run SSH sessions in the user's login shell](decisions/0054-run-ssh-sessions-in-the-users-login-shell.md)
 - [ADR 0055 - Restart a daemon of another version](decisions/0055-restart-a-daemon-of-another-version.md)
 - [ADR 0056 - Apply mise dotfiles from a read-only mount](decisions/0056-apply-mise-dotfiles-from-a-read-only-mount.md)
+- [ADR 0057 - Group the daemon modules behind narrow interfaces](decisions/0057-group-the-daemon-modules-behind-narrow-interfaces.md)

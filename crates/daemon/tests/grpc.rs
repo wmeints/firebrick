@@ -22,10 +22,12 @@ use firebrick_daemon::api::{
     UpgradeSandboxResponse, attach_request, attach_response, start_sandbox_response,
     upgrade_sandbox_response,
 };
-use firebrick_daemon::clipboard::{self, Cause, Clipboards, HostClipboard, HostError, Kind};
-use firebrick_daemon::open::{self, Opener};
+use firebrick_daemon::guest::clipboard::{self, Cause, Clipboards, HostClipboard, HostError, Kind};
+use firebrick_daemon::guest::netlog;
+use firebrick_daemon::guest::open::{self, Opener};
+use firebrick_daemon::sandboxes::provision::{env, mise};
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
-use firebrick_daemon::{env, mise, netlog, sandboxes, server};
+use firebrick_daemon::{sandboxes, server};
 use firebrick_utils::ipc;
 use hyper_util::rt::TokioIo;
 use microsandbox::sandbox::{

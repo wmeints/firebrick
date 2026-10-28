@@ -2,7 +2,7 @@
 //! workspace, so a sandbox comes up with the user's setup and the project's tools ready, and
 //! reports the lines mise writes meanwhile as throttled [`MiseUpdate`]s.
 
-use crate::pull::{PROGRESS_INTERVAL, Throttle};
+use crate::sandboxes::provision::pull::{PROGRESS_INTERVAL, Throttle};
 use firebrick_spec::MISE_DOTFILES_PATH;
 use firebrick_utils::strip_control;
 use microsandbox::protocol::exec::{ExecFailed, ExecFailureKind};

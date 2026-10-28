@@ -6,7 +6,7 @@
 //! Remote Projects. The daemon owns the entries whose `host` ends in `.fbk`, and leaves the
 //! rest of the file, comments and formatting included, as the user wrote it.
 
-use crate::settings_file::{self, PARSE_OPTIONS};
+use super::settings_file::{self, PARSE_OPTIONS};
 use jsonc_parser::cst::{CstArray, CstInputValue, CstObject, CstRootNode};
 use jsonc_parser::parse_to_value;
 use std::io;

@@ -225,28 +225,22 @@ C4Component
 
 ## Level 2 - Daemon
 
+The daemon has eight top-level modules. Each one hides its submodules behind a
+narrow interface, such as `SandboxManager` for `sandboxes` and `sync` for
+`host_config`.
+
 ```mermaid
 C4Component
     Container_Boundary(daemon, "fbkd (crates/daemon)") {
         Component(main, "main", "Rust", "Entrypoint")
-        Component(server, "server", "Tonic server", "Control API adapter")
-        Component(sandboxes, "sandboxes", "Rust", "Sandbox management")
-        Component(session, "session", "Rust", "Attach sessions")
-        Component(tunnel, "tunnel", "Rust", "SSH tunnels")
-        Component(ssh, "ssh", "russh", "SSH access")
-        Component(vscode, "vscode", "jsonc-parser", "Editor settings")
-        Component(zed, "zed", "jsonc-parser", "Zed remote projects")
-        Component(runtime, "runtime", "Rust", "Runtime installation")
-        Component(secrets, "secrets", "serde_yaml", "Secrets")
-        Component(network, "network", "microsandbox-network", "Egress rules")
+        Component(server, "server", "Tonic server", "Control API adapter, attach sessions, SSH tunnels")
+        Component(sandboxes, "sandboxes", "Rust", "Sandbox management and provisioning")
+        Component(guest, "guest", "Rust", "URL relays, network logs, host clipboard")
         Component(forward, "forward", "russh", "Port forwards")
-        Component(open, "open", "Rust", "URL relays")
-        Component(netlog, "netlog", "serde_json", "Network logs")
-        Component(clipboard, "clipboard", "Rust", "Host clipboard")
-        Component(vsock, "vsock", "Rust", "Sockets of vsock routes")
-        Component(pull, "pull", "Rust", "Image pull progress")
-        Component(env, "env", "Rust", "Environment variables")
-        Component(git, "git", "Rust", "Git identity")
+        Component(hostconfig, "host_config", "jsonc-parser", "SSH config and editor settings")
+        Component(ssh, "ssh", "russh", "SSH keys and host names")
+        Component(secrets, "secrets", "serde_yaml", "Secrets")
+        Component(runtime, "runtime", "Rust", "Runtime installation")
     }
     Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names, text")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
@@ -262,38 +256,25 @@ C4Component
     Rel(main, sandboxes, "Syncs SSH config")
     Rel(main, server, "Runs")
     Rel(server, sandboxes, "Manages sandboxes and secrets")
-    Rel(server, session, "Runs Attach sessions")
-    Rel(server, tunnel, "Serves SSH tunnels")
+    Rel(server, ssh, "Finds SSH keys")
     Rel(server, utils, "Finds socket")
+    Rel(server, microsandbox, "Runs processes with a TTY, serves SSH")
     Rel(sandboxes, secrets, "Loads, stores and applies secrets")
-    Rel(sandboxes, network, "Applies egress rules")
     Rel(sandboxes, forward, "Reconciles port forwards")
-    Rel(sandboxes, pull, "Reports image pull progress")
-    Rel(sandboxes, env, "Sets and syncs spec variables")
-    Rel(sandboxes, git, "Sets the git identity")
-    Rel(git, microsandbox, "Runs git config as an exec")
+    Rel(sandboxes, guest, "Adds vsock routes, starts URL relays")
+    Rel(sandboxes, hostconfig, "Syncs SSH config and editor settings")
+    Rel(sandboxes, ssh, "Picks host names")
+    Rel(sandboxes, microsandbox, "Manages sandboxes, sets env, git identity and egress rules")
     Rel(forward, microsandbox, "Opens direct-tcpip channels")
-    Rel(sandboxes, open, "Starts URL relays")
-    Rel(open, microsandbox, "Runs the relay as an exec stream")
-    Rel(open, browser, "Opens URLs")
-    Rel(sandboxes, netlog, "Adds vsock routes, listens for network logs")
-    Rel(netlog, utils, "Finds socket and record directories")
-    Rel(netlog, vsock, "Binds and removes sockets")
-    Rel(sandboxes, clipboard, "Adds vsock routes, listens for clipboard requests")
-    Rel(clipboard, vsock, "Binds and removes sockets")
-    Rel(clipboard, utils, "Finds socket directory")
-    Rel(clipboard, hostclip, "Reads and writes the clipboard")
-    Rel(sandboxes, ssh, "Host names, SSH config")
-    Rel(sandboxes, vscode, "Syncs Remote-SSH platforms")
-    Rel(sandboxes, zed, "Syncs remote projects")
-    Rel(sandboxes, microsandbox, "Manages sandboxes")
-    Rel(session, microsandbox, "Runs processes with a TTY")
-    Rel(tunnel, ssh, "Finds SSH keys")
-    Rel(tunnel, microsandbox, "Serves SSH")
+    Rel(guest, forward, "Opens OAuth callback forwards")
+    Rel(guest, microsandbox, "Runs the URL relay as an exec stream")
+    Rel(guest, browser, "Opens URLs")
+    Rel(guest, hostclip, "Reads and writes the clipboard")
+    Rel(guest, utils, "Finds socket and record directories")
+    Rel(hostconfig, sshconfig, "Adds Include")
+    Rel(hostconfig, editors, "Maps hosts to linux")
+    Rel(hostconfig, zedsettings, "Writes ssh_connections")
     Rel(ssh, utils, "Finds SSH directory")
-    Rel(ssh, sshconfig, "Adds Include")
-    Rel(vscode, editors, "Maps hosts to linux")
-    Rel(zed, zedsettings, "Writes ssh_connections")
     Rel(runtime, microsandbox, "Installs msb and libkrunfw")
 ```
 
@@ -309,15 +290,17 @@ C4Component
   their listeners close, and it waits up to 60 seconds for updates and upgrades
   of sandboxes that are still running.
 - `server` - Adapts `SandboxManagementService` to the modules below: it converts
-  each request into plain values, calls `sandboxes`, `session` or `tunnel`, and
-  converts the result into a response. It converts requested resources and
-  volumes to vCPUs and MiB, falling back to the defaults from `firebrick-spec`
-  (for the Docker volume also when the request's `docker` size is empty), and
-  rejects invalid values with `INVALID_ARGUMENT`. It parses the network rules of
-  a `StartSandbox` or `UpdateNetwork` request with `firebrick-spec` and rejects
-  an invalid rule with `INVALID_ARGUMENT`, also when the sandbox already exists.
-  It rejects a port outside 1 to 65535 or a host port that is listed twice, and
-  an `UpgradeSandbox` request without a sandbox name, with `INVALID_ARGUMENT`.
+  each request into plain values, calls `sandboxes`, `attach` or `tunnel`, and
+  converts the result into a response. The conversions live in `convert`, the
+  endpoint and its connections in `transport`, and the signals that stop the
+  daemon in `shutdown`. It converts requested resources and volumes to vCPUs and
+  MiB, falling back to the defaults from `firebrick-spec` (for the Docker volume
+  also when the request's `docker` size is empty), and rejects invalid values
+  with `INVALID_ARGUMENT`. It parses the network rules of a `StartSandbox` or
+  `UpdateNetwork` request with `firebrick-spec` and rejects an invalid rule with
+  `INVALID_ARGUMENT`, also when the sandbox already exists. It rejects a port
+  outside 1 to 65535 or a host port that is listed twice, and an
+  `UpgradeSandbox` request without a sandbox name, with `INVALID_ARGUMENT`.
   Every request that names a sandbox, including the scope of a secret, has its
   name checked with `firebrick_spec::validate_sandbox_name` first (see
   [Validating sandbox names](08-crosscutting-concepts.md#validating-sandbox-names)).
@@ -343,8 +326,20 @@ C4Component
   a connection to tonic when the peer runs as the daemon's own user or root,
   `LocalSystem` on Windows (see
   [Securing the daemon socket](08-crosscutting-concepts.md#securing-the-daemon-socket)).
+  - `attach` - Runs an `Attach` session: rejects invalid window sizes with
+    `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
+    forwards input, resizes, output and the exit code between the gRPC stream
+    and the process until either side ends.
+  - `tunnel` - Serves an `SshTunnel` connection with microsandbox's SSH server
+    over an in-memory pipe, copying bytes in both directions until the SSH
+    session closes. `sandboxes` boots the sandbox when needed.
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
-  gRPC. It creates sandboxes from the requested image (or the default image)
+  gRPC. `SandboxManager` is its interface; private submodules hold its errors
+  (`error`), the status and listing of sandboxes (`status`), the settings a
+  sandbox is created with (`settings`), its port forwards (`ports`), its secrets
+  (`secret_updates`) and recreating it for `UpdateNetwork` and `UpgradeSandbox`
+  (`recreate`). The `provision` submodules apply the parts of a spec to a
+  sandbox. It creates sandboxes from the requested image (or the default image)
   with the requested vCPUs and memory, mounts the workspace read/write at
   `/workspaces/<leaf>`, bind mounts the extra `mounts` of the request the same
   way (owner `1000:1000`, host permissions mirrored, read-only when asked) after
@@ -370,18 +365,18 @@ C4Component
   [Starting a sandbox](06-runtime-view.md#starting-a-sandbox)). It starts,
   stops, gets, lists and removes sandboxes, gives each sandbox a unique SSH host
   name, regenerates the SSH config, the editor settings and Zed's remote
-  projects after every start and remove and when the daemon starts, and connects
-  to a sandbox by name or host name. `GetSandbox` returns the sandbox's working
-  directory, which is the workspace mount path, as `workspace_path`, and the
-  host directory bind-mounted there, canonicalized, as `workspace_host_path`.
-  Both are empty for a sandbox without a workspace. The CLI compares
-  `workspace_host_path` with the working directory before it uses an existing
-  sandbox. A failed sync only logs a warning. `SetSecret` stores a secret and
-  adds it to the sandboxes in its scope: a global secret to the existing
-  sandboxes firebrick created, except the ones with a sandbox-scoped secret with
-  that name, and a sandbox-scoped secret to its sandbox only, which must exist.
-  It refuses a secret whose name one of those sandboxes got as an `env` variable
-  from its spec with `FAILED_PRECONDITION` (see
+  projects through `host_config` after every start and remove and when the
+  daemon starts, and connects to a sandbox by name or host name. `GetSandbox`
+  returns the sandbox's working directory, which is the workspace mount path, as
+  `workspace_path`, and the host directory bind-mounted there, canonicalized, as
+  `workspace_host_path`. Both are empty for a sandbox without a workspace. The
+  CLI compares `workspace_host_path` with the working directory before it uses
+  an existing sandbox. A failed sync only logs a warning. `SetSecret` stores a
+  secret and adds it to the sandboxes in its scope: a global secret to the
+  existing sandboxes firebrick created, except the ones with a sandbox-scoped
+  secret with that name, and a sandbox-scoped secret to its sandbox only, which
+  must exist. It refuses a secret whose name one of those sandboxes got as an
+  `env` variable from its spec with `FAILED_PRECONDITION` (see
   [Setting environment variables](06-runtime-view.md#setting-environment-variables)).
   `ListSecrets` returns the names, scopes and allowed hosts, sorted by name and
   then scope with the global secret first, never the values. `RemoveSecret`
@@ -464,39 +459,52 @@ C4Component
   with its rules from the `firebrick.network` label (`network::rules_of`),
   `FAILED_PRECONDITION` when the sandbox has no network log route, or `INTERNAL`
   when its record can't be read.
-- `env` - Gives a sandbox the plain environment variables of its spec. It sets
-  them with `SandboxBuilder::envs` on the shared builder chain, so created,
-  recreated and upgraded sandboxes get them, and records their names in the
-  `firebrick.env` label (`NODE_ENV,PORT`). microsandbox merges the image's
-  variables into the same list, so the label tells the spec's variables apart.
-  `sync` compares the requested variables with the stored ones and, when they
-  differ, sets the new and changed ones, removes the ones that left the spec and
-  updates the label as one `next_start` change; it never touches a variable the
-  label doesn't name. A spec variable with the name of an image variable
-  replaces it, and removing it from the spec removes the variable altogether.
-  The values are passed on as they are, without secret substitution.
-- `git` - Gives a running sandbox the host's git identity from a start request.
-  For each of `user.name` and `user.email` the request has a value for, it runs
-  `git config --global <key> <value>` as the image's default user, without a
-  shell, so the value is stored literally in that user's `~/.gitconfig`, with a
-  timeout of 5 seconds. A key without a value keeps its value in the sandbox.
-  When the image has no `git`, or the command fails, it logs a warning naming
-  the sandbox and the start still succeeds.
-- `pull` - Turns microsandbox's `PullProgress` events into pull updates: it adds
-  up the downloaded bytes per layer, takes the total from the manifest, and
-  reports at most one update every 100 ms, one for each layer that finishes and
-  a final one when the pull completes. A pull without layer downloads, because
-  the image is cached, reports nothing. Its `Throttle` also limits the mise
-  install progress to one message every 100 ms.
-- `session` - Runs an `Attach` session: rejects invalid window sizes with
-  `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
-  forwards input, resizes, output and the exit code between the gRPC stream and
-  the process until either side ends.
-- `tunnel` - Serves an `SshTunnel` connection with microsandbox's SSH server
-  over an in-memory pipe, copying bytes in both directions until the SSH session
-  closes. `sandboxes` boots the sandbox when needed.
+  - `env` - Gives a sandbox the plain environment variables of its spec. It sets
+    them with `SandboxBuilder::envs` on the shared builder chain, so created,
+    recreated and upgraded sandboxes get them, and records their names in the
+    `firebrick.env` label (`NODE_ENV,PORT`). microsandbox merges the image's
+    variables into the same list, so the label tells the spec's variables apart.
+    `sync` compares the requested variables with the stored ones and, when they
+    differ, sets the new and changed ones, removes the ones that left the spec
+    and updates the label as one `next_start` change; it never touches a
+    variable the label doesn't name. A spec variable with the name of an image
+    variable replaces it, and removing it from the spec removes the variable
+    altogether. The values are passed on as they are, without secret
+    substitution.
+  - `git` - Gives a running sandbox the host's git identity from a start
+    request. For each of `user.name` and `user.email` the request has a value
+    for, it runs `git config --global <key> <value>` as the image's default
+    user, without a shell, so the value is stored literally in that user's
+    `~/.gitconfig`, with a timeout of 5 seconds. A key without a value keeps its
+    value in the sandbox. When the image has no `git`, or the command fails, it
+    logs a warning naming the sandbox and the start still succeeds.
+  - `pull` - Turns microsandbox's `PullProgress` events into pull updates: it
+    adds up the downloaded bytes per layer, takes the total from the manifest,
+    and reports at most one update every 100 ms, one for each layer that
+    finishes and a final one when the pull completes. A pull without layer
+    downloads, because the image is cached, reports nothing. Its `Throttle` also
+    limits the mise install progress to one message every 100 ms.
+  - `network` - Turns the `network` section of a spec into the network settings
+    of a sandbox that is being created. With `enabled: false`, it calls
+    microsandbox's `disable_network()`, which removes the network device and
+    sets a deny-all policy, and ignores `enforce`, `allow` and `deny`: there is
+    no traffic to intercept, so it sets up no TLS interception or deny page.
+    Stored secrets are still added; they don't bring the device back. `fbk run`,
+    the SSH tunnel and port forwards keep working, because they go through
+    microsandbox's agent channel instead of the guest network. Without
+    `enforce`, it leaves the sandbox with microsandbox's default policy. With
+    `enforce`, it builds a policy of all deny rules, then all allow rules, then
+    microsandbox's DNS rule, with deny as the default for egress. Host names map
+    to a `Domain`, `*.domain` to a `DomainSuffix`, and IP addresses and CIDR
+    ranges to a `Cidr`. It also turns on TLS interception for port 443 and
+    microsandbox's HTTP deny response in its text format, whose body names the
+    host and `fbk network allow <host>`; the default JSON format ignores the
+    message
+    ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
 - `forward` - Forwards host loopback ports to a sandbox's loopback
   ([ADR 0019](decisions/0019-forward-ports-through-the-ssh-servers-direct-tcpip.md)).
+  Its submodules hold the loopback listeners that both kinds of forwards share
+  (`listener`), `CallbackForwards` (`callback`) and `SshConnector` (`ssh`).
   `Forwards::apply` reconciles a sandbox's open forwards with a list of
   mappings: it closes the ones that aren't listed, then opens the new ones, and
   leaves unchanged ones and their connections alone. Each forward listens on
@@ -526,178 +534,233 @@ C4Component
   dropping `CallbackForwards` closes them all. A host port it can't listen on is
   logged as `couldn't forward localhost:<port> for sandbox <name>: <error>` and
   fails `ensure`.
-- `open` - Opens http and https URLs from a sandbox in the browser on the host
-  (see
-  [ADR 0026](decisions/0026-relay-urls-to-the-host-through-an-exec-stream.md)
-  and
-  [Opening a URL on the host](06-runtime-view.md#opening-a-url-on-the-host)).
-  `Relays::ensure` starts the relay of a connected, running sandbox unless it
-  already has one: an inline `sh -c` script, run with `exec_stream_with` as the
-  image's user, that creates `/tmp/.firebrick` (mode `0700`) and the FIFO
-  `/tmp/.firebrick/open.fifo` when they're missing, keeps the FIFO open itself
-  and echoes each line written to it. A registry keyed by sandbox name holds at
-  most one relay per sandbox; an entry goes away when its exec stream ends or
-  when `Relays::forget` is called because the sandbox stopped or is being
-  recreated, so the next `StartSandbox`, `Attach`, `SshTunnel` or
-  `UpdateNetwork` of a running sandbox starts a new relay. `fbkd` splits the
-  relay's output into lines and checks each one: it must start with `http://` or
-  `https://` in any case, have no whitespace or control characters, be at most 8
-  KiB and parse with the `url` crate, which reads the host the way a browser
-  does (`http://2130706433/` is `127.0.0.1`). It rejects `localhost`,
-  `*.localhost` and loopback, private, shared, link-local, unique local and
-  unspecified IP addresses. When the sandbox enforces egress rules, read from
-  its `firebrick.network` label with `network::rules_of`, the host must also
-  pass `network::allows_host`, which matches the rules the way microsandbox
-  does: deny rules first, then allow rules, else deny. Domain rules only match
-  host names and IP rules only IP addresses, because `fbkd` doesn't resolve
-  names. A sandbox whose label can't be read, or one with a network policy that
-  predates the label, opens only forwarded loopback URLs. At most 5 URLs per
-  sandbox open within 10 seconds. `fbkd` opens the URL as the `url` crate
-  serializes it through an `Opener`; `HostOpener` runs `xdg-open <url>` on
-  Linux, `open <url>` on macOS and `rundll32 url.dll,FileProtocolHandler <url>`
-  on Windows with `tokio::process`, without a shell, and doesn't wait for it;
-  tests pass an opener that records the URLs. A rejected line is logged at
-  `warn` without the URL, with the reason. A relay that can't start or exits
-  with an error is logged as a warning with its stderr, and an opener that fails
-  is logged as a warning; neither fails the request. Before it opens a URL,
-  `fbkd` forwards its loopback ports into the sandbox with the relay's own
-  `CallbackForwards`, which use a `SshConnector` of their own: the port of the
-  URL's own host when that is `localhost`, `127.0.0.1` or `[::1]` with an
-  explicit, non-zero port, and the same for the port of a percent-decoded `http`
-  `redirect_uri` query parameter. Such a loopback URL skips the local host and
-  egress checks, because it reaches the sandbox, and opens only when its forward
-  is open; a busy `redirect_uri` port is logged as `opening a URL from sandbox
-  <name> without forwarding its callback port <port>` and the URL still opens.
-  The forwards close when the relay ends, when `Relays::forget` stops the relay
-  task, or after they're idle.
-- `netlog` - Records the domains and IP addresses a sandbox contacts, as the
-  logger in the `firebrick-base` image reports them (see
-  [ADR 0038](decisions/0038-record-network-activity-with-a-guest-logger-on-vsock.md)
-  and
-  [Recording network activity](06-runtime-view.md#recording-network-activity)).
-  `NetLogs::add_route` adds a stream route from guest vsock port `52000` to
-  `$XDG_RUNTIME_DIR/firebrick/netlog/<sandbox>.sock`, or on macOS without
-  `XDG_RUNTIME_DIR` to `/private/tmp/fbk-<uid>/<sandbox>.sock`
-  ([ADR 0042](decisions/0042-put-the-network-log-sockets-in-a-checked-tmp-directory-on-macos.md)),
-  and on Windows to the pipe `\\.\pipe\firebrick-<SID>-netlog-<sandbox>`, which
-  needs no directory
-  ([ADR 0050](decisions/0050-talk-over-named-pipes-on-windows.md)). On Linux
-  without an absolute `XDG_RUNTIME_DIR` there are no sockets: unlike the daemon
-  socket, they never fall back to the shared temp directory, where another user
-  could create the directory first and take them over. `fbkd` logs that once
-  when it starts. `NetLogs::from_env` also creates the directory with mode
-  `0700` through `firebrick_utils::create_private_dir`, which refuses a symlink
-  and a directory owned by another user or with group or other access; a refused
-  directory gives no sandbox a route, with a warning naming it. When the path
-  doesn't fit in a unix socket address (104 bytes on macOS, 108 on Linux), it
-  adds no route either and logs a warning, because microsandbox would refuse to
-  boot the sandbox. `NetLogs::listen` binds the socket unless `fbkd` already
-  listens on it, replacing a listener that stopped, for example because it
-  panicked: it checks the directory again the same way, leaves a socket that
-  another process answers on alone, and removes a stale socket file first. A
-  socket that can't be bound is logged as an error and the sandbox starts
-  without a record. File reads and writes run off the async runtime. Each line
-  the guest writes is untrusted: a line longer than 4 KiB, invalid JSON, an
-  unknown `kind`, a name that isn't a valid DNS name, an invalid IPv4 address or
-  port 0 is dropped, and the connection stays open. A sandbox gets at most 4
-  connections at a time; further ones are closed. Warnings about the guest's
-  input and about failures on the host, such as a record that can't be written,
-  are each logged at most once a minute per sandbox, so the guest can't hide
-  host failures. A panicking connection or listener is logged as an error. The
-  valid events are aggregated per destination: a DNS entry per name (lowercase,
-  without a trailing dot) with its resolved IPv4 addresses, and a connection
-  entry per address and protocol with its ports, each with a count and the first
-  and last time `fbkd` received it (the guest's own timestamp is ignored). A
-  record holds at most 10,000 destinations, after which new ones are dropped
-  with one warning while known ones keep updating, and at most 64 addresses or
-  ports per entry. The record is written to
-  `$XDG_STATE_HOME/firebrick/network/<sandbox>.json` (falling back to
-  `~/.local/state/firebrick/network`) with `write_private`, at most once a
-  second while it changes, and a last time when `fbkd` shuts down
-  (`NetLogs::close`). A corrupt record file is logged as a warning and replaced
-  by a new, empty record. `NetLogs::record` returns a sandbox's entries, and
-  fails with a `RecordError` when the record file of a sandbox it doesn't listen
-  for can't be read or is corrupt. `NetLogs::remove` stops the listener, waits
-  until it can't write anymore, and then deletes the socket and the record, so a
-  removed sandbox's record can't come back.
-- `clipboard` - Answers the `wl-paste`, `wl-copy` and `xclip` stand-ins of a
-  sandbox created with `clipboard: true` with the host clipboard, and sets it to
-  what they copy (see
-  [ADR 0048](decisions/0048-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md),
-  [Pasting from the host clipboard](06-runtime-view.md#pasting-from-the-host-clipboard)
-  and
-  [Copying to the host clipboard](06-runtime-view.md#copying-to-the-host-clipboard)).
-  `Clipboards::add_route` adds a stream route from guest vsock port `52001` to
-  `$XDG_RUNTIME_DIR/firebrick/clipboard/<sandbox>.sock`, or on macOS without
-  `XDG_RUNTIME_DIR` to `/private/tmp/fbkc-<uid>/<sandbox>.sock`, or on Windows
-  to the pipe `\\.\pipe\firebrick-<SID>-clipboard-<sandbox>`, and the
-  `firebrick-clipboard` script, which microsandbox mounts at
-  `/.msb/scripts/firebrick-clipboard`, so the stand-ins can tell a sandbox
-  without the setting from an `fbkd` that doesn't answer. The socket directory
-  gets the same checks as the network log's, through `vsock`. Each connection
-  carries one request line, `types`, `text`, `png`, or `copy text <length>` or
-  `copy png <length>` followed by the content, of at most 32 bytes, sent within
-  5 seconds, and gets `ok <length>` with the content, or `empty`, `too-large`,
-  `unavailable <cause>`, `invalid`, `bad-content`, `busy` or `denied`. A copy is
-  `denied` unless `listen` was told the sandbox has the copy label, `busy` past
-  10 copies within 10 seconds (the `RateLimit` of `rate_limit`, which `open`
-  shares), `too-large` when its length is over the limit, before `fbkd` reads
-  the content, and `bad-content` when text isn't UTF-8 or a PNG lacks the PNG
-  signature; `fbkd` waits at most 5 seconds for the content and sets nothing
-  when it doesn't all arrive. The cause is `no-display`, `no-tool` or `failed`,
-  so the stand-ins can give a hint; the reason itself stays in `fbkd`'s log. A
-  sandbox gets at most 4 connections at a time; further ones are closed. `fbkd`
-  sends at most 1 MiB of text and 10 MiB of PNG, also when the `HostClipboard`
-  returns more. `HostTools`, the `HostClipboard` of `fbkd`, lists the
-  clipboard's types and then reads the requested one with `wl-paste` when
-  `WAYLAND_DISPLAY` is set, otherwise with `xclip` when `DISPLAY` is, and with
-  `osascript` and `pbpaste` on macOS (`HostTools::from_env`). On Windows it runs
-  `powershell.exe -NoProfile` scripts that use the .NET clipboard and write the
-  content to stdout as raw bytes, without a console window (see
-  [ADR 0051](decisions/0051-follow-windows-conventions-for-host-paths-and-tools.md)).
-  It writes it by feeding the content to `wl-copy --type <type>`, `xclip
-  -selection clipboard -t <target> -i`, on macOS an AppleScript with the content
-  as hex data to `osascript -`, or on Windows the raw bytes to a PowerShell
-  script. Their stdout goes nowhere, and `fbkd` reads their stderr, for at most
-  500 milliseconds, only when they fail, because `wl-copy` and `xclip` leave a
-  child behind that serves the clipboard and holds the pipes open; the log line
-  of a failed copy names the exit status and the tool's message. It runs the
-  tools with `tokio::process`, without a shell, stops reading past the limit,
-  and kills them after 4 seconds. A tool that reports an empty clipboard means
-  `empty`; no display, a missing tool and any other failure mean `unavailable`
-  with their cause, logged at `warn` with the reason, at most once a minute per
-  sandbox. `Clipboards::listen` fails when the sandbox has no socket path or the
-  socket can't be bound, and `sandboxes` then refuses to create a sandbox with
-  the setting. The unit tests pass a fake `HostClipboard`; `tests/host_tools.rs`
-  runs `HostTools::new` against stub tools on a `PATH` of its own, in a test
-  binary of its own, because a process spawned in the unit tests can briefly
-  hold the port of a listener that a `forward` test just closed. Its stubs are
-  shell scripts, so it runs on Unix only; `tests/host_tools_windows.rs` runs the
-  same scenarios on Windows against a stub `powershell.exe` that Windows
-  PowerShell compiles from C# once per run. The Unix scenarios of a missing tool
-  or display, a copy tool that leaves a child behind, and `osascript` have no
-  Windows counterpart, because PowerShell is part of Windows, which always has a
-  desktop, and PowerShell doesn't fork.
-- `vsock` - The listeners behind the vsock routes of `netlog` and `clipboard`.
-  `Listeners<S>` keeps one listener per sandbox for a channel, with the state
-  `S` it shares with the channel, such as the network record. It knows the
-  socket path of a sandbox, which is `None` when it doesn't fit in a unix socket
-  address or the name isn't a single path component (`sandbox_file`, which
-  `netlog` also uses for its record files), adds the route to a builder and
-  checks whether a sandbox's spec has it. `Listeners::private` checks the socket
-  directory with `firebrick_utils::create_private_dir`. `Listeners::listen`
-  checks it again, leaves a socket that another process answers on alone,
-  removes a stale one, binds it and runs the channel's listener, replacing one
-  that stopped; it returns the error when it can't. `remove` stops a sandbox's
-  listener and deletes its socket, `close` stops them all, and dropping the
-  registry aborts them. `Connections` runs a task per accepted connection and
-  closes the ones beyond 4 per sandbox.
-- `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
-  matches the runtime archive embedded in `fbkd` at build time, so it never
-  needs network access. It extracts the archive when no runtime is installed,
-  and replaces a runtime in the microsandbox home whose `msb` has another
-  version. An explicitly configured runtime with another version, or a partial
-  installation, is an error.
+- `guest` - The channels a sandbox uses to make `fbkd` act on the host. Each
+  sandbox gets its own endpoint per channel, and `rate_limit` keeps a loop in
+  the guest from flooding the user.
+  - `open` - Opens http and https URLs from a sandbox in the browser on the host
+    (see
+    [ADR 0026](decisions/0026-relay-urls-to-the-host-through-an-exec-stream.md)
+    and
+    [Opening a URL on the host](06-runtime-view.md#opening-a-url-on-the-host)).
+    `Relays::ensure` starts the relay of a connected, running sandbox unless it
+    already has one: an inline `sh -c` script, run with `exec_stream_with` as
+    the image's user, that creates `/tmp/.firebrick` (mode `0700`) and the FIFO
+    `/tmp/.firebrick/open.fifo` when they're missing, keeps the FIFO open itself
+    and echoes each line written to it. A registry keyed by sandbox name holds
+    at most one relay per sandbox; an entry goes away when its exec stream ends
+    or when `Relays::forget` is called because the sandbox stopped or is being
+    recreated, so the next `StartSandbox`, `Attach`, `SshTunnel` or
+    `UpdateNetwork` of a running sandbox starts a new relay. `fbkd` splits the
+    relay's output into lines and checks each one: it must start with `http://`
+    or `https://` in any case, have no whitespace or control characters, be at
+    most 8 KiB and parse with the `url` crate, which reads the host the way a
+    browser does (`http://2130706433/` is `127.0.0.1`). It rejects `localhost`,
+    `*.localhost` and loopback, private, shared, link-local, unique local and
+    unspecified IP addresses. When the sandbox enforces egress rules, read from
+    its `firebrick.network` label with `network::rules_of`, the host must also
+    pass `network::allows_host`, which matches the rules the way microsandbox
+    does: deny rules first, then allow rules, else deny. Domain rules only match
+    host names and IP rules only IP addresses, because `fbkd` doesn't resolve
+    names. A sandbox whose label can't be read, or one with a network policy
+    that predates the label, opens only forwarded loopback URLs. At most 5 URLs
+    per sandbox open within 10 seconds. `fbkd` opens the URL as the `url` crate
+    serializes it through an `Opener`; `HostOpener` runs `xdg-open <url>` on
+    Linux, `open <url>` on macOS and `rundll32 url.dll,FileProtocolHandler
+    <url>` on Windows with `tokio::process`, without a shell, and doesn't wait
+    for it; tests pass an opener that records the URLs. A rejected line is
+    logged at `warn` without the URL, with the reason. A relay that can't start
+    or exits with an error is logged as a warning with its stderr, and an opener
+    that fails is logged as a warning; neither fails the request. Before it
+    opens a URL, `fbkd` forwards its loopback ports into the sandbox with the
+    relay's own `CallbackForwards`, which use a `SshConnector` of their own: the
+    port of the URL's own host when that is `localhost`, `127.0.0.1` or `[::1]`
+    with an explicit, non-zero port, and the same for the port of a
+    percent-decoded `http` `redirect_uri` query parameter. Such a loopback URL
+    skips the local host and egress checks, because it reaches the sandbox, and
+    opens only when its forward is open; a busy `redirect_uri` port is logged as
+    `opening a URL from sandbox <name> without forwarding its callback port
+    <port>` and the URL still opens. The forwards close when the relay ends,
+    when `Relays::forget` stops the relay task, or after they're idle.
+  - `netlog` - Records the domains and IP addresses a sandbox contacts, as the
+    logger in the `firebrick-base` image reports them (see
+    [ADR 0038](decisions/0038-record-network-activity-with-a-guest-logger-on-vsock.md)
+    and
+    [Recording network activity](06-runtime-view.md#recording-network-activity)).
+    `parse` reads and checks the logger's lines, and `record` aggregates them
+    and reads and writes the record files. `NetLogs::add_route` adds a stream
+    route from guest vsock port `52000` to
+    `$XDG_RUNTIME_DIR/firebrick/netlog/<sandbox>.sock`, or on macOS without
+    `XDG_RUNTIME_DIR` to `/private/tmp/fbk-<uid>/<sandbox>.sock`
+    ([ADR 0042](decisions/0042-put-the-network-log-sockets-in-a-checked-tmp-directory-on-macos.md)),
+    and on Windows to the pipe `\\.\pipe\firebrick-<SID>-netlog-<sandbox>`,
+    which needs no directory
+    ([ADR 0050](decisions/0050-talk-over-named-pipes-on-windows.md)). On Linux
+    without an absolute `XDG_RUNTIME_DIR` there are no sockets: unlike the
+    daemon socket, they never fall back to the shared temp directory, where
+    another user could create the directory first and take them over. `fbkd`
+    logs that once when it starts. `NetLogs::from_env` also creates the
+    directory with mode `0700` through `firebrick_utils::create_private_dir`,
+    which refuses a symlink and a directory owned by another user or with group
+    or other access; a refused directory gives no sandbox a route, with a
+    warning naming it. When the path doesn't fit in a unix socket address (104
+    bytes on macOS, 108 on Linux), it adds no route either and logs a warning,
+    because microsandbox would refuse to boot the sandbox. `NetLogs::listen`
+    binds the socket unless `fbkd` already listens on it, replacing a listener
+    that stopped, for example because it panicked: it checks the directory again
+    the same way, leaves a socket that another process answers on alone, and
+    removes a stale socket file first. A socket that can't be bound is logged as
+    an error and the sandbox starts without a record. File reads and writes run
+    off the async runtime. Each line the guest writes is untrusted: a line
+    longer than 4 KiB, invalid JSON, an unknown `kind`, a name that isn't a
+    valid DNS name, an invalid IPv4 address or port 0 is dropped, and the
+    connection stays open. A sandbox gets at most 4 connections at a time;
+    further ones are closed. Warnings about the guest's input and about failures
+    on the host, such as a record that can't be written, are each logged at most
+    once a minute per sandbox, so the guest can't hide host failures. A
+    panicking connection or listener is logged as an error. The valid events are
+    aggregated per destination: a DNS entry per name (lowercase, without a
+    trailing dot) with its resolved IPv4 addresses, and a connection entry per
+    address and protocol with its ports, each with a count and the first and
+    last time `fbkd` received it (the guest's own timestamp is ignored). A
+    record holds at most 10,000 destinations, after which new ones are dropped
+    with one warning while known ones keep updating, and at most 64 addresses or
+    ports per entry. The record is written to
+    `$XDG_STATE_HOME/firebrick/network/<sandbox>.json` (falling back to
+    `~/.local/state/firebrick/network`) with `write_private`, at most once a
+    second while it changes, and a last time when `fbkd` shuts down
+    (`NetLogs::close`). A corrupt record file is logged as a warning and
+    replaced by a new, empty record. `NetLogs::record` returns a sandbox's
+    entries, and fails with a `RecordError` when the record file of a sandbox it
+    doesn't listen for can't be read or is corrupt. `NetLogs::remove` stops the
+    listener, waits until it can't write anymore, and then deletes the socket
+    and the record, so a removed sandbox's record can't come back.
+  - `clipboard` - Answers the `wl-paste`, `wl-copy` and `xclip` stand-ins of a
+    sandbox created with `clipboard: true` with the host clipboard, and sets it
+    to what they copy (see
+    [ADR 0048](decisions/0048-share-the-host-clipboard-over-a-vsock-route-with-host-tools.md),
+    [Pasting from the host clipboard](06-runtime-view.md#pasting-from-the-host-clipboard)
+    and
+    [Copying to the host clipboard](06-runtime-view.md#copying-to-the-host-clipboard)).
+    `protocol` answers the stand-ins' requests, and `host_tools` runs the host's
+    clipboard tools. `Clipboards::add_route` adds a stream route from guest
+    vsock port `52001` to `$XDG_RUNTIME_DIR/firebrick/clipboard/<sandbox>.sock`,
+    or on macOS without `XDG_RUNTIME_DIR` to
+    `/private/tmp/fbkc-<uid>/<sandbox>.sock`, or on Windows to the pipe
+    `\\.\pipe\firebrick-<SID>-clipboard-<sandbox>`, and the
+    `firebrick-clipboard` script, which microsandbox mounts at
+    `/.msb/scripts/firebrick-clipboard`, so the stand-ins can tell a sandbox
+    without the setting from an `fbkd` that doesn't answer. The socket directory
+    gets the same checks as the network log's, through `vsock`. Each connection
+    carries one request line, `types`, `text`, `png`, or `copy text <length>` or
+    `copy png <length>` followed by the content, of at most 32 bytes, sent
+    within 5 seconds, and gets `ok <length>` with the content, or `empty`,
+    `too-large`, `unavailable <cause>`, `invalid`, `bad-content`, `busy` or
+    `denied`. A copy is `denied` unless `listen` was told the sandbox has the
+    copy label, `busy` past 10 copies within 10 seconds (the `RateLimit` of
+    `rate_limit`, which `open` shares), `too-large` when its length is over the
+    limit, before `fbkd` reads the content, and `bad-content` when text isn't
+    UTF-8 or a PNG lacks the PNG signature; `fbkd` waits at most 5 seconds for
+    the content and sets nothing when it doesn't all arrive. The cause is
+    `no-display`, `no-tool` or `failed`, so the stand-ins can give a hint; the
+    reason itself stays in `fbkd`'s log. A sandbox gets at most 4 connections at
+    a time; further ones are closed. `fbkd` sends at most 1 MiB of text and 10
+    MiB of PNG, also when the `HostClipboard` returns more. `HostTools`, the
+    `HostClipboard` of `fbkd`, lists the clipboard's types and then reads the
+    requested one with `wl-paste` when `WAYLAND_DISPLAY` is set, otherwise with
+    `xclip` when `DISPLAY` is, and with `osascript` and `pbpaste` on macOS
+    (`HostTools::from_env`). On Windows it runs `powershell.exe -NoProfile`
+    scripts that use the .NET clipboard and write the content to stdout as raw
+    bytes, without a console window (see
+    [ADR 0051](decisions/0051-follow-windows-conventions-for-host-paths-and-tools.md)).
+    It writes it by feeding the content to `wl-copy --type <type>`, `xclip
+    -selection clipboard -t <target> -i`, on macOS an AppleScript with the
+    content as hex data to `osascript -`, or on Windows the raw bytes to a
+    PowerShell script. Their stdout goes nowhere, and `fbkd` reads their stderr,
+    for at most 500 milliseconds, only when they fail, because `wl-copy` and
+    `xclip` leave a child behind that serves the clipboard and holds the pipes
+    open; the log line of a failed copy names the exit status and the tool's
+    message. It runs the tools with `tokio::process`, without a shell, stops
+    reading past the limit, and kills them after 4 seconds. A tool that reports
+    an empty clipboard means `empty`; no display, a missing tool and any other
+    failure mean `unavailable` with their cause, logged at `warn` with the
+    reason, at most once a minute per sandbox. `Clipboards::listen` fails when
+    the sandbox has no socket path or the socket can't be bound, and `sandboxes`
+    then refuses to create a sandbox with the setting. The unit tests pass a
+    fake `HostClipboard`; `tests/host_tools.rs` runs `HostTools::new` against
+    stub tools on a `PATH` of its own, in a test binary of its own, because a
+    process spawned in the unit tests can briefly hold the port of a listener
+    that a `forward` test just closed. Its stubs are shell scripts, so it runs
+    on Unix only; `tests/host_tools_windows.rs` runs the same scenarios on
+    Windows against a stub `powershell.exe` that Windows PowerShell compiles
+    from C# once per run. The Unix scenarios of a missing tool or display, a
+    copy tool that leaves a child behind, and `osascript` have no Windows
+    counterpart, because PowerShell is part of Windows, which always has a
+    desktop, and PowerShell doesn't fork.
+  - `vsock` - The listeners behind the vsock routes of `netlog` and `clipboard`.
+    `Listeners<S>` keeps one listener per sandbox for a channel, with the state
+    `S` it shares with the channel, such as the network record. It knows the
+    socket path of a sandbox, which is `None` when it doesn't fit in a unix
+    socket address or the name isn't a single path component (`sandbox_file`,
+    which `netlog` also uses for its record files), adds the route to a builder
+    and checks whether a sandbox's spec has it. `Listeners::private` checks the
+    socket directory with `firebrick_utils::create_private_dir`.
+    `Listeners::listen` checks it again, leaves a socket that another process
+    answers on alone, removes a stale one, binds it and runs the channel's
+    listener, replacing one that stopped; it returns the error when it can't.
+    `remove` stops a sandbox's listener and deletes its socket, `close` stops
+    them all, and dropping the registry aborts them. `Connections` runs a task
+    per accepted connection and closes the ones beyond 4 per sandbox.
+- `host_config` - Keeps the host's own config files that list the sandboxes in
+  sync with them. Its one function, `sync`, takes the sandboxes that have an SSH
+  host name and rewrites the SSH config, the editors' Remote-SSH settings and
+  Zed's remote projects, logging a warning for each one that fails.
+  - `ssh_config` - Writes the generated SSH config that `~/.ssh/config`
+    includes, with a host block per sandbox that tunnels through `fbk ssh-proxy`
+    with the keys of `ssh`. It prepends the `Include` line to `~/.ssh/config`
+    through `atomic_file`, so a failed write leaves the config as it was and a
+    symlinked config stays a symlink; a symlink to a missing file is left
+    unchanged. An existing config keeps its mode and a new one gets `0600`.
+  - `vscode` - Keeps `remote.SSH.remotePlatform` in the user `settings.json` of
+    VS Code, VS Code Insiders, Cursor and VSCodium in sync with the sandbox host
+    names, so Remote-SSH doesn't ask for the platform. Every host maps to
+    `"linux"` and stale `*.fbk` keys are removed; other keys, comments and
+    trailing commas stay as they are
+    ([ADR 0010](decisions/0010-edit-vs-code-settings-with-jsonc-parser.md)). The
+    settings live under `$XDG_CONFIG_HOME` (default `~/.config`) on Linux and
+    `~/Library/Application Support` on macOS; `FIREBRICK_EDITOR_CONFIG_ROOT`
+    overrides both, which the `vm-tests` use to stay away from the developer's
+    own settings. An editor whose `User` directory doesn't exist is skipped, and
+    a missing `settings.json` is created. A file is left unchanged with a
+    warning when it isn't JSON with comments and trailing commas (what VS Code
+    accepts), when `remote.SSH.remotePlatform` isn't an object or appears more
+    than once, or when it's a symlink to a missing file. Writes go to a
+    temporary file that is renamed onto the file a symlink points to, so a
+    symlinked settings file stays a symlink. The reading, writing and parse
+    options live in `settings_file`, which `zed` shares; the atomic write itself
+    lives in `atomic_file`, which `ssh_config` shares.
+  - `zed` - Keeps the `ssh_connections` array in Zed's user `settings.json` in
+    sync with the sandboxes, so they show up in Zed's Remote Projects. Each
+    sandbox with a host name gets an entry with `host`, the sandbox name as
+    `nickname`, and one project whose `paths` hold the workspace path (no
+    projects for a sandbox without one). The daemon owns the entries whose
+    `host` ends in `.fbk`: it adds missing ones, rewrites the ones whose value
+    differs and removes stale and duplicate ones; other entries, keys, comments
+    and trailing commas stay as they are
+    ([ADR 0011](decisions/0011-own-the-anvil-entries-in-zeds-ssh-connections.md)).
+    The file is `zed/settings.json` under `$XDG_CONFIG_HOME` (default
+    `~/.config`) on Linux and under `~/.config` on macOS, the same as Zed's own
+    config directory; `FIREBRICK_EDITOR_CONFIG_ROOT` overrides both. When the
+    `zed` directory doesn't exist, Zed is skipped; a missing `settings.json` is
+    created. The file is left unchanged with a warning when it can't be parsed,
+    when `ssh_connections` isn't an array, appears more than once or has an
+    entry that isn't an object, or when it can't be read or written.
+- `ssh` - Creates the ed25519 client and host keys, pins the host key for
+  `*.fbk` in a `known_hosts` file, picks a unique `<leaf>.fbk` host name per
+  sandbox (stored in the `firebrick.hostname` label, with the leaf sanitized by
+  `firebrick_utils::sanitize_label`). It also sets the `firebrick-login` script
+  (`src/firebrick-login.sh`, embedded in `fbkd`) as the shell of every new
+  sandbox, so SSH sessions run in the user's login shell with `SHELL` set
+  ([ADR 0054](decisions/0054-run-ssh-sessions-in-the-users-login-shell.md)).
 - `secrets` - Validates secrets, keeps them in `secrets.yml` (mode `0600`) and
   adds them to sandboxes through microsandbox's secrets feature: the guest sees
   a placeholder such as `$MSB_GH_TOKEN`, and microsandbox's TLS proxy puts the
@@ -706,68 +769,12 @@ C4Component
   ([ADR 0004](decisions/0004-store-secrets-in-a-private-file.md)). Each secret
   is global or belongs to one sandbox, and a name is unique within a scope
   ([ADR 0022](decisions/0022-scope-secrets-per-sandbox.md)).
-- `network` - Turns the `network` section of a spec into the network settings of
-  a sandbox that is being created. With `enabled: false`, it calls
-  microsandbox's `disable_network()`, which removes the network device and sets
-  a deny-all policy, and ignores `enforce`, `allow` and `deny`: there is no
-  traffic to intercept, so it sets up no TLS interception or deny page. Stored
-  secrets are still added; they don't bring the device back. `fbk run`, the SSH
-  tunnel and port forwards keep working, because they go through microsandbox's
-  agent channel instead of the guest network. Without `enforce`, it leaves the
-  sandbox with microsandbox's default policy. With `enforce`, it builds a policy
-  of all deny rules, then all allow rules, then microsandbox's DNS rule, with
-  deny as the default for egress. Host names map to a `Domain`, `*.domain` to a
-  `DomainSuffix`, and IP addresses and CIDR ranges to a `Cidr`. It also turns on
-  TLS interception for port 443 and microsandbox's HTTP deny response in its
-  text format, whose body names the host and `fbk network allow <host>`; the
-  default JSON format ignores the message
-  ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
-- `ssh` - Creates the ed25519 client and host keys, pins the host key for
-  `*.fbk` in a `known_hosts` file, picks a unique `<leaf>.fbk` host name per
-  sandbox (stored in the `firebrick.hostname` label, with the leaf sanitized by
-  `firebrick_utils::sanitize_label`), and writes the generated SSH config that
-  `~/.ssh/config` includes. It prepends the `Include` line to `~/.ssh/config`
-  through `atomic_file`, so a failed write leaves the config as it was and a
-  symlinked config stays a symlink; a symlink to a missing file is left
-  unchanged. An existing config keeps its mode and a new one gets `0600`. It
-  also sets the `firebrick-login` script (`src/firebrick-login.sh`, embedded in
-  `fbkd`) as the shell of every new sandbox, so SSH sessions run in the user's
-  login shell with `SHELL` set
-  ([ADR 0054](decisions/0054-run-ssh-sessions-in-the-users-login-shell.md)).
-- `vscode` - Keeps `remote.SSH.remotePlatform` in the user `settings.json` of VS
-  Code, VS Code Insiders, Cursor and VSCodium in sync with the sandbox host
-  names, so Remote-SSH doesn't ask for the platform. Every host maps to
-  `"linux"` and stale `*.fbk` keys are removed; other keys, comments and
-  trailing commas stay as they are
-  ([ADR 0010](decisions/0010-edit-vs-code-settings-with-jsonc-parser.md)). The
-  settings live under `$XDG_CONFIG_HOME` (default `~/.config`) on Linux and
-  `~/Library/Application Support` on macOS; `FIREBRICK_EDITOR_CONFIG_ROOT`
-  overrides both, which the `vm-tests` use to stay away from the developer's own
-  settings. An editor whose `User` directory doesn't exist is skipped, and a
-  missing `settings.json` is created. A file is left unchanged with a warning
-  when it isn't JSON with comments and trailing commas (what VS Code accepts),
-  when `remote.SSH.remotePlatform` isn't an object or appears more than once, or
-  when it's a symlink to a missing file. Writes go to a temporary file that is
-  renamed onto the file a symlink points to, so a symlinked settings file stays
-  a symlink. The reading, writing and parse options live in `settings_file`,
-  which `zed` shares; the atomic write itself lives in `atomic_file`, which
-  `ssh` shares.
-- `zed` - Keeps the `ssh_connections` array in Zed's user `settings.json` in
-  sync with the sandboxes, so they show up in Zed's Remote Projects. Each
-  sandbox with a host name gets an entry with `host`, the sandbox name as
-  `nickname`, and one project whose `paths` hold the workspace path (no projects
-  for a sandbox without one). The daemon owns the entries whose `host` ends in
-  `.fbk`: it adds missing ones, rewrites the ones whose value differs and
-  removes stale and duplicate ones; other entries, keys, comments and trailing
-  commas stay as they are
-  ([ADR 0011](decisions/0011-own-the-anvil-entries-in-zeds-ssh-connections.md)).
-  The file is `zed/settings.json` under `$XDG_CONFIG_HOME` (default `~/.config`)
-  on Linux and under `~/.config` on macOS, the same as Zed's own config
-  directory; `FIREBRICK_EDITOR_CONFIG_ROOT` overrides both. When the `zed`
-  directory doesn't exist, Zed is skipped; a missing `settings.json` is created.
-  The file is left unchanged with a warning when it can't be parsed, when
-  `ssh_connections` isn't an array, appears more than once or has an entry that
-  isn't an object, or when it can't be read or written.
+- `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
+  matches the runtime archive embedded in `fbkd` at build time, so it never
+  needs network access. It extracts the archive when no runtime is installed,
+  and replaces a runtime in the microsandbox home whose `msb` has another
+  version. An explicitly configured runtime with another version, or a partial
+  installation, is an error.
 
 ## Shared crates
 

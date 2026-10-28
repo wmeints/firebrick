@@ -16,7 +16,9 @@
 //! PowerShell doesn't, or the macOS `osascript` one.
 #![cfg(windows)]
 
-use firebrick_daemon::clipboard::{Cause, Desktop, HostClipboard, HostError, HostTools, Kind};
+use firebrick_daemon::guest::clipboard::{
+    Cause, Desktop, HostClipboard, HostError, HostTools, Kind,
+};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tempfile::TempDir;

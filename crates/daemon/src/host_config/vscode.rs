@@ -5,7 +5,7 @@
 //! host name in the user settings of every installed VS Code-family editor, and leaves the rest
 //! of the file, comments and formatting included, as the user wrote it.
 
-use crate::settings_file::{self, PARSE_OPTIONS};
+use super::settings_file::{self, PARSE_OPTIONS};
 use jsonc_parser::cst::{CstObject, CstObjectProp, CstRootNode};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -362,7 +362,7 @@ mod tests {
         let (root, settings) = vscode_root();
         let target = root.path().join("dotfiles-settings.json");
         fs::write(&target, "{}\n").unwrap();
-        if !crate::atomic_file::test_symlink(&target, &settings) {
+        if !crate::host_config::atomic_file::test_symlink(&target, &settings) {
             return;
         }
 
@@ -420,7 +420,7 @@ mod tests {
     fn leaves_dangling_settings_symlink_alone() {
         let (root, settings) = vscode_root();
         let target = root.path().join("dotfiles/settings.json");
-        if !crate::atomic_file::test_symlink(&target, &settings) {
+        if !crate::host_config::atomic_file::test_symlink(&target, &settings) {
             return;
         }
 

@@ -104,7 +104,7 @@ mod tests {
         let target = dir.path().join("target");
         let link = dir.path().join("link");
         fs::write(&target, "old\n").unwrap();
-        if !crate::atomic_file::test_symlink(&target, &link) {
+        if !test_symlink(&target, &link) {
             return;
         }
 

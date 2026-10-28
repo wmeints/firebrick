@@ -1,25 +1,14 @@
+//! The firebrick daemon, `fbkd`: manages microsandbox sandboxes for coding agents and serves
+//! the `SandboxManagementService` gRPC API that `fbk` talks to.
+
 /// Generated gRPC types for the firebrick API.
 pub use firebrick_proto as api;
 
-mod atomic_file;
-pub mod clipboard;
-pub mod env;
 pub mod forward;
-pub mod git;
-pub mod mise;
-pub mod netlog;
-pub mod network;
-pub mod open;
-pub mod pull;
-mod rate_limit;
+pub mod guest;
+mod host_config;
 pub mod runtime;
 pub mod sandboxes;
 pub mod secrets;
 pub mod server;
-mod session;
-mod settings_file;
 pub mod ssh;
-mod tunnel;
-pub mod vscode;
-mod vsock;
-pub mod zed;

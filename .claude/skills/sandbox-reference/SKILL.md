@@ -46,23 +46,24 @@ paths above.
 
 All calls live in `crates/daemon/src`. Reuse these before adding new ones:
 
-- `sandboxes.rs` - `Sandbox::builder(..).image().cpus().memory().label()
+- `sandboxes/` - `Sandbox::builder(..).image().cpus().memory().label()
   .volume()` and `.init(..)` to create, `Sandbox::get`, `Sandbox::list_with`
   (paged, filtered by label), `connect_or_start_detached`, `stop`, `remove`,
   `status_snapshot`, and `modify().label(..)`.
-- `network.rs` - `NetworkPolicy::builder()` from the `microsandbox-network`
-  crate (`microsandbox` doesn't re-export the rule builder or `Destination`),
-  and `builder.network(|n| n.policy(..).tls(|t| t).http(..))` at create time.
+- `sandboxes/provision/network.rs` - `NetworkPolicy::builder()` from the
+  `microsandbox-network` crate (`microsandbox` doesn't re-export the rule
+  builder or `Destination`), and `builder.network(|n| n.policy(..).tls(|t|
+  t).http(..))` at create time.
 - `secrets.rs` - `builder.secret(..)` at create time, and `modify().secret(..)`
   / `modify().remove_secret(..)` on existing sandboxes.
-- `session.rs` - `exec_stream_with(command, |e| e.args(..).stdin_pipe()
+- `server/attach.rs` - `exec_stream_with(command, |e| e.args(..).stdin_pipe()
   .tty(true))` for `fbk run`.
-- `open.rs` - a long-running `exec_stream_with("sh", ..)` per sandbox as a
+- `guest/open.rs` - a long-running `exec_stream_with("sh", ..)` per sandbox as a
   guest-to-host channel: the relay echoes lines from a FIFO and `fbkd` reads its
   stdout, because the network policy and vsock routes are fixed at create time
   (ADR 0026).
-- `tunnel.rs` / `ssh.rs` - `microsandbox::sandbox::ssh::SshServer` behind `fbk
-  ssh-proxy`.
+- `server/tunnel.rs` / `ssh.rs` - `microsandbox::sandbox::ssh::SshServer` behind
+  `fbk ssh-proxy`.
 - `runtime.rs` - `setup::ensure_runtime`, `setup::install_runtime` and
   `setup::resolve_runtime_version` with the runtime embedded through the
   `embed-binaries` feature.
@@ -90,7 +91,7 @@ exit race, were verified on 0.7.8 by running VMs and only checked against the
   timeout and report `Running` when it doesn't answer (`projected_status` in
   `$M/sandbox/pause.rs`), so `status_snapshot()` can't be trusted to tell a
   paused sandbox apart on a busy host. `SandboxHandle::pause_state()` asks
-  without a timeout; `current_status` in `sandboxes.rs` uses it.
+  without a timeout; `current_status` in `sandboxes/status.rs` uses it.
 - A failed request to a runtime's control endpoint closes microsandbox's shared
   session to it, and the next caller on that session fails with `ClientError {
   kind: Closed, delivery: NotSent }`. Only the request after that opens a new
@@ -113,8 +114,8 @@ exit race, were verified on 0.7.8 by running VMs and only checked against the
   image metadata sends only `Resolving`, `Resolved` and `Complete`; a layer
   whose tarball is cached sends `LayerDownloadComplete` with its full size and
   no `LayerDownloadProgress`. `Resolved.total_download_bytes` is `None` when the
-  manifest has no layer sizes. `fbkd` turns them into progress in `pull.rs` (ADR
-  0024).
+  manifest has no layer sizes. `fbkd` turns them into progress in
+  `sandboxes/provision/pull.rs` (ADR 0024).
 - A failed pull returns `MicrosandboxError::Image(ImageError::Registry(..))`
   with an `oci_client::errors::OciDistributionError`. Docker Hub and GHCR answer
   an unknown repository with `UnauthorizedError`, an unknown tag with
@@ -224,7 +225,7 @@ exit race, were verified on 0.7.8 by running VMs and only checked against the
   `MicrosandboxError::Custom("snapshot is in use by an active operation: ..")`
   while any reader holds it, such as a listing or a create from the snapshot in
   another task or process (`$M/backend/local/snapshot/store.rs`). It never
-  waits, so `remove_snapshot` in `sandboxes.rs` tries again.
+  waits, so `remove_snapshot` in `sandboxes/recreate.rs` tries again.
 
 **Secrets**
 
@@ -311,13 +312,13 @@ exit race, were verified on 0.7.8 by running VMs and only checked against the
 - `server_with(|o| o.host_key(key).authorized_key(base64))` takes in-memory
   keys, so an in-process client needs no key files. `sb.ssh().connect()` returns
   an `SshClient` without access to its `russh` handle, so it can't open
-  `direct-tcpip` channels; `forward.rs` connects its own `russh` client.
+  `direct-tcpip` channels; `forward/ssh.rs` connects its own `russh` client.
 
 **Terminals**
 
 - A TTY exec without a `TERM` env gets the host process's `TERM` (or `xterm`
   when it's unset or `dumb`), so `fbkd` passes on the terminal it was started
-  from. `session.rs` sets `TERM` explicitly.
+  from. `server/attach.rs` sets `TERM` explicitly.
 - The SSH server sets `TERM` in the guest from the client's PTY request
   (`ssh.rs`), so the host side can't choose it for SSH sessions.
 - An exec stream ends at `ExecExited`: the reader in
