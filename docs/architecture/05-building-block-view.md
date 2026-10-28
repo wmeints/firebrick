@@ -833,6 +833,10 @@ C4Component
   <bool>` line in the text of a spec to `mise:` with `enabled: <bool>`, keeping
   the rest of the text. `MountSpec::mise_dotfiles` returns the read-only mount
   at `/opt/firebrick/dotfiles`, which the CLI approves and the daemon creates.
+  The crate root holds `SandboxSpec` and its defaults, and re-exports the rest
+  from private modules: `network`, `ports`, `env`, `mounts` and `names` for the
+  fields, `error`, `file` for reading and writing without following symlinks,
+  and `edit` for the line-based edits of the text.
 - `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket
   (`$XDG_RUNTIME_DIR/fbkd.sock`), the log directory
   (`$XDG_STATE_HOME/firebrick`), the SSH directory
@@ -851,13 +855,15 @@ C4Component
   and `clipboard_socket_dir` return the directories of the sockets behind the
   vsock routes, which never fall back to the temp directory. The log, SSH and
   secrets paths are `None` when neither variable is an absolute path, never the
-  temp dir, and `missing_dir` returns the error the daemon would exit with. It
-  also holds `is_trusted_peer`, the rule that only the same user and root may be
-  on the other end of the daemon socket, and `sanitize_label`, which turns a
-  directory's leaf into a lowercase DNS label (or `sandbox` when nothing is
-  left), so the SSH host names and the name `fbk init` writes match, and
-  `strip_control`, which removes terminal control characters from guest output
-  before the daemon puts it in an error message or a log line.
+  temp dir, and `missing_dir` returns the error the daemon would exit with.
+  `ipc` also holds the rule that only the same user and root may be on the other
+  end of the daemon socket on Unix. `sanitize_label` turns a directory's leaf
+  into a lowercase DNS label (or `sandbox` when nothing is left), so the SSH
+  host names and the name `fbk init` writes match, and `strip_control` removes
+  terminal control characters from guest output before the daemon puts it in an
+  error message or a log line. The crate root re-exports these from private
+  modules: `paths`, `private_fs`, `process` for the daemon lock and stdio
+  handles, and `text`.
 
 The image, init, mise setting, resources, network rules, mounts and clipboard
 setting apply when a sandbox is created. Changing them in `.firebrick.yml`

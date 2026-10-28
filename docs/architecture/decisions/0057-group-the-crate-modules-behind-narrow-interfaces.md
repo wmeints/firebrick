@@ -1,4 +1,4 @@
-# 57. Group the daemon and CLI modules behind narrow interfaces
+# 57. Group the crate modules behind narrow interfaces
 
 ## Status
 
@@ -19,6 +19,10 @@ lines with the start, upgrade and list commands, the host paths of mounts, and
 the helpers that `network`, `port`, `secret` and `session` reached into, such as
 the spec file name and resolving the working directory's sandbox. Handling the
 spec file was spread across `manage`, `validate` and `init`.
+
+The `spec` and `utils` crates kept everything in `lib.rs`: 1,400 lines of spec
+parsing, file handling and text edits, and 600 lines of paths, private files,
+the daemon lock and text rules.
 
 ## Decision
 
@@ -59,6 +63,13 @@ The CLI has ten:
 - `ui` - `table` and `progress`.
 - `client`, `port` and `secret` stay as they were. The unit test fixtures live
   in `test_support`.
+
+The `spec` and `utils` crates keep their flat public API, so their callers don't
+change: the crate root re-exports what private modules define. `spec` has
+`network`, `ports`, `env`, `mounts`, `names`, `error`, `file` and `edit`, and
+its root keeps `SandboxSpec` and its defaults. `utils` has `paths`,
+`private_fs`, `process` and `text`, and the rule which peers the daemon socket
+trusts moved into `ipc`, its only user.
 
 A submodule is private unless the binary or the integration tests use it.
 Siblings share items with `pub(super)`. The tests of a private function live

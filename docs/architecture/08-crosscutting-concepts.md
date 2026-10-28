@@ -264,8 +264,8 @@ user it runs as, in two layers:
 
 Root is allowed on purpose: root can bypass the check anyway, for example by
 reading the daemon's memory, so rejecting it adds no security and only gets in
-the way of an administrator. The rule lives in
-`firebrick_utils::is_trusted_peer`, which the daemon and the CLI share.
+the way of an administrator. The rule lives in `is_trusted_peer` in
+`firebrick_utils::ipc`, which the daemon and the CLI share.
 
 The CLI checks the other direction. Where the socket falls back to the shared
 temp dir, another user can bind `fbkd.sock` first and receive every request,

@@ -148,6 +148,10 @@ Why:
 
 ## spec: split the 3115-line `lib.rs`
 
+**Done** (ADR 0057). `migrate.rs` and `ports_edit.rs` became one `edit.rs`,
+because the migration uses the same line-based editor. The tests all go through
+the public API, so they stay in `lib.rs`.
+
 Everything is in `lib.rs`. Split it into private modules and re-export them flat
 from `lib.rs`, so callers don't change:
 
@@ -168,6 +172,11 @@ from `lib.rs`, so callers don't change:
 to be `mod tests`.
 
 ## utils: split `lib.rs` by concern
+
+**Done** (ADR 0057). The test helpers that several modules share (`env` and the
+Windows access list helpers) stay in `lib.rs`. `atomic_file` stays in the
+daemon: it keeps a file's mode and follows a symlink, which `write_private`
+doesn't.
 
 `lib.rs` is 635 lines before the tests and covers four concerns:
 
