@@ -77,7 +77,7 @@ fn check_peer(stream: &UnixStream, role: &str) -> io::Result<()> {
     let (peer_uid, peer_pid) = peer(stream)?;
     let own_uid = nix::unistd::geteuid().as_raw();
 
-    if crate::is_trusted_peer(peer_uid, own_uid) {
+    if is_trusted_peer(peer_uid, own_uid) {
         return Ok(());
     }
 
@@ -106,4 +106,29 @@ fn peer(stream: &UnixStream) -> io::Result<(u32, Option<i32>)> {
 /// Returns the error with the socket's path in front of its message.
 fn with_path(err: io::Error, path: &Path) -> io::Error {
     io::Error::new(err.kind(), format!("{}: {err}", path.display()))
+}
+
+/// Returns whether a peer on the daemon socket running as `peer_uid` is trusted by a process
+/// running as `own_uid`: only the same user and root are. The daemon applies this to its
+/// clients and the CLI to the daemon. Root is trusted because it can bypass the check anyway,
+/// for example by reading the other process's memory. [`super`] applies it on Unix.
+fn is_trusted_peer(peer_uid: u32, own_uid: u32) -> bool {
+    peer_uid == own_uid || peer_uid == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trusts_only_own_uid_and_root() {
+        let cases = [(1000, true), (0, true), (1001, false), (u32::MAX, false)];
+        for (peer_uid, expected) in cases {
+            assert_eq!(
+                is_trusted_peer(peer_uid, 1000),
+                expected,
+                "peer uid {peer_uid}"
+            );
+        }
+    }
 }

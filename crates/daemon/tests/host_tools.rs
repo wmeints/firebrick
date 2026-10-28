@@ -8,7 +8,9 @@
 //! same scenarios on Windows against a stub `powershell.exe`; keep the two in step.
 #![cfg(unix)]
 
-use firebrick_daemon::clipboard::{Cause, Desktop, HostClipboard, HostError, HostTools, Kind};
+use firebrick_daemon::guest::clipboard::{
+    Cause, Desktop, HostClipboard, HostError, HostTools, Kind,
+};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use tempfile::TempDir;

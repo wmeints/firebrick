@@ -171,7 +171,7 @@ that name, as listed by `fbk ls`, from any directory: the CLI uses the name as
 is and doesn't read `.firebrick.yml`.
 
 `fbkd` asks the guest to shut down and gives it 30 seconds (`STOP_TIMEOUT` in
-`crates/daemon/src/sandboxes.rs`). When the sandbox hasn't stopped by then,
+`crates/daemon/src/sandboxes/mod.rs`). When the sandbox hasn't stopped by then,
 `fbkd` kills it, so a guest that ignores the shutdown can't make `fbk stop`
 hang. A killed sandbox can lose writes the guest hadn't flushed to its disk yet.
 Once the sandbox has stopped, `fbkd` closes its port forwards, so their host

@@ -304,7 +304,7 @@ fn daemon_binary_in(dir: Option<&Path>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fake_daemon;
+    use crate::test_support::fake_daemon;
 
     /// Returns an endpoint unique to this test, in the directory it returns, if any.
     fn test_endpoint(test: &str) -> (Option<tempfile::TempDir>, PathBuf) {

@@ -179,8 +179,8 @@ from the code by other code or a blank line doesn't count.
 16. **Locks across `.await`**: a `std::sync::Mutex` or `RwLock` guard held
     across an `.await`, or a lock with a long or blocking critical section. A
     `std::sync::Mutex` that is never held across an `.await` is fine, as the
-    Tokio docs recommend; `secrets.rs`, `settings_file.rs` and `SandboxLocks` in
-    `sandboxes.rs` use it that way.
+    Tokio docs recommend; `secrets.rs`, `host_config/settings_file.rs` and
+    `SandboxLocks` in `sandboxes/mod.rs` use it that way.
 
     ```rust
     let guard = state.lock().unwrap();

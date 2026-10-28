@@ -54,18 +54,17 @@ it is used, and look for what lets it cross the boundary.
    can edit it. Check what `fbk` and `fbkd` do with an edited spec on the next
    `fbk start`, `fbk network` or `fbk port`: host paths in `mounts`, turning off
    `network.enforce`, widening `allow`, changing `image`, `ports` or `name`, and
-   whether the user is warned before such a change applies
-   (`crates/spec/src/lib.rs`, `crates/cli/src/approval.rs`,
-   `crates/daemon/src/sandboxes.rs`). Check that every setting that lets more
-   cross the boundary is part of the approved settings, and that what `fbk`
-   approves is what `fbkd` applies. `fbk init`, `fbk network` and `fbk port`
-   write the spec: check what happens when the agent replaced it with a symlink
-   to a host file.
-3. **Injection into host files.** `fbkd` writes the SSH config
-   (`crates/daemon/src/ssh.rs`) and edits VS Code and Zed settings (`vscode.rs`,
-   `zed.rs`, `settings_file.rs`). Check whether names, paths or other values
-   from the spec or the guest can inject directives, such as a `ProxyCommand`
-   through a newline in a sandbox name, or escape the intended entry.
+   whether the user is warned before such a change applies (`crates/spec/src/`,
+   `crates/cli/src/approval/`, `crates/daemon/src/sandboxes/`). Check that every
+   setting that lets more cross the boundary is part of the approved settings,
+   and that what `fbk` approves is what `fbkd` applies. `fbk init`, `fbk
+   network` and `fbk port` write the spec: check what happens when the agent
+   replaced it with a symlink to a host file.
+3. **Injection into host files.** `fbkd` writes the SSH config and edits VS Code
+   and Zed settings (`crates/daemon/src/host_config/`). Check whether names,
+   paths or other values from the spec or the guest can inject directives, such
+   as a `ProxyCommand` through a newline in a sandbox name, or escape the
+   intended entry.
 4. **Workspace files that run on the host.** Check whether `fbk` or `fbkd` read,
    write or execute files in the workspace on the host in a way the agent can
    abuse, for example by following a symlink out of the workspace. Note in the
@@ -74,27 +73,29 @@ it is used, and look for what lets it cross the boundary.
    with `core.fsmonitor` or `core.sshCommand`, `.vscode/tasks.json`, `.envrc`),
    and whether the docs warn about them.
 5. **Guest-to-host channels.** The URL relay and OAuth callback forwards
-   (`open.rs`, `forward.rs`, ADRs 0026 and 0030) and the configured port
-   forwards (`forward.rs`, ADR 0019): bypasses of the URL parsing and the
-   loopback and private address checks, callback ports that reach a host service
-   or that another process can take over, listeners on addresses other than
-   loopback, and the limits on the FIFO protocol. The vsock routes for the
-   network log and the clipboard (`netlog.rs`, `clipboard.rs`, `vsock.rs`, ADRs
-   0038, 0042 and 0048): whether a sandbox without `clipboard: true` can reach
-   the clipboard socket, whether the guest can add or change routes, how `fbkd`
-   bounds lines, records, connections and reads, and the permissions of the
-   socket directories, including the `/private/tmp` fallback on macOS.
+   (`guest/open.rs`, `forward/callback.rs`, ADRs 0026 and 0030) and the
+   configured port forwards (`forward/`, ADR 0019): bypasses of the URL parsing
+   and the loopback and private address checks, callback ports that reach a host
+   service or that another process can take over, listeners on addresses other
+   than loopback, and the limits on the FIFO protocol. The vsock routes for the
+   network log and the clipboard (`guest/netlog/`, `guest/clipboard/`,
+   `guest/vsock.rs`, ADRs 0038, 0042 and 0048): whether a sandbox without
+   `clipboard: true` can reach the clipboard socket, whether the guest can add
+   or change routes, how `fbkd` bounds lines, records, connections and reads,
+   and the permissions of the socket directories, including the `/private/tmp`
+   fallback on macOS.
 6. **Guest output on the host terminal.** `fbk run` and the SSH sessions pass
    guest output to the terminal unchanged on purpose (ADR 0044). Check that
    every other path, such as mise's stderr, the relay's stderr, network log
    destinations and gRPC status messages, goes through
    `firebrick_utils::strip_control` before it reaches a terminal or a log.
 7. **Egress policy bypasses.** With `network.enforce: true` the agent may only
-   reach allowed hosts (`crates/daemon/src/network.rs`, ADR 0018). Check DNS
-   tunnelling through the DNS rule, SNI and `Host` header mismatches, QUIC over
-   UDP, IP literals, IPv6 with `init: false`, `host.microsandbox.internal`, and
-   rule ordering. Check that changing the rules with `fbk network` doesn't leave
-   a window without the policy (ADR 0021).
+   reach allowed hosts (`crates/daemon/src/sandboxes/provision/network.rs`, ADR
+   0018). Check DNS tunnelling through the DNS rule, SNI and `Host` header
+   mismatches, QUIC over UDP, IP literals, IPv6 with `init: false`,
+   `host.microsandbox.internal`, and rule ordering. Check that changing the
+   rules with `fbk network` doesn't leave a window without the policy (ADR
+   0021).
 8. **Secret exfiltration.** Real secret values must never enter the guest; it
    only sees placeholders that microsandbox replaces for the secret's allowed
    hosts (`secrets.rs`, ADRs 0004, 0022, 0033). Check whether a secret's allowed
@@ -103,15 +104,16 @@ it is used, and look for what lets it cross the boundary.
    values end up in logs, error messages, labels or gRPC responses.
 9. **Private keys.** Host SSH keys, and the keys `fbkd` uses to reach a sandbox,
    must not enter the guest. Check agent forwarding, the SSH tunnel
-   (`tunnel.rs`), the generated SSH config and the key files `fbkd` writes, and
-   their permissions. Check that recreating a sandbox from a snapshot or
-   upgrading it (ADRs 0021 and 0041) takes its labels, routes and secrets from
-   the host, not from state the guest could change.
+   (`server/tunnel.rs`), the generated SSH config and the key files `fbkd`
+   writes, and their permissions. Check that recreating a sandbox from a
+   snapshot or upgrading it (ADRs 0021 and 0041) takes its labels, routes and
+   secrets from the host, not from state the guest could change.
 10. **The daemon socket and gRPC input.** Check the socket's permissions and
-    peer check (`server.rs`), the fallback to the shared temp dir, races on
-    files `fbkd` creates in shared or user-writable directories, and that names
-    and paths in requests are validated before they reach the file system or
-    microsandbox.
+    peer check (`crates/utils/src/ipc/`,
+    `crates/daemon/src/server/transport.rs`), the fallback to the shared temp
+    dir, races on files `fbkd` creates in shared or user-writable directories,
+    and that names and paths in requests are validated before they reach the
+    file system or microsandbox.
 11. **Files at rest.** The permissions of `secrets.yml`, microsandbox's state
     directory and the SSH key directory when they are created, and whether a
     restrictive umask or an existing file with looser permissions changes that.

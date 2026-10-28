@@ -9,8 +9,8 @@ use tonic::transport::Channel;
 
 use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use crate::api::{ForwardPortRequest, PortForward, RemovePortRequest};
-use crate::manage::{self, SPEC_FILE_NAME};
-use crate::validate;
+use crate::sandbox;
+use crate::spec_file::{self, SPEC_FILE_NAME};
 
 /// Forwards the host port to the guest port of the working directory's sandbox, replacing the
 /// forward of the same host port, and records it in the spec file. The spec file only changes
@@ -21,9 +21,9 @@ pub async fn forward(
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
     let spec = SpecFile::read(working_dir, client).await?;
-    let edited = firebrick_spec::add_port(&spec.text, port).map_err(validate::spec_error)?;
+    let edited = firebrick_spec::add_port(&spec.text, port).map_err(spec_file::spec_error)?;
 
-    let running = match manage::sandbox_status(client, &spec.name).await? {
+    let running = match sandbox::sandbox_status(client, &spec.name).await? {
         Some(_) => Some(send_forward(&spec.name, port, client).await?),
         None => None,
     };
@@ -35,7 +35,7 @@ pub async fn forward(
             port.host, port.guest
         )
     });
-    manage::warn_if_outdated(client, &spec.name).await;
+    sandbox::warn_if_outdated(client, &spec.name).await;
 
     Ok(())
 }
@@ -48,9 +48,9 @@ pub async fn remove(
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
     let spec = SpecFile::read(working_dir, client).await?;
-    let edited = firebrick_spec::remove_port(&spec.text, host).map_err(validate::spec_error)?;
+    let edited = firebrick_spec::remove_port(&spec.text, host).map_err(spec_file::spec_error)?;
 
-    let running = match manage::sandbox_status(client, &spec.name).await? {
+    let running = match sandbox::sandbox_status(client, &spec.name).await? {
         Some(_) => Some(send_remove(&spec.name, host, client).await?),
         None if edited.is_some() => None,
         None => bail!(not_forwarded(host, &spec.name)),
@@ -63,7 +63,7 @@ pub async fn remove(
     print_outcome(&spec.name, running, || {
         format!("Stopped forwarding localhost:{host}")
     });
-    manage::warn_if_outdated(client, &spec.name).await;
+    sandbox::warn_if_outdated(client, &spec.name).await;
 
     Ok(())
 }
@@ -142,23 +142,23 @@ impl<'a> SpecFile<'a> {
         client: &mut SandboxManagementServiceClient<Channel>,
     ) -> Result<Self> {
         let path = working_dir.join(SPEC_FILE_NAME);
-        validate::migrate_spec(&path)?;
+        spec_file::migrate_spec(&path)?;
 
-        let (name, text) = match firebrick_spec::read_text(&path).map_err(validate::spec_error)? {
+        let (name, text) = match firebrick_spec::read_text(&path).map_err(spec_file::spec_error)? {
             Some(text) => (
                 firebrick_spec::from_str(&text)
-                    .map_err(validate::spec_error)?
+                    .map_err(spec_file::spec_error)?
                     .name,
                 text,
             ),
             None => {
-                let name = manage::resolve_spec(working_dir, client).await?.name;
+                let name = sandbox::resolve_spec(working_dir, client).await?.name;
                 let text = format!("name: {name}\n");
                 (name, text)
             }
         };
 
-        manage::check_workspace_owner(&name, working_dir, client).await?;
+        sandbox::check_workspace_owner(&name, working_dir, client).await?;
 
         Ok(Self {
             working_dir,
@@ -177,8 +177,8 @@ impl<'a> SpecFile<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fake_daemon::{self, OTHER_WORKSPACE};
-    use crate::symlinked_spec;
+    use crate::test_support::fake_daemon::{self, OTHER_WORKSPACE};
+    use crate::test_support::symlinked_spec;
     use std::fs;
     use tempfile::TempDir;
 
