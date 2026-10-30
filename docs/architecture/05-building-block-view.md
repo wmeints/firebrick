@@ -286,11 +286,12 @@ C4Component
   is already in use, makes sure the microsandbox runtime and the SSH keys exist,
   makes the microsandbox `db` directory readable by the user only, syncs the SSH
   config and serves the API until `SIGINT` or `SIGTERM`, on Windows until
-  Ctrl-C, Ctrl-Break, the console closing or Windows shutting down. Before
-  serving, `server` reopens the port forwards of the sandboxes that are running
-  and removes the upgrade probes an earlier daemon left behind. When it stops,
-  their listeners close, and it waits up to 60 seconds for updates and upgrades
-  of sandboxes that are still running.
+  Ctrl-C, Ctrl-Break, the console closing or Windows shutting down. A handler
+  that can't be registered is logged as a warning and the daemon keeps waiting
+  for the others. Before serving, `server` reopens the port forwards of the
+  sandboxes that are running and removes the upgrade probes an earlier daemon
+  left behind. When it stops, their listeners close, and it waits up to 60
+  seconds for updates and upgrades of sandboxes that are still running.
 - `server` - Adapts `SandboxManagementService` to the modules below: it converts
   each request into plain values, calls `sandboxes`, `attach` or `tunnel`, and
   converts the result into a response. The conversions live in `convert`, the
@@ -817,26 +818,27 @@ C4Component
   only once. The daemon uses the same check. The CLI resolves each mount's
   `host` against the spec file's directory, expanding `~` to `$HOME` and `~user`
   to that user's home directory
-  ([ADR 0020](decisions/0020-look-up-user-home-directories-with-nix.md)), to the
-  canonical path of an existing directory before it sends `StartSandbox`.
-  `NetworkRule` parses a rule: a host name, `*.` plus a domain of at least two
-  labels, an IPv4 or IPv6 address or a CIDR range. `*` alone, other wildcards,
-  URLs, ports and paths are invalid. It owns the defaults
-  (`ghcr.io/wmeints/firebrick-base:v<version>` as `DEFAULT_IMAGE`, which
-  `default_spec` leaves out of the spec so it follows the release, `init: true`,
-  `mise.enabled: true`, no shared clipboard, 2 vCPUs, `4 GiB` of memory, a `20
-  GiB` Docker volume in `VolumesSpec::default()`) and `parse_size_mib`, which
-  reads memory and volume sizes in `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon
-  both use them. `NetworkSpec::allow` and `NetworkSpec::deny` move rules between
-  the lists, `NetworkSpec::is_enabled` reads `enabled` with its default, and
-  `to_file` writes a spec back as YAML, leaving out unset fields. A boolean
-  `mise`, the form before it became a map, is reported at the value with a
-  message naming `mise.enabled`; `migrate_mise` rewrites the top-level `mise:
-  <bool>` line in the text of a spec to `mise:` with `enabled: <bool>`, keeping
-  the rest of the text. `MountSpec::mise_dotfiles` returns the read-only mount
-  at `/opt/firebrick/dotfiles`, which the CLI approves and the daemon creates.
-  The crate root holds `SandboxSpec` and its defaults, and re-exports the rest
-  from private modules: `network`, `ports`, `env`, `mounts` and `names` for the
+  ([ADR 0020](decisions/0020-look-up-user-home-directories-with-nix.md)) and
+  refusing a home directory that isn't absolute, to the canonical path of an
+  existing directory before it sends `StartSandbox`. `NetworkRule` parses a
+  rule: a host name, `*.` plus a domain of at least two labels, an IPv4 or IPv6
+  address or a CIDR range. `*` alone, other wildcards, URLs, ports and paths are
+  invalid. It owns the defaults (`ghcr.io/wmeints/firebrick-base:v<version>` as
+  `DEFAULT_IMAGE`, which `default_spec` leaves out of the spec so it follows the
+  release, `init: true`, `mise.enabled: true`, no shared clipboard, 2 vCPUs, `4
+  GiB` of memory, a `20 GiB` Docker volume in `VolumesSpec::default()`) and
+  `parse_size_mib`, which reads memory and volume sizes in `Mi`/`MiB` or
+  `Gi`/`GiB`. The CLI and daemon both use them. `NetworkSpec::allow` and
+  `NetworkSpec::deny` move rules between the lists, `NetworkSpec::is_enabled`
+  reads `enabled` with its default, and `to_file` writes a spec back as YAML,
+  leaving out unset fields. A boolean `mise`, the form before it became a map,
+  is reported at the value with a message naming `mise.enabled`; `migrate_mise`
+  rewrites the top-level `mise: <bool>` line in the text of a spec to `mise:`
+  with `enabled: <bool>`, keeping the rest of the text.
+  `MountSpec::mise_dotfiles` returns the read-only mount at
+  `/opt/firebrick/dotfiles`, which the CLI approves and the daemon creates. The
+  crate root holds `SandboxSpec` and its defaults, and re-exports the rest from
+  private modules: `network`, `ports`, `env`, `mounts` and `names` for the
   fields, `error`, `file` for reading and writing without following symlinks,
   and `edit` for the line-based edits of the text.
 - `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket

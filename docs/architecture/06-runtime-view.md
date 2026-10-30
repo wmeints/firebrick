@@ -308,13 +308,15 @@ the rules.
 
 Before the CLI creates a sandbox, it resolves the `host` of each entry in
 `mounts` against the directory of `.firebrick.yml`, expanding `~` to `$HOME` and
-`~user` to that user's home directory, and canonicalizes it. It fails with
-`can't mount <path>: No such file or directory` or `can't mount <path>: not a
-directory` without calling the daemon. The daemon rejects a mount whose guest
-path equals the workspace path with `INVALID_ARGUMENT` before it creates
-anything, and otherwise bind mounts each directory like the workspace: owned by
-`1000:1000`, with host permissions mirrored, and read-only when `readonly` is
-set. Starting an existing sandbox sends no mounts.
+`~user` to that user's home directory, and canonicalizes it. It refuses a home
+directory that isn't absolute, which would resolve against the current
+directory. It fails with `can't mount <path>: No such file or directory` or
+`can't mount <path>: not a directory` without calling the daemon. The daemon
+rejects a mount whose guest path equals the workspace path with
+`INVALID_ARGUMENT` before it creates anything, and otherwise bind mounts each
+directory like the workspace: owned by `1000:1000`, with host permissions
+mirrored, and read-only when `readonly` is set. Starting an existing sandbox
+sends no mounts.
 
 The CLI resolves `mise.config` the same way, as long as mise isn't disabled.
 When the directory has a `mise.toml`, it sends its canonical path as
