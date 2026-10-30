@@ -138,7 +138,7 @@ async fn wait_for_shutdown(lock_path: &Path) -> Result<()> {
 
 /// Connects to the daemon on its endpoint, starting the daemon when needed.
 async fn connect_to(path: PathBuf) -> Result<Client> {
-    // Note: the HTTP endpoint isn't actually used. It will only show up in the authority header.
+    //foxguard: ignore - this never throws, because we override localhost.
     let channel = Endpoint::try_from("http://localhost")
         .unwrap()
         .connect_with_connector(service_fn(move |_: Uri| {
@@ -310,6 +310,7 @@ mod tests {
     fn test_endpoint(test: &str) -> (Option<tempfile::TempDir>, PathBuf) {
         if cfg!(windows) {
             let pipe = format!(r"\\.\pipe\fbk-cli-test-{}-{test}", std::process::id());
+            // foxguard: ignore - the path is absolute, only the suffix changes.
             return (None, PathBuf::from(pipe));
         }
         let dir = tempfile::tempdir().unwrap();
