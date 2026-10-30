@@ -163,6 +163,10 @@ A change is done when:
   microsandbox state and SSH config from the user's own.
 - Use the `implement-feature` skill for new behavior: agree on a spec first,
   then test, implement and document.
+- Use the `code-scan` skill to scan the code with `foxguard .` and triage the
+  findings: fix the real problems, mark false positives with a `foxguard:
+  ignore[<rule>]` comment below a comment giving the reason, and ask about the
+  ones in doubt.
 - Use the `sandbox-reference` skill before relying on how the `microsandbox`
   crate behaves. It shows where to find the source of the locked version and
   lists the behavior and limits we already know.
