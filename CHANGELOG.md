@@ -6,6 +6,35 @@ request, and the release workflow copies the section into the GitHub release,
 above the generated list of pull requests. Each section starts with a `##
 vX.Y.Z - YYYY-MM-DD` heading.
 
+## v0.11.0 - 2026-10-30
+
+This release brings your own shell, git and agent setup into every sandbox
+through mise dotfiles, and moves the runtime to microsandbox 0.7.11.
+
+### Features
+
+- Set `mise.config` in `.firebrick.yml` to a host directory managed with mise
+  dotfiles, such as `~/dotfiles`, and `fbkd` applies it with `mise dot apply` on
+  every start, before it installs the mise tools. The directory is mounted
+  read-only at `/opt/firebrick/dotfiles` after you approve it, and the agent can
+  read every file in it, so keep secrets out of it. `mise` is now a map with
+  `enabled` and `config`: `fbk` rewrites an old `mise: true` or `mise: false`
+  line to `mise.enabled` in place, after which earlier versions of `fbk` can't
+  read the file. (#232)
+
+### Fixes
+
+- Blocked requests get firebrick's deny message again, with the `fbk network
+  allow` hint, instead of microsandbox's JSON error after the update to
+  microsandbox 0.7.11. (#233)
+- On macOS, `fbkd` no longer rejects a client that closed its connection before
+  the daemon accepted it. (#234)
+- `~` in a mount's `host` path or in `mise.config` fails when the home directory
+  isn't an absolute path, instead of mounting a directory relative to the
+  current one. (#238)
+- `fbkd` keeps running and logs a warning when it can't register its SIGTERM or
+  Ctrl-C handler, instead of panicking or shutting down. (#238)
+
 ## v0.10.0 - 2026-10-23
 
 This release makes sandboxes feel more like a regular machine: commits get the
