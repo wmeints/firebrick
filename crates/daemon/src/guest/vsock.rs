@@ -32,6 +32,8 @@ pub fn sandbox_file(dir: &Path, sandbox: &str, extension: &str) -> Option<PathBu
 
 /// Whether the sandbox name is a single path component, logging an error when it isn't.
 fn is_single_component(sandbox: &str) -> bool {
+    // This is the check that keeps the sandbox name a single path component.
+    // foxguard: ignore[rs/no-path-traversal]
     let single = Path::new(sandbox).file_name() == Some(OsStr::new(sandbox));
     if !single {
         tracing::error!("refusing to name a file after the invalid sandbox name {sandbox:?}");
@@ -403,6 +405,8 @@ impl<S> Drop for Listeners<S> {
 pub(crate) fn test_endpoint_dir(dir: &Path, channel: &str) -> PathBuf {
     if cfg!(windows) {
         let unique = dir.file_name().unwrap_or_default().to_string_lossy();
+        // The pipe name is absolute; only the temp directory name and channel vary.
+        // foxguard: ignore[rs/no-path-traversal]
         return PathBuf::from(format!(r"\\.\pipe\fbk-test-{unique}-{channel}"));
     }
     dir.join(channel)
@@ -417,6 +421,8 @@ mod tests {
     fn endpoint_dir(test: &str) -> (Option<tempfile::TempDir>, PathBuf) {
         if cfg!(windows) {
             let pipe = format!(r"\\.\pipe\fbk-vsock-test-{}-{test}", std::process::id());
+            // The pipe name is absolute; only the test name and process id vary.
+            // foxguard: ignore[rs/no-path-traversal]
             return (None, PathBuf::from(pipe));
         }
         let temp = tempfile::TempDir::new().unwrap();

@@ -81,6 +81,8 @@ impl Daemon {
 /// microsandbox creates unix sockets under the home.
 #[cfg(unix)]
 fn test_root() -> PathBuf {
+    // The test root is a constant prefix and the process id.
+    // foxguard: ignore[rs/no-path-traversal]
     PathBuf::from(format!("/tmp/fbk-mh-{}", std::process::id()))
 }
 
@@ -117,6 +119,8 @@ fn daemon_endpoint(root: &Path) -> PathBuf {
 /// Returns the daemon's endpoint, which [`isolate_home_and_endpoints`] named.
 #[cfg(windows)]
 fn daemon_endpoint(_root: &Path) -> PathBuf {
+    // The pipe name extends the prefix the test chose.
+    // foxguard: ignore[rs/no-path-traversal]
     PathBuf::from(format!("{}-fbkd", pipe_prefix()))
 }
 

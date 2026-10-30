@@ -101,22 +101,42 @@ const SEPARATORS: &[char] = &['/'];
 const SEPARATORS: &[char] = &['/', '\\'];
 
 /// Expands `~` or `~user` at the start of a host path, the way a shell does. `rest` is the
-/// host path without its `~`.
+/// host path without its `~`. Refuses a relative home directory, which would silently resolve
+/// against the current directory.
 fn expand_tilde(host: &str, rest: &str, home: Option<&std::ffi::OsStr>) -> Result<PathBuf> {
     let (user, tail) = rest.split_once(SEPARATORS).unwrap_or((rest, ""));
 
-    let home = if user.is_empty() {
-        PathBuf::from(home.with_context(|| {
-            format!(
-                "can't expand ~ in {host}: ${} isn't set",
-                firebrick_utils::HOME_VAR
-            )
-        })?)
+    let (home, source) = if user.is_empty() {
+        (
+            own_home(host, home)?,
+            format!("${}", firebrick_utils::HOME_VAR),
+        )
     } else {
-        user_home(host, user)?
+        (
+            user_home(host, user)?,
+            format!("the home directory of {user}"),
+        )
     };
 
+    if !home.is_absolute() {
+        bail!("can't expand ~{user} in {host}: {source} is {home:?}, not an absolute path");
+    }
+
     Ok(home.join(tail))
+}
+
+/// Returns the home directory from the environment.
+fn own_home(host: &str, home: Option<&std::ffi::OsStr>) -> Result<PathBuf> {
+    let home = home.with_context(|| {
+        format!(
+            "can't expand ~ in {host}: ${} isn't set",
+            firebrick_utils::HOME_VAR
+        )
+    })?;
+
+    // `$HOME` comes from the user's own environment on the host.
+    // foxguard: ignore[rs/no-path-traversal]
+    Ok(PathBuf::from(home))
 }
 
 /// Looks up the home directory of the user in the user database.
@@ -220,6 +240,24 @@ mod tests {
 
         let missing = format!("${} isn't set", firebrick_utils::HOME_VAR);
         assert!(error.to_string().contains(&missing), "{error}");
+    }
+
+    #[test]
+    fn host_path_with_relative_home_is_refused() {
+        let relative = Some(std::ffi::OsStr::new("."));
+        let empty = Some(std::ffi::OsStr::new(""));
+
+        let relative_error = resolve_host_path("~", Path::new("/elsewhere"), relative).unwrap_err();
+        let empty_error = resolve_host_path("~", Path::new("/elsewhere"), empty).unwrap_err();
+
+        let expected = |home: &str| {
+            format!(
+                "can't expand ~ in ~: ${} is {home:?}, not an absolute path",
+                firebrick_utils::HOME_VAR
+            )
+        };
+        assert_eq!(relative_error.to_string(), expected("."));
+        assert_eq!(empty_error.to_string(), expected(""));
     }
 
     #[cfg(windows)]

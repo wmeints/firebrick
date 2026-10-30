@@ -1,7 +1,6 @@
 //! The signals that stop the daemon: SIGINT and SIGTERM on Unix, and Ctrl-C, Ctrl-Break, the
 //! console closing and Windows shutting down on Windows.
 
-#[cfg(windows)]
 use std::io;
 
 /// Completes on the signals of [`shutdown_signal`] or when `requested` completes.
@@ -15,12 +14,20 @@ pub(super) async fn shutdown_or(requested: impl Future<Output = ()>) {
 /// Completes when SIGINT or SIGTERM is received.
 #[cfg(unix)]
 async fn shutdown_signal() {
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut sigterm = signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => tracing::info!("shutting down"),
-        _ = sigterm.recv() => tracing::info!("shutting down"),
+        () = ctrl_c() => {}
+        () = sigterm() => {}
+    }
+    tracing::info!("shutting down");
+}
+
+/// Completes when SIGTERM is received.
+#[cfg(unix)]
+async fn sigterm() {
+    use tokio::signal::unix::{SignalKind, signal};
+    match signal(SignalKind::terminate()) {
+        Ok(mut signal) => drop(signal.recv().await),
+        Err(err) => not_listening("SIGTERM", &err).await,
     }
 }
 
@@ -38,8 +45,7 @@ async fn shutdown_signal() {
     tracing::info!("shutting down");
 }
 
-/// Completes when Ctrl-C is pressed.
-#[cfg(windows)]
+/// Completes when Ctrl-C is pressed, or SIGINT is received on Unix.
 async fn ctrl_c() {
     if let Err(err) = tokio::signal::ctrl_c().await {
         not_listening("Ctrl-C", &err).await;
@@ -73,9 +79,8 @@ async fn windows_shutdown() {
     }
 }
 
-/// Logs that the daemon can't listen for the console event and never completes, so a handler
-/// that can't be registered doesn't count as the event.
-#[cfg(windows)]
+/// Logs that the daemon can't listen for the signal or console event and never completes, so a
+/// handler that can't be registered doesn't count as the event.
 async fn not_listening(event: &str, err: &io::Error) {
     tracing::warn!("can't listen for {event}, which won't stop the daemon: {err}");
     std::future::pending::<()>().await;

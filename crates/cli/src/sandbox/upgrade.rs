@@ -95,6 +95,8 @@ async fn workspace_image(
         return Ok(None);
     }
 
+    // The workspace comes from the daemon, which recorded the user's working directory.
+    // foxguard: ignore[rs/no-path-traversal]
     Ok(read_spec_file(Path::new(&workspace))?.and_then(|spec| spec.image))
 }
 

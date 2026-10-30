@@ -52,6 +52,8 @@ mod tests {
     use super::*;
 
     fn label(path: &str) -> String {
+        // Labels the test's constant paths; no file is opened.
+        // foxguard: ignore[rs/no-path-traversal]
         sanitize_label(Path::new(path))
     }
 

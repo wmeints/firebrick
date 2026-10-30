@@ -1,0 +1,7 @@
+scan:
+  ignore_rules:
+    # The classical cryptography comes in through rustls (ring), russh and
+    # ssh-key (RSA, ECDSA) and microsandbox. Firebrick can't swap it out until
+    # those crates offer post-quantum alternatives.
+    - path: Cargo.lock
+      rules: [manifest/cargo-pq-vulnerable-dep]

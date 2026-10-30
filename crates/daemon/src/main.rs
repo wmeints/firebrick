@@ -72,6 +72,7 @@ fn use_firebrick_msb_home() -> Result<()> {
         .with_context(|| format!("failed to create the microsandbox home {}", home.display()))?;
     // SAFETY: `main` calls this before it starts the Tokio runtime or the log writer, while the
     // process has a single thread, so nothing reads or writes the environment concurrently.
+    // foxguard: ignore[rs/unsafe-block]
     // HUMAN-APPROVED: edition 2024 marks `set_var` unsafe because other threads may read the
     // environment at the same time; the process is still single-threaded here.
     unsafe { std::env::set_var("MSB_HOME", &home) };

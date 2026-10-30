@@ -59,6 +59,8 @@ pub(crate) fn xdg_config_home() -> Option<PathBuf> {
 /// Returns `~/.config`.
 #[cfg(unix)]
 pub(crate) fn home_config() -> Option<PathBuf> {
+    // `$HOME` comes from the user's own environment on the host.
+    // foxguard: ignore[rs/no-path-traversal]
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config"))
 }
 

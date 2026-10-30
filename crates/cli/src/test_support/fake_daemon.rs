@@ -116,7 +116,10 @@ pub(crate) async fn serve_unversioned() -> SandboxManagementServiceClient<Channe
 
 /// Serves the fake daemon on a free local port and returns a client for it.
 async fn serve_daemon(daemon: FakeDaemon) -> SandboxManagementServiceClient<Channel> {
+    // The fake daemon only exists in tests, where a failure should fail the test.
+    // foxguard: ignore[rs/no-unwrap-in-lib]
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // foxguard: ignore[rs/no-unwrap-in-lib]
     let address = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
@@ -130,6 +133,8 @@ async fn serve_daemon(daemon: FakeDaemon) -> SandboxManagementServiceClient<Chan
         }
     });
 
+    // The fake daemon only exists in tests, where a failure should fail the test.
+    // foxguard: ignore[rs/no-unwrap-in-lib]
     let channel = Channel::from_shared(format!("http://{address}"))
         .unwrap()
         .connect_lazy();

@@ -118,6 +118,8 @@ pub async fn remove(path: &Path) -> io::Result<()> {
 /// in a unix socket address. On Windows `dir` is a pipe name that the endpoints extend to
 /// `<dir>-<name>`, because a pipe name has no directories.
 pub fn endpoint(dir: &Path, name: &str) -> Option<PathBuf> {
+    // This is the check that keeps the endpoint name a single path component.
+    // foxguard: ignore[rs/no-path-traversal]
     if name.is_empty() || Path::new(name).file_name() != Some(name.as_ref()) {
         return None;
     }
@@ -141,6 +143,8 @@ mod tests {
     fn endpoint_dir(test: &str) -> (Option<tempfile::TempDir>, PathBuf) {
         if cfg!(windows) {
             let pipe = format!(r"\\.\pipe\fbk-ipc-test-{}-{test}", std::process::id());
+            // The pipe name is absolute; only the test name and process id vary.
+            // foxguard: ignore[rs/no-path-traversal]
             return (None, PathBuf::from(pipe));
         }
         let temp = tempfile::TempDir::new().unwrap();

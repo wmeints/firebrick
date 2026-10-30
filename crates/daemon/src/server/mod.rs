@@ -610,6 +610,8 @@ mod tests {
     fn test_endpoint(name: &str) -> PathBuf {
         if cfg!(windows) {
             let pipe = format!(r"\\.\pipe\firebrick-test-{}-{name}", std::process::id());
+            // The pipe name is absolute; only the test name and process id vary.
+            // foxguard: ignore[rs/no-path-traversal]
             return PathBuf::from(pipe);
         }
         temp_path(&format!("{name}.sock"))

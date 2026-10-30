@@ -20,10 +20,14 @@ pub const SYMLINK_ERROR: &str =
 /// file. The file holds `content`, or doesn't exist when it is `None`, so the link dangles.
 /// Returns `None` when this Windows can't create symlinks.
 pub fn workspace(content: Option<&str>) -> Option<(TempDir, PathBuf)> {
+    // Only exists in tests, where a failure should fail the test.
+    // foxguard: ignore[rs/no-unwrap-in-lib]
     let dir = TempDir::new().unwrap();
     let target = dir.path().join("notes.yml");
 
     if let Some(content) = content {
+        // Only exists in tests, where a failure should fail the test.
+        // foxguard: ignore[rs/no-unwrap-in-lib]
         fs::write(&target, content).unwrap();
     }
 

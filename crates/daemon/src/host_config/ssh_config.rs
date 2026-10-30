@@ -24,6 +24,8 @@ pub(super) fn sync_config(hostnames: &[&str]) -> Result<()> {
     let home_var = firebrick_utils::HOME_VAR;
     let home = std::env::var_os(home_var).with_context(|| format!("{home_var} is not set"))?;
     ensure_include(
+        // `$HOME` comes from the user's own environment on the host.
+        // foxguard: ignore[rs/no-path-traversal]
         &PathBuf::from(home).join(".ssh").join("config"),
         &config_path,
     )
