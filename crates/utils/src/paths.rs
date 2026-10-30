@@ -160,6 +160,8 @@ fn pipe_prefix_from(
     user: impl FnOnce() -> io::Result<String>,
 ) -> io::Result<PathBuf> {
     let Some(prefix) = var("FIREBRICK_PIPE_PREFIX").filter(|prefix| !prefix.is_empty()) else {
+        // The pipe name is the pipe prefix and the user's SID string.
+        // foxguard: ignore[rs/no-path-traversal]
         return Ok(PathBuf::from(format!("{PIPES}firebrick-{}", user()?)));
     };
 
@@ -177,6 +179,8 @@ fn pipe_prefix_from(
         ));
     }
 
+    // `FIREBRICK_PIPE_PREFIX` comes from the user's environment and is checked to be a local pipe name above.
+    // foxguard: ignore[rs/no-path-traversal]
     Ok(PathBuf::from(prefix))
 }
 
@@ -433,6 +437,8 @@ mod unix_tests {
 
     /// Returns the expected directories, all `Some`.
     fn some(data: &str, log: &str, msb: &str) -> [Option<PathBuf>; 3] {
+        // Builds the expected paths from the test's constants.
+        // foxguard: ignore[rs/no-path-traversal]
         [data, log, msb].map(|dir| Some(PathBuf::from(dir)))
     }
 

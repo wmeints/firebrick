@@ -76,6 +76,8 @@ fn pinned_spec(sandbox: &GetSandboxResponse) -> Option<PathBuf> {
         return None;
     }
 
+    // The workspace comes from the daemon, which recorded the user's working directory.
+    // foxguard: ignore[rs/no-path-traversal]
     let workspace = Path::new(&sandbox.workspace_host_path);
     let image = read_spec_file(workspace).ok()??.image?;
 
@@ -122,6 +124,8 @@ pub(crate) async fn check_workspace_owner(
 /// Fails when the sandbox mounts a host directory other than the canonical working directory.
 /// An empty host path means the sandbox has no workspace mount and always passes.
 fn ensure_same_workspace(name: &str, host_path: &str, working_dir: &Path) -> Result<()> {
+    // Only compares the path from the daemon with the working directory; nothing is opened.
+    // foxguard: ignore[rs/no-path-traversal]
     if host_path.is_empty() || Path::new(host_path) == working_dir {
         return Ok(());
     }

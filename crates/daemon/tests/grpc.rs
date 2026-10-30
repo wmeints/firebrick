@@ -310,6 +310,8 @@ fn sandbox_pid(name: &str) -> Option<u32> {
 fn daemon_endpoint(name: &str) -> PathBuf {
     let file = format!("fbk-it-{}-{}", std::process::id(), name);
     if cfg!(windows) {
+        // The pipe name is absolute; only the test name and process id vary.
+        // foxguard: ignore[rs/no-path-traversal]
         return PathBuf::from(format!(r"\\.\pipe\{file}"));
     }
     std::env::temp_dir().join(format!("{file}.sock"))
@@ -576,6 +578,8 @@ fn process_is_alive_tells_live_from_dead_processes() {
     } else {
         ("true", &[])
     };
+    // Runs a constant program to get a process that exits.
+    // foxguard: ignore[rs/no-command-injection]
     let mut child = std::process::Command::new(program)
         .args(args)
         .spawn()
@@ -1613,6 +1617,8 @@ async fn workspace_is_mounted_read_write() {
     remove_sandbox(name).await;
 
     let request = start_request(name);
+    // The workspace is a directory the test created.
+    // foxguard: ignore[rs/no-path-traversal]
     let workspace = PathBuf::from(&request.workspace);
     let guest_path = guest_workspace(&workspace);
     std::fs::write(workspace.join("from-host.txt"), "hello from host").unwrap();
@@ -1650,6 +1656,8 @@ async fn workspace_is_owned_by_agent_user() {
     remove_sandbox(name).await;
 
     let request = start_request(name);
+    // The workspace is a directory the test created.
+    // foxguard: ignore[rs/no-path-traversal]
     let workspace = PathBuf::from(&request.workspace);
     let guest_path = guest_workspace(&workspace);
     std::fs::write(workspace.join("from-host.txt"), "hello from host").unwrap();
@@ -1741,6 +1749,8 @@ async fn start_sandbox_rejects_mount_at_workspace_guest_path() {
 
     let extra = test_mount_dir(name, "extra");
     let request = start_request(name);
+    // The workspace is a directory the test created.
+    // foxguard: ignore[rs/no-path-traversal]
     let guest = guest_workspace(Path::new(&request.workspace));
     let request = StartSandboxRequest {
         mounts: vec![mount(&extra, &guest, false)],

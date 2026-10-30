@@ -82,6 +82,8 @@ fn platform_config_root() -> Option<PathBuf> {
 /// Returns `~/Library/Application Support`.
 #[cfg(target_os = "macos")]
 fn platform_config_root() -> Option<PathBuf> {
+    // `$HOME` comes from the user's own environment on the host.
+    // foxguard: ignore[rs/no-path-traversal]
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Application Support"))
 }
 

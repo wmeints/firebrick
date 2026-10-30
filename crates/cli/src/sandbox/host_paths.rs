@@ -134,6 +134,8 @@ fn own_home(host: &str, home: Option<&std::ffi::OsStr>) -> Result<PathBuf> {
         )
     })?;
 
+    // `$HOME` comes from the user's own environment on the host.
+    // foxguard: ignore[rs/no-path-traversal]
     Ok(PathBuf::from(home))
 }
 

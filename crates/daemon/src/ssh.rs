@@ -118,8 +118,12 @@ pub fn hostname_of(handle: &SandboxHandle) -> Option<String> {
 /// Picks a host name for a workspace that none of the `taken` names uses: `<leaf>.fbk`,
 /// then `<leaf>-2.fbk`, `<leaf>-3.fbk` and so on.
 pub fn pick_hostname(workspace: &str, taken: &HashSet<String>) -> String {
+    // `sanitize_label` turns the leaf name into a DNS label; no file is opened.
+    // foxguard: ignore[rs/no-path-traversal]
     let base = firebrick_utils::sanitize_label(Path::new(workspace));
 
+    // `taken` is finite and the range isn't, so `find` always returns a name.
+    // foxguard: ignore[rs/no-unwrap-in-lib]
     (1..)
         .map(|n| match n {
             1 => format!("{base}{HOST_SUFFIX}"),

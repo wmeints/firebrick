@@ -43,6 +43,7 @@ impl Sid {
     pub fn current_user() -> io::Result<Self> {
         // SAFETY: `GetCurrentProcess` has no preconditions and returns a pseudo handle that is
         // always valid and needs no closing.
+        // foxguard: ignore[rs/unsafe-block]
         // HUMAN-APPROVED: Win32 FFI to identify the current user for the named pipe checks.
         let process = unsafe { GetCurrentProcess() };
         token_user(process)
@@ -52,12 +53,14 @@ impl Sid {
     /// process may not query it.
     pub fn of_process(pid: u32) -> io::Result<Self> {
         // SAFETY: `OpenProcess` has no preconditions; it returns null on failure, checked below.
+        // foxguard: ignore[rs/unsafe-block]
         // HUMAN-APPROVED: Win32 FFI to identify the user at the other end of a named pipe.
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if handle.is_null() {
             return Err(io::Error::last_os_error());
         }
         // SAFETY: `OpenProcess` succeeded, so `handle` is a process handle nothing else owns.
+        // foxguard: ignore[rs/unsafe-block]
         // HUMAN-APPROVED: takes ownership of the handle so it is closed exactly once.
         let process = unsafe { OwnedHandle::from_raw_handle(handle) };
         token_user(process.as_raw_handle())
@@ -76,6 +79,7 @@ impl Sid {
         let mut text: PWSTR = ptr::null_mut();
         // SAFETY: `self.0` holds a whole SID, copied with the length `GetLengthSid` reported, and
         // `text` is a valid out pointer. Windows only reads the SID.
+        // foxguard: ignore[rs/unsafe-block]
         // HUMAN-APPROVED: Win32 FFI to write a SID the way Windows does, for pipe names and
         // access lists.
         if unsafe { ConvertSidToStringSidW(self.0.as_ptr().cast_mut().cast(), &mut text) } == 0 {
@@ -83,6 +87,7 @@ impl Sid {
         }
         // SAFETY: Windows allocated `text` with `LocalAlloc` as a NUL-terminated UTF-16 string.
         // It's read up to the NUL and freed exactly once, after the copy.
+        // foxguard: ignore[rs/unsafe-block]
         // HUMAN-APPROVED: Win32 FFI to copy the SID string and free Windows' allocation.
         let string = unsafe {
             let len = (0..).take_while(|&i| *text.add(i) != 0).count();
@@ -109,11 +114,13 @@ impl fmt::Display for Sid {
 fn token_user(process: HANDLE) -> io::Result<Sid> {
     let mut token = ptr::null_mut();
     // SAFETY: `process` is a valid process handle and `token` a valid out pointer.
+    // foxguard: ignore[rs/unsafe-block]
     // HUMAN-APPROVED: Win32 FFI to read the user of a process from its access token.
     if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: `OpenProcessToken` succeeded, so `token` is a handle nothing else owns.
+    // foxguard: ignore[rs/unsafe-block]
     // HUMAN-APPROVED: takes ownership of the handle so it is closed exactly once.
     let token = unsafe { OwnedHandle::from_raw_handle(token) };
 
@@ -121,6 +128,7 @@ fn token_user(process: HANDLE) -> io::Result<Sid> {
     // SAFETY: `GetTokenInformation` filled `buffer`, which is aligned for `TOKEN_USER`, with a
     // `TOKEN_USER` whose SID points to a valid SID inside the same buffer, and `GetLengthSid`
     // returns that SID's length in bytes.
+    // foxguard: ignore[rs/unsafe-block]
     // HUMAN-APPROVED: Win32 FFI to copy the user's SID out of the token information.
     let sid = unsafe {
         let user = &*buffer.as_ptr().cast::<TOKEN_USER>();
@@ -138,6 +146,7 @@ fn token_information(token: &OwnedHandle) -> io::Result<Vec<u64>> {
     // SAFETY: a null buffer of length 0 only asks for the length the information needs, which
     // the call writes to the valid out pointer `len`. It fails by design, so its result is
     // ignored and the length checked instead.
+    // foxguard: ignore[rs/unsafe-block]
     // HUMAN-APPROVED: Win32 FFI to size the buffer for the token's user.
     unsafe {
         GetTokenInformation(
@@ -154,6 +163,7 @@ fn token_information(token: &OwnedHandle) -> io::Result<Vec<u64>> {
 
     let mut buffer = vec![0u64; to_usize(len)?.div_ceil(8)];
     // SAFETY: `buffer` has at least `len` writable bytes.
+    // foxguard: ignore[rs/unsafe-block]
     // HUMAN-APPROVED: Win32 FFI to read the token's user into the buffer.
     let read = unsafe {
         GetTokenInformation(
@@ -176,6 +186,7 @@ pub fn pipe_server_pid(pipe: &impl AsRawHandle) -> io::Result<u32> {
     let mut pid = 0;
     // SAFETY: `pipe` is a pipe handle that stays open for the call and `pid` a valid out
     // pointer.
+    // foxguard: ignore[rs/unsafe-block]
     // HUMAN-APPROVED: Win32 FFI to find the process serving a named pipe.
     if unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) } == 0 {
         return Err(io::Error::last_os_error());
@@ -188,6 +199,7 @@ pub fn pipe_client_pid(pipe: &impl AsRawHandle) -> io::Result<u32> {
     let mut pid = 0;
     // SAFETY: `pipe` is a pipe handle that stays open for the call and `pid` a valid out
     // pointer.
+    // foxguard: ignore[rs/unsafe-block]
     // HUMAN-APPROVED: Win32 FFI to find the process connected to a named pipe.
     if unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle(), &mut pid) } == 0 {
         return Err(io::Error::last_os_error());
@@ -212,6 +224,7 @@ pub fn create_pipe(path: &Path, owner: &Sid, first: bool) -> io::Result<NamedPip
 
     // SAFETY: `attributes` is a valid `SECURITY_ATTRIBUTES` whose descriptor stays alive until
     // the call returns.
+    // foxguard: ignore[rs/unsafe-block]
     // HUMAN-APPROVED: Win32 FFI to create a named pipe only the current user can open.
     unsafe { options.create_with_security_attributes_raw(path, (&raw mut attributes).cast()) }
 }
@@ -222,6 +235,7 @@ pub fn create_pipe(path: &Path, owner: &Sid, first: bool) -> io::Result<NamedPip
 pub fn set_inheritable(handle: &impl AsRawHandle, inherit: bool) -> io::Result<()> {
     let flags = if inherit { HANDLE_FLAG_INHERIT } else { 0 };
     // SAFETY: `handle` is a handle that stays open for the call.
+    // foxguard: ignore[rs/unsafe-block]
     // HUMAN-APPROVED: Win32 FFI to keep fbkd from inheriting the stdio handles of fbk.
     if unsafe { SetHandleInformation(handle.as_raw_handle(), HANDLE_FLAG_INHERIT, flags) } == 0 {
         return Err(io::Error::last_os_error());
@@ -240,6 +254,7 @@ impl SecurityDescriptor {
         let mut descriptor = ptr::null_mut();
         // SAFETY: `sddl` is a NUL-terminated UTF-16 string and `descriptor` a valid out
         // pointer; the size out pointer may be null.
+        // foxguard: ignore[rs/unsafe-block]
         // HUMAN-APPROVED: Win32 FFI to build the access list of the named pipes.
         let converted = unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -269,16 +284,19 @@ pub fn restrict_to_owner(path: &Path, owner: &Sid) -> io::Result<()> {
     let (mut present, mut defaulted, mut dacl) = (0, 0, ptr::null_mut());
     // SAFETY: `descriptor` is a valid security descriptor and the out pointers are valid. The
     // access list it returns points into the descriptor, which outlives its use below.
+    // foxguard: ignore[rs/unsafe-block]
     // HUMAN-APPROVED: Win32 FFI to read the access list out of the descriptor.
-    let read =
-        unsafe { GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut dacl, &mut defaulted) };
-    if read == 0 || present == 0 {
+    if unsafe { GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut dacl, &mut defaulted) }
+        == 0
+        || present == 0
+    {
         return Err(io::Error::last_os_error());
     }
 
     let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     // SAFETY: `name` is a NUL-terminated UTF-16 path, `dacl` a valid access list, and the owner,
     // group and system list pointers may be null because only the access list is set.
+    // foxguard: ignore[rs/unsafe-block]
     // HUMAN-APPROVED: Win32 FFI to make firebrick's private files accessible only to the user.
     let status = unsafe {
         SetNamedSecurityInfoW(
@@ -302,6 +320,7 @@ pub fn restrict_to_owner(path: &Path, owner: &Sid) -> io::Result<()> {
 impl Drop for SecurityDescriptor {
     fn drop(&mut self) {
         // SAFETY: Windows allocated the descriptor with `LocalAlloc`, and it's freed only here.
+        // foxguard: ignore[rs/unsafe-block]
         // HUMAN-APPROVED: Win32 FFI to free the access list once the pipe is created.
         unsafe { LocalFree(self.0) };
     }

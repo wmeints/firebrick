@@ -42,6 +42,8 @@ pub async fn read_identity(git: &OsStr, workspace: &Path) -> Option<GitIdentity>
 /// Returns the value of the git config key in the workspace, or `None` when git can't be run or
 /// the value can't be used.
 async fn config_value(git: &OsStr, workspace: &Path, key: &str) -> Option<String> {
+    // Runs the `git` on the user's PATH, or a test's fake; the workspace and key are arguments, not a shell command.
+    // foxguard: ignore[rs/no-command-injection]
     let mut command = Command::new(git);
     for var in REPOSITORY_VARS {
         command.env_remove(var);

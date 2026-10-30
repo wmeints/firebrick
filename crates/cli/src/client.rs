@@ -138,7 +138,8 @@ async fn wait_for_shutdown(lock_path: &Path) -> Result<()> {
 
 /// Connects to the daemon on its endpoint, starting the daemon when needed.
 async fn connect_to(path: PathBuf) -> Result<Client> {
-    //foxguard: ignore - this never throws, because we override localhost.
+    // The URL is a constant that always parses; the connector ignores it and dials `path`.
+    // foxguard: ignore[rs/no-unwrap-in-lib]
     let channel = Endpoint::try_from("http://localhost")
         .unwrap()
         .connect_with_connector(service_fn(move |_: Uri| {
@@ -260,6 +261,8 @@ async fn wait_for_daemon(socket_path: &Path, mut child: Child) -> Result<Stream>
 /// Returns the command that starts the daemon detached from the terminal, without stdio. On
 /// Windows it's created with the `extra_flags` too.
 fn daemon_command(extra_flags: u32) -> Command {
+    // Runs `fbkd` from next to `fbk` or from the user's PATH.
+    // foxguard: ignore[rs/no-command-injection]
     let mut command = Command::new(daemon_binary());
     command
         .stdin(Stdio::null())
@@ -310,7 +313,8 @@ mod tests {
     fn test_endpoint(test: &str) -> (Option<tempfile::TempDir>, PathBuf) {
         if cfg!(windows) {
             let pipe = format!(r"\\.\pipe\fbk-cli-test-{}-{test}", std::process::id());
-            // foxguard: ignore - the path is absolute, only the suffix changes.
+            // The pipe name is absolute; only the test name and process id vary.
+            // foxguard: ignore[rs/no-path-traversal]
             return (None, PathBuf::from(pipe));
         }
         let dir = tempfile::tempdir().unwrap();

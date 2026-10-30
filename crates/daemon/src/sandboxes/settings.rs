@@ -227,6 +227,8 @@ fn with_workspace(builder: SandboxBuilder, workspace: Option<&Workspace>) -> San
 
 /// Returns the guest path for a workspace: `/workspaces/<leaf-name>` of the absolute host path.
 pub(super) fn workspace_mount_path(workspace: &str) -> Result<String, SandboxError> {
+    // Only checks that the workspace in the request from fbk is absolute and takes its leaf name.
+    // foxguard: ignore[rs/no-path-traversal]
     let path = Path::new(workspace);
 
     if !path.is_absolute() {
@@ -256,6 +258,8 @@ pub(super) fn check_mounts(
 
 /// Checks the paths of one extra mount, see [`check_mounts`].
 fn check_mount(mount: &MountSpec, workspace_guest_path: &str) -> Result<(), SandboxError> {
+    // Only checks that the path in the request from fbk is absolute; the user approves the mounts in .firebrick.yml.
+    // foxguard: ignore[rs/no-path-traversal]
     if !Path::new(&mount.host).is_absolute() {
         return Err(SandboxError::invalid_argument(format!(
             "mount host path {} must be an absolute path",
@@ -294,6 +298,8 @@ pub(super) fn dotfiles_mount(host: Option<&str>) -> Result<Option<MountSpec>, Sa
         return Ok(None);
     };
 
+    // Only checks that the path in the request from fbk is absolute; the user approves the mounts in .firebrick.yml.
+    // foxguard: ignore[rs/no-path-traversal]
     if !Path::new(host).is_absolute() {
         return Err(SandboxError::invalid_argument(format!(
             "mise config path {host} must be an absolute path"
