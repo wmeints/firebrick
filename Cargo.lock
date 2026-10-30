@@ -1980,7 +1980,7 @@ checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "firebrick-cli"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "firebrick-daemon"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2044,7 +2044,7 @@ dependencies = [
 
 [[package]]
 name = "firebrick-proto"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "firebrick-spec",
  "prost",
@@ -2055,7 +2055,7 @@ dependencies = [
 
 [[package]]
 name = "firebrick-spec"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "firebrick-utils",
  "oci-spec",
@@ -2068,7 +2068,7 @@ dependencies = [
 
 [[package]]
 name = "firebrick-utils"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "console",
  "nix 0.31.3",
