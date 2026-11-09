@@ -60,6 +60,10 @@ When a check fails:
   with `sudo usermod -aG kvm "$USER"`, then log out and in again. On WSL, run
   `wsl --shutdown` from PowerShell instead and open the distribution again.
 
+See [Troubleshooting](/docs/troubleshooting/#kvm-is-missing-or-not-usable) for
+these, and [Troubleshooting](/docs/troubleshooting/#glibc-is-older-than-235)
+when glibc is older than 2.35.
+
 ## 1. Download and install the binaries
 
 The commands in this step use bash or zsh syntax. If you use fish, run `bash`
@@ -277,7 +281,8 @@ pkill -TERM -x fbkd
 
 When the restarted daemon still has another version, the `fbkd` next to `fbk`,
 or on your `PATH`, isn't the one you installed: `fbk` names the binary it
-started, so you can replace it.
+started, so you can replace it. See also
+[Troubleshooting](/docs/troubleshooting/#the-daemon-doesnt-restart-after-an-upgrade).
 
 To uninstall, stop the daemon and remove the binaries:
 

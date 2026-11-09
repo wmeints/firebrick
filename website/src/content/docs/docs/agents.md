@@ -82,7 +82,8 @@ mise ERROR Failed to install npm:@openai/codexx@latest: package not found: @open
 
 The sandbox keeps running, so you can connect and fix the config. Correct the
 tool name in `mise.toml` and run `fbk start` again, or set `mise.enabled: false`
-in `.firebrick.yml` to skip the install.
+in `.firebrick.yml` to skip the install. See also
+[Troubleshooting](/docs/troubleshooting/#mise-install-fails-in-the-sandbox).
 
 ## Bringing your dotfiles
 

@@ -36,7 +36,8 @@ sandbox starts it.
 SSH sessions run in the login shell of the `agent` user, with `SHELL` set to it,
 as with `sshd`. Clients such as the Codex desktop app require `SHELL`. A sandbox
 created by Firebrick 0.9 or earlier runs SSH sessions in `/bin/sh` without
-`SHELL`; recreate it with `fbk rm --force` and `fbk start` to fix that.
+`SHELL`; recreate it with `fbk rm --force` and `fbk start` to fix that. See also
+[Troubleshooting](/docs/troubleshooting/#ssh-sessions-start-in-binsh-and-shell-isnt-set).
 
 The sandbox's SSH server doesn't support agent forwarding (`ssh -A`), so your
 SSH keys stay on the host. Use git over HTTPS with a secret instead; see

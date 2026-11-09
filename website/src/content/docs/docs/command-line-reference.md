@@ -136,7 +136,8 @@ Sandbox myproject-3f2a1c is already up to date (ghcr.io/wmeints/firebrick-base:v
 ```
 
 A paused sandbox can't be upgraded. There's no resume command, so stop it with
-`fbk stop` first.
+`fbk stop` first. See also
+[Troubleshooting](/docs/troubleshooting/#a-paused-sandbox-cant-be-started-or-upgraded).
 
 When a sandbox still runs the `firebrick-base` image of an older Firebrick
 release, `fbk start`, `fbk run`, every `fbk network` command that changes the

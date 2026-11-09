@@ -391,7 +391,8 @@ when it starts. When the host port is in use, `fbk port forward` fails with
 When a host port is already in use, the sandbox still starts and `fbk start`
 prints `warning: couldn't forward localhost:<port>: <reason>`. Free the port and
 run `fbk start` again. Ports must be from 1 to 65535, and each host port may
-appear once.
+appear once. See also
+[Troubleshooting](/docs/troubleshooting/#a-host-port-is-already-in-use).
 
 ### Browser logins
 
