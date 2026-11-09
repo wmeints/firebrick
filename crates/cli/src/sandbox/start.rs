@@ -353,6 +353,7 @@ pub(crate) fn network_policy(network: NetworkSpec) -> NetworkPolicy {
         enforce: network.enforce,
         allow: rules(network.allow),
         deny: rules(network.deny),
+        proxy: network.proxy.map(|proxy| proxy.to_string()),
     }
 }
 
@@ -577,8 +578,18 @@ mod tests {
                 ],
                 deny: vec!["gist.github.com".to_string()],
                 enabled: Some(false),
+                proxy: None,
             })
         );
+    }
+
+    #[test]
+    fn start_request_carries_proxy_from_spec() {
+        let spec: firebrick_spec::SandboxSpec =
+            serde_yaml::from_str("name: dev\nnetwork:\n  proxy: http://127.0.0.1:3128\n").unwrap();
+        let message = network_policy(spec.network.unwrap());
+        assert_eq!(message.proxy.as_deref(), Some("http://127.0.0.1:3128"));
+        assert!(!message.enforce);
     }
 
     #[test]

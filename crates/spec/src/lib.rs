@@ -17,6 +17,7 @@ mod mounts;
 mod names;
 mod network;
 mod ports;
+mod proxy;
 
 pub use edit::{add_port, migrate_mise, remove_port, with_port};
 use env::deserialize_env;
@@ -33,6 +34,7 @@ use names::{deserialize_image, deserialize_sandbox_name, deserialize_size};
 pub use network::{InvalidNetworkRule, NetworkRule, NetworkSpec};
 use ports::deserialize_ports;
 pub use ports::{InvalidPortMapping, PortMapping};
+pub use proxy::{InvalidProxy, ProxyEndpoint, ProxySpec};
 
 /// Image a sandbox runs when its spec doesn't name one: the `firebrick-base` image that the
 /// release workflow publishes with the same version as this crate.

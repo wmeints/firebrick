@@ -123,6 +123,11 @@ message NetworkPolicy {
   // Whether the sandbox gets a network device. Unset means enabled. When false, the sandbox
   // has no network at all and the other fields are validated but ignored.
   optional bool enabled = 4;
+  // Host-side outbound proxy URL, without credentials. Applied even when enforce is false.
+  // Supports http://host:port (CONNECT), socks4://host:port and socks5://host:port.
+  // host is an ASCII DNS name or IP address; fbkd resolves names on the host at creation.
+  // SOCKS4 requires an IPv4 endpoint.
+  optional string proxy = 5;
 }
 
 message SandboxResources {

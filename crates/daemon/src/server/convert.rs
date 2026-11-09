@@ -244,6 +244,14 @@ pub(super) fn network_spec(network: Option<&NetworkPolicy>) -> Result<NetworkSpe
         enforce: network.enforce,
         allow: parse_rules(&network.allow)?,
         deny: parse_rules(&network.deny)?,
+        proxy: network
+            .proxy
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|err: firebrick_spec::InvalidProxy| {
+                Status::invalid_argument(err.to_string())
+            })?,
     })
 }
 
@@ -776,6 +784,25 @@ mod tests {
 
             assert_eq!(network_spec(Some(&network)).unwrap().enabled, enabled);
         }
+    }
+
+    #[test]
+    fn network_spec_validates_proxy_from_rpc_clients() {
+        let network = NetworkPolicy {
+            proxy: Some("http://proxy.example:3128".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            network_spec(Some(&network)).unwrap().proxy,
+            Some("http://proxy.example:3128".parse().unwrap())
+        );
+        let invalid = NetworkPolicy {
+            proxy: Some("http://user:password@127.0.0.1:3128".to_string()),
+            ..Default::default()
+        };
+        let status = network_spec(Some(&invalid)).unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(!status.message().contains("password"));
     }
 
     #[test]

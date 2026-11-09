@@ -36,6 +36,8 @@ fn network_difference(approved: &NetworkSpec, requested: &NetworkSpec) -> Vec<St
     ];
     let mut lines: Vec<String> = switches.into_iter().flatten().collect();
 
+    lines.extend(proxy_difference(approved, requested));
+
     lines.extend(list_difference(
         &approved.allow,
         &requested.allow,
@@ -48,6 +50,24 @@ fn network_difference(approved: &NetworkSpec, requested: &NetworkSpec) -> Vec<St
     ));
 
     lines
+}
+
+/// Shows proxy additions, removals and replacements, including with enforcement off.
+fn proxy_difference(approved: &NetworkSpec, requested: &NetworkSpec) -> Vec<String> {
+    if approved.proxy == requested.proxy {
+        return Vec::new();
+    }
+    approved
+        .proxy
+        .iter()
+        .map(|proxy| format!("- network.proxy: {proxy}"))
+        .chain(
+            requested
+                .proxy
+                .iter()
+                .map(|proxy| format!("+ network.proxy: {proxy}")),
+        )
+        .collect()
 }
 
 /// Returns a `-` line per item only in `approved`, then a `+` line per item only in
@@ -84,6 +104,12 @@ pub(super) fn listing(settings: &Settings) -> Vec<String> {
     let mut lines = list_difference(&[], &settings.mounts, mount_line);
     lines.push(format!("network.enabled: {}", network.is_enabled()));
     lines.push(format!("network.enforce: {}", network.enforce));
+    lines.extend(
+        network
+            .proxy
+            .iter()
+            .map(|proxy| format!("+ network.proxy: {proxy}")),
+    );
     lines.extend(list_difference(&[], &network.allow, |sign, rule| {
         rule_line(sign, "allow", rule)
     }));

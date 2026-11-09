@@ -593,7 +593,8 @@ pub(super) async fn create_with(
     network: &NetworkSpec,
     on_pull: impl FnMut(PullUpdate) + Send,
 ) -> Result<Sandbox, MicrosandboxError> {
-    let builder = network::add_to_builder(builder, network)?
+    let builder = network::add_to_builder(builder, network)
+        .await?
         .label(network::RULES_LABEL, network::rules_label(network));
     let (progress, task) =
         secrets::add_to_builder(builder, secrets).create_detached_with_pull_progress()?;

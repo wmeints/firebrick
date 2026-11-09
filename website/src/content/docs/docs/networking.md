@@ -59,6 +59,62 @@ Keep in mind that:
 - `mise install` downloads its tools when the sandbox starts, so allow the hosts
   it needs, or set `mise.enabled: false`.
 
+## Using an outbound proxy
+
+Set `network.proxy` to send outbound connections through a proxy reached by the
+host. Programs in the sandbox need no `HTTP_PROXY` or `HTTPS_PROXY` variables:
+
+```yaml
+name: my-project
+network:
+  proxy: "http://proxy.example.com:3128"
+  enforce: false
+```
+
+`http://` uses HTTP CONNECT tunnels, including for plain TCP connections. The
+proxy must allow CONNECT to the destination IP and port; a proxy that only
+allows CONNECT on port 443 won't carry HTTP on port 80.
+`socks4://proxy.example.com:1080` and `socks5://proxy.example.com:1080` are
+supported too. Use an ASCII DNS name or a literal IP address and an explicit,
+nonzero port; bracket IPv6 addresses, as in `http://[::1]:3128`. SOCKS4 requires
+an IPv4 address or a hostname with an IPv4 answer. Authentication, HTTPS
+connections to the proxy, paths, queries and per-destination bypasses aren't
+supported yet.
+
+`fbkd` resolves proxy hostnames with the host's resolver when the sandbox is
+created or recreated, including for a network change or image upgrade. The
+guest's DNS settings aren't used for that lookup. IPv4 is preferred when both
+address families are returned. One address is selected for that sandbox; there
+is no per-connection DNS refresh or automatic retry of other proxy addresses. A
+lookup failure or a five-second timeout fails the operation instead of falling
+back to a direct connection. The original hostname stays in the spec, settings
+review and stored network label.
+
+The address is relative to the host: `127.0.0.1` means the machine running
+`fbkd`, not the sandbox. The proxy itself doesn't need an `allow` rule; the
+rules still apply to the original destinations. The proxy applies even when
+`enforce` is false. Leave it false when the external proxy should do the
+destination filtering. `network.enabled: false` still takes the sandbox offline.
+Adding, changing or removing a proxy is included in the normal settings review.
+
+For an existing sandbox, edit the file and run `fbk network policy enable` (or
+`disable` when enforcement should stay off) to apply the network section. This
+restarts the sandbox while preserving its disks. Starting an existing sandbox
+with `fbk start` alone doesn't apply changed network settings. Image upgrades
+preserve the stored proxy.
+
+HTTP CONNECT and SOCKS4 carry TCP; non-DNS UDP is dropped. SOCKS5 also carries
+non-DNS UDP when the proxy supports UDP ASSOCIATE. DNS continues to use
+microsandbox's resolver separately from the outbound proxy. A failed proxied TCP
+connection doesn't fall back to a direct connection. This setting is not a
+guarantee that all host traffic passes through the proxy: image pulls, DNS and
+other host-side operations are separate. Connections microsandbox rewrites to
+host-local services bypass the outbound proxy too.
+
+When the external proxy intercepts TLS, its CA must be trusted by the component
+verifying its certificates. This first integration doesn't configure that CA.
+Test your proxy's certificate setup before using it with a coding agent.
+
 ## Changing the rules with `fbk network`
 
 Change the rules with `fbk network` in the project directory. It writes the

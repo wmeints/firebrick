@@ -57,3 +57,4 @@
 - [ADR 0055 - Restart a daemon of another version](decisions/0055-restart-a-daemon-of-another-version.md)
 - [ADR 0056 - Apply mise dotfiles from a read-only mount](decisions/0056-apply-mise-dotfiles-from-a-read-only-mount.md)
 - [ADR 0057 - Group the crate modules behind narrow interfaces](decisions/0057-group-the-crate-modules-behind-narrow-interfaces.md)
+- [ADR 0058 - Use microsandbox outbound proxies](decisions/0058-use-microsandbox-outbound-proxies.md)

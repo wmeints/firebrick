@@ -28,26 +28,27 @@ installed Firebrick version, `ghcr.io/wmeints/firebrick-base:v<version>`, and
 `fbk upgrade` moves it to the new release after you update Firebrick. `fbk init`
 refuses to replace an existing file; `fbk init --force` overwrites it.
 
-| Field               | Description                                                             | Default                                     |
-| ------------------- | ----------------------------------------------------------------------- | ------------------------------------------- |
-| `name`              | Name of the sandbox, following the rule below the table.                | Required                                    |
-| `image`             | OCI image the sandbox runs.                                             | `ghcr.io/wmeints/firebrick-base:v<version>` |
-| `init`              | Run the image's `/sbin/init` as PID 1.                                  | `true`                                      |
-| `mise.enabled`      | Apply your dotfiles and install the project's mise tools on start.      | `true`                                      |
-| `mise.config`       | Host directory with your mise dotfiles, resolved like `mounts[].host`.  | None                                        |
-| `resources.cpu`     | Number of vCPUs.                                                        | `2`                                         |
-| `resources.memory`  | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`.         | `4 GiB`                                     |
-| `volumes.docker`    | Size of the Docker data disk, in the same units as `memory`.            | `20 GiB`                                    |
-| `network.enabled`   | Give the sandbox a network device.                                      | `true`                                      |
-| `network.enforce`   | Deny outgoing traffic unless a rule allows it.                          | `false`                                     |
-| `network.allow`     | Destinations the sandbox may connect to.                                | Empty                                       |
-| `network.deny`      | Destinations the sandbox may not connect to, even if allowed.           | Empty                                       |
-| `ports`             | Host ports to forward to the sandbox.                                   | Empty                                       |
-| `mounts[].host`     | Host directory: absolute, `~/...`, `~user/...` or relative to the spec. | Required per mount                          |
-| `mounts[].guest`    | Absolute guest path to mount it at. Each path may appear only once.     | Required per mount                          |
-| `mounts[].readonly` | Mount the directory read-only.                                          | `false`                                     |
-| `clipboard`         | Let programs in the sandbox read and write the host clipboard.          | `false`                                     |
-| `env`               | Environment variables every process in the sandbox gets.                | Empty                                       |
+| Field               | Description                                                                                                           | Default                                     |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `name`              | Name of the sandbox, following the rule below the table.                                                              | Required                                    |
+| `image`             | OCI image the sandbox runs.                                                                                           | `ghcr.io/wmeints/firebrick-base:v<version>` |
+| `init`              | Run the image's `/sbin/init` as PID 1.                                                                                | `true`                                      |
+| `mise.enabled`      | Apply your dotfiles and install the project's mise tools on start.                                                    | `true`                                      |
+| `mise.config`       | Host directory with your mise dotfiles, resolved like `mounts[].host`.                                                | None                                        |
+| `resources.cpu`     | Number of vCPUs.                                                                                                      | `2`                                         |
+| `resources.memory`  | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`.                                                       | `4 GiB`                                     |
+| `volumes.docker`    | Size of the Docker data disk, in the same units as `memory`.                                                          | `20 GiB`                                    |
+| `network.enabled`   | Give the sandbox a network device.                                                                                    | `true`                                      |
+| `network.enforce`   | Deny outgoing traffic unless a rule allows it.                                                                        | `false`                                     |
+| `network.allow`     | Destinations the sandbox may connect to.                                                                              | Empty                                       |
+| `network.deny`      | Destinations the sandbox may not connect to, even if allowed.                                                         | Empty                                       |
+| `network.proxy`     | Host-side outbound proxy: `http://host:port`, `socks4://host:port` or `socks5://host:port`; host is a DNS name or IP. | None                                        |
+| `ports`             | Host ports to forward to the sandbox.                                                                                 | Empty                                       |
+| `mounts[].host`     | Host directory: absolute, `~/...`, `~user/...` or relative to the spec.                                               | Required per mount                          |
+| `mounts[].guest`    | Absolute guest path to mount it at. Each path may appear only once.                                                   | Required per mount                          |
+| `mounts[].readonly` | Mount the directory read-only.                                                                                        | `false`                                     |
+| `clipboard`         | Let programs in the sandbox read and write the host clipboard.                                                        | `false`                                     |
+| `env`               | Environment variables every process in the sandbox gets.                                                              | Empty                                       |
 
 The `name` is 1 to 128 characters long, starts with a letter or digit, and
 contains only ASCII letters, digits, `.`, `-` and `_`, such as `my-project` or

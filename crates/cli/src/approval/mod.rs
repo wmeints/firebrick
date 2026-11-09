@@ -331,6 +331,7 @@ mod tests {
             enforce: false,
             allow: rules(&["github.com", "*.attacker.example"]),
             deny: vec![],
+            proxy: None,
         });
 
         assert_eq!(
@@ -357,6 +358,32 @@ mod tests {
         });
 
         assert!(difference(&approved, &requested).is_empty());
+    }
+
+    #[test]
+    fn proxy_changes_require_approval_even_when_enforcement_is_off() {
+        let fixture = Fixture::new();
+        let approvals = fixture.approvals_with_defaults();
+        let requested = network(NetworkSpec {
+            proxy: Some("http://127.0.0.1:3128".parse().unwrap()),
+            ..NetworkSpec::default()
+        });
+        let mut denied = prompt("n\n");
+        assert!(
+            approvals
+                .approve_sandbox(requested.clone(), &mut denied)
+                .is_err()
+        );
+        assert!(printed(&denied).contains("+ network.proxy: http://127.0.0.1:3128"));
+        assert_eq!(approvals.approved().unwrap(), Some(Settings::default()));
+        approvals
+            .approve_sandbox(requested.clone(), &mut prompt("y\n"))
+            .unwrap();
+        assert_eq!(approvals.approved().unwrap(), Some(requested.clone()));
+        assert_eq!(
+            difference(&requested, &Settings::default()),
+            ["- network.proxy: http://127.0.0.1:3128"]
+        );
     }
 
     fn clipboard(mode: Clipboard) -> Settings {
