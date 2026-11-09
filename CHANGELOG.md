@@ -6,6 +6,29 @@ request, and the release workflow copies the section into the GitHub release,
 above the generated list of pull requests. Each section starts with a `##
 vX.Y.Z - YYYY-MM-DD` heading.
 
+## v0.12.0 - 2026-11-09
+
+This release lets sandboxes reach the internet through a proxy on the host's
+network, and moves the runtime to microsandbox 0.7.14.
+
+### Features
+
+- Set `network.proxy` in `.firebrick.yml` to send a sandbox's outbound
+  connections through an HTTP CONNECT, SOCKS4 or SOCKS5 proxy, such as
+  `http://proxy.example.com:3128`, without `HTTP_PROXY` variables in the
+  sandbox. `fbkd` resolves the proxy's hostname on the host when it creates the
+  sandbox and fails instead of connecting directly when it can't. Set
+  `network.enforce: false` to leave the destination filtering to the proxy.
+  Proxy authentication isn't supported yet. (#250)
+- The docs have a troubleshooting page for common failures, such as a missing
+  KVM, a host port that's already in use or a paused sandbox. (#251)
+
+### Fixes
+
+- `fbkd` embeds and installs microsandbox 0.7.14, up from 0.7.11. (#249, #252)
+- The docs no longer tell you to resume a paused sandbox, which `fbk` can't do:
+  stop it with `fbk stop` first. (#245)
+
 ## v0.11.0 - 2026-10-30
 
 This release brings your own shell, git and agent setup into every sandbox
