@@ -97,6 +97,11 @@ impl SandboxSettings {
         })
     }
 
+    /// Returns the size of the root disk in MiB.
+    pub(super) fn root_disk_mib(&self) -> u32 {
+        self.root_disk_mib
+    }
+
     /// Grows the root disk the sandbox gets from an image to at least `size_mib`.
     pub(super) fn grow_root_disk_to(&mut self, size_mib: u32) {
         self.root_disk_mib = self.root_disk_mib.max(size_mib);

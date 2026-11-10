@@ -35,8 +35,11 @@ and grows on its next start, the requested size is smaller than the disk, or
 growing failed. `fbk start` prints the notice; the start itself doesn't fail.
 
 `fbk network` keeps the disk, because it recreates the sandbox from a snapshot
-of it. `fbk upgrade` gives the new root filesystem the old size, or the default
-when that is larger.
+of it. Microsandbox records a disk restored from a snapshot without a size,
+which reads as its 4 GiB default, so `fbkd` records the old size on the
+recreated sandbox; otherwise the next `fbk start` would compare the requested
+size with the wrong one. `fbk upgrade` gives the new root filesystem the old
+size, or the default when that is larger.
 
 ## Consequences
 

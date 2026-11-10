@@ -567,8 +567,11 @@ compares the requested size with the one in the sandbox's config
 
 A disk of the requested size is left alone: microsandbox refuses a request for
 the size a disk already has. `UpdateNetwork` keeps the disk, because it
-recreates the sandbox from a snapshot of it, and `UpgradeSandbox` gives the new
-root filesystem the old size, or the default when that is larger.
+recreates the sandbox from a snapshot of it. microsandbox records a disk
+restored from a snapshot without a size, which reads as 4 GiB, so fbkd records
+the old size on the recreated sandbox with `modify().root_disk_size(..)` and
+`.next_start()`, and `UpgradeSandbox` gives the new root filesystem the old
+size, or the default when that is larger.
 
 ### Forwarding ports
 

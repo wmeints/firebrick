@@ -2,6 +2,7 @@
 //! existing sandbox starts with a larger requested size. microsandbox can't shrink a root disk.
 
 use firebrick_spec::{MIN_ROOT_DISK_MIB, VolumesSpec};
+use microsandbox::Sandbox;
 use microsandbox::sandbox::{RootDisk, RootfsSource, SandboxBuilder, SandboxHandle, SandboxSpec};
 
 /// A root disk of an existing sandbox that didn't get the requested size. The sandbox still
@@ -97,6 +98,28 @@ pub(super) fn pending(sb: &SandboxHandle, requested_mib: u32) -> Option<RootDisk
         current_mib,
         reason,
     })
+}
+
+/// Records `size_mib` as the root disk size of a sandbox recreated from a snapshot of a disk of
+/// that size. microsandbox records such a disk without a size, which reads as 4 GiB, so a later
+/// start would compare the requested size with the wrong one. Only logs a warning when that
+/// fails, because the sandbox runs on the right disk anyway.
+pub(super) async fn record(sb: &Sandbox, size_mib: u32) {
+    if current_mib(&sb.config().spec).is_none_or(|current| current >= size_mib) {
+        return;
+    }
+
+    // The disk already has the size, so growing it on the next boot leaves it as it is.
+    let result = sb
+        .modify()
+        .root_disk_size(size_mib)
+        .next_start()
+        .apply()
+        .await;
+
+    if let Err(err) = result {
+        tracing::warn!(error = ?err, "failed to record the root disk size of sandbox {}", sb.name());
+    }
 }
 
 /// Returns the size of the sandbox's root disk, logging a warning when its config can't be

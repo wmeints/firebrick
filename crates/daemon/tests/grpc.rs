@@ -31,7 +31,7 @@ use firebrick_daemon::{sandboxes, server};
 use firebrick_utils::ipc;
 use hyper_util::rt::TokioIo;
 use microsandbox::sandbox::{
-    OwnedVolumeStorage, RootfsSource, SandboxHandle, SandboxSpec, SshOutput, VolumeMount,
+    OwnedVolumeStorage, RootDisk, RootfsSource, SandboxHandle, SandboxSpec, SshOutput, VolumeMount,
     VsockSocketType,
 };
 use microsandbox::snapshot::{Snapshot, SnapshotHandle};
@@ -887,6 +887,14 @@ fn assert_fills_disk(actual: u32, disk: u32) {
     );
 }
 
+/// Returns the root disk microsandbox records for the sandbox.
+fn recorded_root_disk(spec: &SandboxSpec) -> Option<RootDisk> {
+    match &spec.image {
+        RootfsSource::Oci(oci) => oci.root_disk.clone(),
+        _ => None,
+    }
+}
+
 /// Returns the reason and the sizes of the root disk notice of a start.
 fn notice_of(started: &SandboxStarted) -> Option<(root_disk_notice::Reason, u32, u32)> {
     started
@@ -992,6 +1000,8 @@ async fn update_network_keeps_the_root_disk_size() {
     assert!(update_network(&mut client, name, network).await.unwrap());
     wait_for_status(&mut client, name, SandboxStatus::Running).await;
     let recreated = root_fs_mib(&mut client, name).await;
+    let recorded = recorded_root_disk(&sandbox_spec(name).await);
+    let smaller = start_with_root_disk(&mut client, name, "4 GiB").await;
     stop_sandbox(&mut client, name).await;
     let restarted = start_with_root_disk(&mut client, name, "8 GiB").await;
     let size = root_fs_mib(&mut client, name).await;
@@ -1000,6 +1010,16 @@ async fn update_network_keeps_the_root_disk_size() {
     remove_sandbox(name).await;
 
     assert_fills_disk(recreated, 8 * 1024);
+    assert_eq!(
+        recorded,
+        Some(RootDisk::Managed {
+            size_mib: Some(8192)
+        })
+    );
+    assert_eq!(
+        notice_of(&smaller),
+        Some((root_disk_notice::Reason::ShrinkUnsupported, 4096, 8192))
+    );
     assert_eq!(notice_of(&restarted), None);
     assert_fills_disk(size, 8 * 1024);
 }

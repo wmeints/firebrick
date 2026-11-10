@@ -242,6 +242,7 @@ impl SandboxManager {
             Err(err) => return Err(recreate_failed(name, snapshot, change, &err).await),
         };
 
+        root_disk::record(&sb, settings.root_disk_mib()).await;
         remove_snapshot(snapshot).await;
         tracing::info!("{}", change.done(name));
 

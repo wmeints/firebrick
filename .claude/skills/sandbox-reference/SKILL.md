@@ -150,8 +150,9 @@ exit race, were verified on 0.7.8 by running VMs and only checked against the
   first, so call it after `.image(..)`. The config stores it as
   `RootfsSource::Oci(oci).root_disk`: `None` or `RootDisk::Managed { size_mib:
   None }` means 4096 MiB. A sandbox created from a snapshot gets `Managed {
-  size_mib: None }`, also when the snapshot's disk is larger. `fbkd` sizes it
-  from `volumes.root` (ADR 0059).
+  size_mib: None }`, also when the snapshot's disk is larger; `fbkd` records the
+  old size afterwards with `modify().root_disk_size(..).next_start()`. `fbkd`
+  sizes it from `volumes.root` (ADR 0059).
 
 **Guest filesystem**
 
