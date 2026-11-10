@@ -6,6 +6,36 @@ request, and the release workflow copies the section into the GitHub release,
 above the generated list of pull requests. Each section starts with a `##
 vX.Y.Z - YYYY-MM-DD` heading.
 
+## v0.13.0 - 2026-11-10
+
+This release gives sandboxes a larger, configurable root disk, cuts the host CPU
+an idle sandbox uses, and adds docs pages on usage scenarios and the sandbox
+lifecycle.
+
+### Features
+
+- Set `volumes.root` in `.firebrick.yml` to size a sandbox's root disk. It
+  defaults to `16 GiB`, up from microsandbox's 4 GiB, and must be at least `4
+  GiB`. `fbk start` grows the disk of a stopped sandbox before it boots and
+  keeps its files, so existing sandboxes grow to 16 GiB on their next start.
+  When the disk can't get the size, `fbk start` says why: stop and start a
+  running sandbox to grow it, or run `fbk rm --force && fbk start` for a smaller
+  disk. (#258)
+- The docs have a "Usage scenarios" page that walks through the Azure DevOps MCP
+  server, an agent that needs your dotfiles, and an IDE connected over SSH
+  (#257), and a "Sandbox lifecycle" page that lists what `fbk stop`, `fbk rm`
+  and `fbk upgrade` keep (#259).
+
+### Fixes
+
+- An idle sandbox no longer uses about 10% of a host core on macOS: `fbkd` turns
+  off microsandbox's metrics sampler. Sandboxes created by an older `fbkd` keep
+  the sampler until `fbk upgrade` or `fbk network` recreates them. (#260)
+- `fbkd` tells you to stop a paused sandbox before an upgrade or a network
+  change, instead of resuming it, which `fbk` can't do. (#256)
+- The editor support docs list the Windows settings paths for VS Code, Cursor,
+  VSCodium and Zed. (#254)
+
 ## v0.12.0 - 2026-11-09
 
 This release lets sandboxes reach the internet through a proxy on the host's
