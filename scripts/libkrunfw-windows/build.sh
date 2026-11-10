@@ -31,16 +31,28 @@ git fetch -q --depth 1 origin "$LIBKRUNFW_COMMIT"
 git checkout -q FETCH_HEAD
 git apply /patch/windows-netfilter.patch
 
-make -j"$(nproc)" OS=Windows ARCH=x86_64 CROSS_COMPILE="$cross_compile" kernel.c
+# ARCH and CROSS_COMPILE go in the environment: on libkrunfw's make command line they don't reach
+# the kernel's sub-makes, which then configure and build an arm64 kernel on arm64 hosts.
+export ARCH=x86_64 CROSS_COMPILE="$cross_compile"
+make -j"$(nproc)" OS=Windows kernel.c
+
+if ! grep -qE '^# Linux/x86(_64)? ' linux-*/.config; then
+    echo "the kernel wasn't configured for x86_64:" >&2
+    sed -n 3p linux-*/.config >&2
+    exit 1
+fi
 
 echo "--- netfilter and bridge options in the built kernel"
 grep -E '^CONFIG_(NETFILTER|NF_TABLES|NFT_COMPAT|NF_NAT|NF_CONNTRACK|IP_NF_IPTABLES|IP_NF_NAT|BRIDGE|BRIDGE_NETFILTER|VETH)=' \
     linux-*/.config
 
-# Linked with MinGW for the prototype; microsandbox's release links kernel.c with MSVC
-# (scripts/build-windows.ps1 -SkipKernelBundle).
-make OS=Windows WINDOWS_TOOLCHAIN=mingw libkrunfw-windows.dll
-cp libkrunfw-windows.dll /out/libkrunfw.dll
+# Linked with MinGW for the prototype, with the command libkrunfw's Makefile uses for
+# WINDOWS_TOOLCHAIN=mingw; microsandbox's release links kernel.c with MSVC
+# (scripts/build-windows.ps1 -SkipKernelBundle). The Makefile itself would pick the exported
+# CROSS_COMPILE's gcc, and passing CC to it would rebuild the kernel with MinGW.
+x86_64-w64-mingw32-gcc -DABI_VERSION=5 -shared -Wl,--section-alignment,65536 -o libkrunfw.dll \
+    kernel.c libkrunfw.def
+cp libkrunfw.dll /out/libkrunfw.dll
 cp kernel.c /out/kernel.c
 cp linux-*/.config /out/kernel.config
 cd /out
