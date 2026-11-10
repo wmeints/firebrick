@@ -36,16 +36,39 @@ pub fn parse_size_mib(value: &str) -> Result<u32, SizeError> {
         .ok_or_else(|| SizeError::TooLarge(value.to_string()))
 }
 
+/// The smallest root disk a sandbox gets, in MiB: microsandbox's own default, which the
+/// images fit in.
+pub const MIN_ROOT_DISK_MIB: u32 = 4096;
+
+/// Parses the size of a sandbox's root disk like [`parse_size_mib`], rejecting sizes below
+/// [`MIN_ROOT_DISK_MIB`].
+pub fn parse_root_disk_mib(value: &str) -> Result<u32, SizeError> {
+    let mib = parse_size_mib(value)?;
+
+    if mib < MIN_ROOT_DISK_MIB {
+        return Err(SizeError::TooSmall(value.to_string()));
+    }
+
+    Ok(mib)
+}
+
 /// Deserializes a size, rejecting values that `parse_size_mib` can't read.
 pub(super) fn deserialize_size<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<String, D::Error> {
-    deserializer.deserialize_str(SizeVisitor)
+    deserializer.deserialize_str(SizeVisitor(parse_size_mib))
 }
 
-/// Checks the size while the parser still points at the value, so a problem is
+/// Deserializes a root disk size, rejecting values that `parse_root_disk_mib` refuses.
+pub(super) fn deserialize_root_size<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    deserializer.deserialize_str(SizeVisitor(parse_root_disk_mib))
+}
+
+/// Checks the size with its parser while the parser still points at the value, so a problem is
 /// reported at the value's line and column instead of at the enclosing mapping.
-struct SizeVisitor;
+struct SizeVisitor(fn(&str) -> Result<u32, SizeError>);
 
 impl Visitor<'_> for SizeVisitor {
     type Value = String;
@@ -55,7 +78,7 @@ impl Visitor<'_> for SizeVisitor {
     }
 
     fn visit_str<E: de::Error>(self, value: &str) -> Result<String, E> {
-        parse_size_mib(value).map_err(E::custom)?;
+        (self.0)(value).map_err(E::custom)?;
 
         Ok(value.to_string())
     }

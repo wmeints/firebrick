@@ -115,13 +115,14 @@ and trust boundaries these risks belong to.
   edit `.firebrick.yml`, and `fbk` only asks before it applies changed `mounts`,
   `mise.config`, `network` or `clipboard` settings. A changed `image`, `init`,
   `mise.enabled`, `resources`, `volumes`, `ports` or `name` applies the next
-  time the sandbox is created, or for `ports` the next time it starts, without
-  asking. `--yes` approves whatever the file contains. A workspace from before
-  approvals existed has no entry, and its first sandbox creation with the
-  default network section doesn't ask: when the agent removes the `network`
-  section and the user runs `fbk rm --force && fbk start`, the new sandbox
-  doesn't enforce the old rules. `fbk` can't compare with the removed sandbox,
-  and `GetSandbox` doesn't return a running sandbox's policy
+  time the sandbox is created, or for `ports` and a larger `volumes.root` the
+  next time it starts, without asking. `--yes` approves whatever the file
+  contains. A workspace from before approvals existed has no entry, and its
+  first sandbox creation with the default network section doesn't ask: when the
+  agent removes the `network` section and the user runs `fbk rm --force && fbk
+  start`, the new sandbox doesn't enforce the old rules. `fbk` can't compare
+  with the removed sandbox, and `GetSandbox` doesn't return a running sandbox's
+  policy
   ([ADR 0037](decisions/0037-approve-mounts-and-network-changes-in-the-spec.md)).
 - **A shared clipboard crosses the sandbox boundary:** in a sandbox created with
   `clipboard: true`, any process can read the host clipboard through `fbkd` at

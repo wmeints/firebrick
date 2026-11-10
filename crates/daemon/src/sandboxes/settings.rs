@@ -2,6 +2,7 @@
 //! routes, read back from an existing sandbox when it's recreated.
 
 use super::error::SandboxError;
+use super::root_disk;
 use super::{IMAGE_LABEL, Resources, StartSandbox};
 use crate::forward::{self};
 use crate::guest::clipboard::{self, Clipboards};
@@ -9,7 +10,7 @@ use crate::guest::netlog::NetLogs;
 use crate::sandboxes::provision::env;
 use crate::sandboxes::provision::mise::{self};
 use crate::ssh;
-use firebrick_spec::{MountSpec, VolumesSpec};
+use firebrick_spec::{MIN_ROOT_DISK_MIB, MountSpec, VolumesSpec};
 use microsandbox::sandbox::{
     HostPermissions, MountBuilder, OwnedVolumeStorage, SandboxBuilder, SandboxHandle, SandboxSpec,
     VolumeMount,
@@ -59,6 +60,8 @@ pub(super) struct SandboxSettings {
     env: BTreeMap<String, String>,
     init: bool,
     resources: Resources,
+    /// Size of the root disk in MiB, which a sandbox created from an image gets.
+    root_disk_mib: u32,
 }
 
 /// A host directory bind-mounted into the sandbox as its working directory.
@@ -76,6 +79,7 @@ impl SandboxSettings {
             .zip(workspace_path_of(handle))
             .map(|(host, guest)| Workspace { host, guest });
         let workdir = spec.runtime.workdir.as_deref();
+        let root_disk_mib = root_disk::current_mib(&spec).unwrap_or(MIN_ROOT_DISK_MIB);
 
         Ok(Self {
             name: handle.name().to_string(),
@@ -89,7 +93,27 @@ impl SandboxSettings {
                 memory_mib: spec.resources.memory_mib,
                 docker_volume_mib: docker_volume_mib(&spec.mounts),
             },
+            root_disk_mib,
         })
+    }
+
+    /// Grows the root disk the sandbox gets from an image to at least `size_mib`.
+    pub(super) fn grow_root_disk_to(&mut self, size_mib: u32) {
+        self.root_disk_mib = self.root_disk_mib.max(size_mib);
+    }
+
+    /// Returns a builder like [`Self::builder`] with the image as root filesystem, on a root
+    /// disk of the settings' size.
+    pub(super) fn image_builder(
+        &self,
+        netlogs: &NetLogs,
+        clipboards: &Clipboards,
+        image: &str,
+    ) -> SandboxBuilder {
+        root_disk::with_size(
+            self.builder(netlogs, clipboards).image(image),
+            self.root_disk_mib,
+        )
     }
 
     /// Returns a builder for a detached sandbox with these settings, the route of its network
@@ -179,6 +203,7 @@ pub(super) fn new_sandbox_settings(
         env: request.env.cloned().unwrap_or_default(),
         init: request.init,
         resources,
+        root_disk_mib: request.root_disk_mib,
     }
 }
 
@@ -399,6 +424,7 @@ mod tests {
             clipboard,
             env,
             git_identity: None,
+            root_disk_mib: 16 * 1024,
         };
         let resources = Resources {
             cpus: 1,

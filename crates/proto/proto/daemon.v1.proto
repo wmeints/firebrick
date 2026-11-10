@@ -138,6 +138,9 @@ message SandboxResources {
 message SandboxVolumes {
   // Size of the disk mounted at /var/lib/docker. Empty means the default of 20 GiB.
   string docker = 1;
+  // Size of the root disk, at least 4 GiB. Empty means the default of 16 GiB. A stopped sandbox
+  // with a smaller root disk grows to it on start.
+  string root = 2;
 }
 
 // A stream of image pull and mise install progress, ending with the started sandbox. Errors end
@@ -189,6 +192,30 @@ message SandboxStarted {
   // Set when the sandbox was already running and the requested environment variables differ
   // from the ones it runs with. They apply after the sandbox restarts.
   bool env_pending_restart = 3;
+  // Set when the root disk of an existing sandbox didn't get the requested size on this start.
+  // The sandbox still started.
+  optional RootDiskNotice root_disk = 4;
+}
+
+// Why the root disk of an existing sandbox didn't get the requested size.
+message RootDiskNotice {
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    // The sandbox was already running; the disk grows when it restarts.
+    REASON_PENDING_RESTART = 1;
+    // The requested size is smaller than the disk, and a root disk can't shrink.
+    REASON_SHRINK_UNSUPPORTED = 2;
+    // Growing the disk failed; `error` says why.
+    REASON_GROW_FAILED = 3;
+  }
+
+  Reason reason = 1;
+  // The requested size in MiB.
+  uint32 requested_mib = 2;
+  // The size of the root disk in MiB.
+  uint32 current_mib = 3;
+  // Why growing the disk failed, for REASON_GROW_FAILED. Empty otherwise.
+  string error = 4;
 }
 
 message StopSandboxRequest {

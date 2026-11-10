@@ -274,14 +274,14 @@ sequenceDiagram
 `fbk start` creates the sandbox when it doesn't exist yet, or starts the
 existing one. The image, init, mise setting, resources, network rules and mounts
 from the spec only apply when the sandbox is created; the `ports` apply every
-time, and the `env` every time the sandbox starts (see
-[Setting environment variables](#setting-environment-variables)). Like `fbk
-run`, the CLI first checks the status of the sandbox: it waits for a starting
-one (max 120s), fails for a stopping or paused one, and sends `StartSandbox`
-with the spec's ports for a running, stopped or crashed one. The daemon's
-`StartSandbox` is idempotent as well: it returns without starting a sandbox that
-is already running or starting, and treats a start that loses a race with
-another start as a success.
+time, and the `env` and a larger root disk every time the sandbox starts (see
+[Setting environment variables](#setting-environment-variables) and
+[Growing the root disk](#growing-the-root-disk)). Like `fbk run`, the CLI first
+checks the status of the sandbox: it waits for a starting one (max 120s), fails
+for a stopping or paused one, and sends `StartSandbox` with the spec's ports for
+a running, stopped or crashed one. The daemon's `StartSandbox` is idempotent as
+well: it returns without starting a sandbox that is already running or starting,
+and treats a start that loses a race with another start as a success.
 
 The daemon parses the `network` rules of every `StartSandbox` and rejects an
 invalid one with `INVALID_ARGUMENT` before it looks up the sandbox. When it
@@ -543,6 +543,32 @@ secret would go to names it: the scoped sandbox, or for a global secret every
 firebrick sandbox without its own secret with that name. `env` isn't part of the
 approved settings: variables only affect processes in the VM and can't widen
 what the sandbox reaches on the host or the network.
+
+### Growing the root disk
+
+The root filesystem's writable layer lives on a sandbox-owned ext4 disk whose
+size `volumes.root` sets, `16 GiB` by default. fbkd creates a sandbox with that
+size. Sandboxes created before the setting existed have microsandbox's default
+of 4 GiB, and a user may raise the size later, so a start of an existing sandbox
+compares the requested size with the one in the sandbox's config
+([ADR 0059](decisions/0059-size-the-root-disk-and-grow-it-on-start.md)):
+
+- **Stopped or crashed, larger size:** after syncing the `env`, fbkd grows the
+  disk with `modify().root_disk_size(..)` before it boots the sandbox. The disk
+  keeps its contents.
+- **Running or starting, larger size:** fbkd leaves the sandbox alone and sets
+  `root_disk` on `SandboxStarted` with `REASON_PENDING_RESTART`; fbk prints
+  `root disk grows to <size> after the sandbox restarts: fbk stop && fbk start`.
+- **Smaller size:** microsandbox can't shrink a disk, so fbkd keeps it and
+  reports `REASON_SHRINK_UNSUPPORTED`; fbk tells the user to recreate the
+  sandbox with `fbk rm --force && fbk start`.
+- **Growing fails:** fbkd logs a warning, starts the sandbox with its current
+  disk and reports `REASON_GROW_FAILED` with the error, which fbk prints.
+
+A disk of the requested size is left alone: microsandbox refuses a request for
+the size a disk already has. `UpdateNetwork` keeps the disk, because it
+recreates the sandbox from a snapshot of it, and `UpgradeSandbox` gives the new
+root filesystem the old size, or the default when that is larger.
 
 ### Forwarding ports
 
@@ -1097,9 +1123,9 @@ killed during a pull.
 The upgraded sandbox keeps its name, labels (and so its SSH host name, mise
 setting, stored ports and `firebrick.network` rules), workspace mount, extra
 mounts, resources, Docker disk size, `init` setting and secrets. Its root
-filesystem and Docker disk are new: installed packages, files outside the
-workspace and Docker images don't survive, because a snapshot can't move to
-another image (see
+filesystem and Docker disk are new, the root disk with the old size or the
+default when that is larger: installed packages, files outside the workspace and
+Docker images don't survive, because a snapshot can't move to another image (see
 [ADR 0041](decisions/0041-upgrade-sandboxes-to-a-fresh-root-filesystem-and-docker-disk.md)).
 The snapshot is only kept when the create fails, so the user can recover the old
 sandbox from it.

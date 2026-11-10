@@ -3,6 +3,7 @@
 //! before an upgrade replaces the sandbox.
 
 use super::error::{SandboxError, create_error};
+use super::root_disk;
 use super::settings::{SandboxSettings, sandbox_image};
 use super::status::{
     current_status, get_sandbox, is_live, list_all_sandboxes, refuse_paused, stop_or_kill,
@@ -126,6 +127,9 @@ impl SandboxManager {
         settings
             .labels
             .insert(IMAGE_LABEL.to_string(), image.to_string());
+        // A fresh root disk is never smaller than the default, so an upgrade also grows the
+        // disks of sandboxes created with a smaller default.
+        settings.grow_root_disk_to(root_disk::default_mib());
         let recreation = Recreation {
             settings: &settings,
             network,
@@ -230,9 +234,7 @@ impl SandboxManager {
             Change::Network => settings
                 .builder(&self.netlogs, &self.clipboards)
                 .override_snapshot(snapshot),
-            Change::Image(image) => settings
-                .builder(&self.netlogs, &self.clipboards)
-                .image(image),
+            Change::Image(image) => settings.image_builder(&self.netlogs, &self.clipboards, image),
         };
 
         let sb = match self.create_from(settings, network, builder).await {

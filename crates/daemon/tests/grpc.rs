@@ -16,11 +16,11 @@ use firebrick_daemon::api::{
     ListNetworkActivityRequest, ListSandboxesRequest, ListSecretsRequest, MiseInstallProgress,
     Mount, NetworkActivity, NetworkActivityKind, NetworkPolicy, PortForward, PortForwards,
     RemovePortRequest, RemovePortResponse, RemoveSandboxRequest, RemoveSecretRequest,
-    SandboxResources, SandboxStarted, SandboxStatus, SandboxUpgraded, SandboxVolumes,
-    SetSecretRequest, SetSecretResponse, ShutdownRequest, StartSandboxRequest,
+    RootDiskNotice, SandboxResources, SandboxStarted, SandboxStatus, SandboxUpgraded,
+    SandboxVolumes, SetSecretRequest, SetSecretResponse, ShutdownRequest, StartSandboxRequest,
     StartSandboxResponse, StopSandboxRequest, UpdateNetworkRequest, UpgradeSandboxRequest,
-    UpgradeSandboxResponse, attach_request, attach_response, start_sandbox_response,
-    upgrade_sandbox_response,
+    UpgradeSandboxResponse, attach_request, attach_response, root_disk_notice,
+    start_sandbox_response, upgrade_sandbox_response,
 };
 use firebrick_daemon::guest::clipboard::{self, Cause, Clipboards, HostClipboard, HostError, Kind};
 use firebrick_daemon::guest::netlog;
@@ -806,6 +806,7 @@ async fn start_sandbox_uses_requested_image_and_resources() {
         }),
         volumes: Some(SandboxVolumes {
             docker: "1 GiB".to_string(),
+            ..Default::default()
         }),
         ..start_request(name)
     };
@@ -852,6 +853,155 @@ async fn sandbox_gets_default_docker_disk_that_survives_restart() {
 
     daemon.stop().await;
     remove_sandbox(name).await;
+}
+
+/// Returns a start request for the sandbox with a root disk of `root`.
+fn root_disk_request(name: &str, root: &str) -> StartSandboxRequest {
+    StartSandboxRequest {
+        volumes: Some(SandboxVolumes {
+            root: root.to_string(),
+            ..Default::default()
+        }),
+        ..start_request(name)
+    }
+}
+
+/// Returns the size in MiB of the file system the sandbox's root sits on, as `df` reports it.
+async fn root_fs_mib(client: &mut SandboxManagementServiceClient<Channel>, name: &str) -> u32 {
+    let (output, code) = run_command(client, name, "df", &["-B1M", "--output=size", "/"]).await;
+    assert_eq!(code, 0, "unexpected output: {output:?}");
+
+    output
+        .lines()
+        .last()
+        .and_then(|line| line.trim().parse().ok())
+        .unwrap_or_else(|| panic!("unexpected df output: {output:?}"))
+}
+
+/// Asserts that a file system of `actual` MiB fills a disk of `disk` MiB, apart from the ext4
+/// overhead.
+fn assert_fills_disk(actual: u32, disk: u32) {
+    assert!(
+        actual <= disk && actual >= disk / 10 * 9,
+        "{actual} MiB doesn't fill a disk of {disk} MiB"
+    );
+}
+
+/// Returns the reason and the sizes of the root disk notice of a start.
+fn notice_of(started: &SandboxStarted) -> Option<(root_disk_notice::Reason, u32, u32)> {
+    started
+        .root_disk
+        .as_ref()
+        .map(|notice: &RootDiskNotice| (notice.reason(), notice.requested_mib, notice.current_mib))
+}
+
+#[tokio::test]
+async fn new_sandbox_gets_a_16_gib_root_disk_by_default() {
+    let name: &str = &sandbox_name("root-default");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("root-default").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, name).await;
+    let size = root_fs_mib(&mut client, name).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert_fills_disk(size, 16 * 1024);
+}
+
+/// Starts the sandbox with a root disk of `root` and returns the started sandbox, once it runs.
+async fn start_with_root_disk(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    root: &str,
+) -> SandboxStarted {
+    let started = start(client, root_disk_request(name, root)).await.unwrap();
+    wait_for_status(client, name, SandboxStatus::Running).await;
+
+    started
+}
+
+#[tokio::test]
+async fn stopped_sandbox_grows_its_root_disk_and_keeps_its_files() {
+    let name: &str = &sandbox_name("root-grow");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("root-grow").await;
+    let mut client = daemon.client().await;
+    start_with_root_disk(&mut client, name, "4 GiB").await;
+    let small = root_fs_mib(&mut client, name).await;
+    let script = "echo kept > /opt/marker";
+    let (output, code) = run_command(&mut client, name, "sh", &["-c", script]).await;
+    assert_eq!(code, 0, "unexpected output: {output:?}");
+
+    stop_sandbox(&mut client, name).await;
+    let grown = start_with_root_disk(&mut client, name, "8 GiB").await;
+    let large = root_fs_mib(&mut client, name).await;
+    let (marker, _) = run_command(&mut client, name, "cat", &["/opt/marker"]).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert_fills_disk(small, 4 * 1024);
+    assert_eq!(notice_of(&grown), None);
+    assert_fills_disk(large, 8 * 1024);
+    assert!(marker.contains("kept"), "marker was lost: {marker:?}");
+}
+
+#[tokio::test]
+async fn running_sandbox_keeps_its_root_disk_and_tells_why() {
+    let name: &str = &sandbox_name("root-running");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("root-running").await;
+    let mut client = daemon.client().await;
+    start_with_root_disk(&mut client, name, "8 GiB").await;
+
+    let larger = start_with_root_disk(&mut client, name, "16 GiB").await;
+    let smaller = start_with_root_disk(&mut client, name, "4 GiB").await;
+    let same = start_with_root_disk(&mut client, name, "8 GiB").await;
+    let size = root_fs_mib(&mut client, name).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert_eq!(
+        notice_of(&larger),
+        Some((root_disk_notice::Reason::PendingRestart, 16384, 8192))
+    );
+    assert_eq!(
+        notice_of(&smaller),
+        Some((root_disk_notice::Reason::ShrinkUnsupported, 4096, 8192))
+    );
+    assert_eq!(notice_of(&same), None);
+    assert_fills_disk(size, 8 * 1024);
+}
+
+#[tokio::test]
+async fn update_network_keeps_the_root_disk_size() {
+    let name: &str = &sandbox_name("root-network");
+    remove_sandbox_and_snapshots(name).await;
+
+    let daemon = TestDaemon::start("root-network").await;
+    let mut client = daemon.client().await;
+    start_and_wait(&mut client, root_disk_request(name, "8 GiB")).await;
+
+    let network = allow_policy(true, &["example.com"]);
+    assert!(update_network(&mut client, name, network).await.unwrap());
+    wait_for_status(&mut client, name, SandboxStatus::Running).await;
+    let recreated = root_fs_mib(&mut client, name).await;
+    stop_sandbox(&mut client, name).await;
+    let restarted = start_with_root_disk(&mut client, name, "8 GiB").await;
+    let size = root_fs_mib(&mut client, name).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert_fills_disk(recreated, 8 * 1024);
+    assert_eq!(notice_of(&restarted), None);
+    assert_fills_disk(size, 8 * 1024);
 }
 
 #[tokio::test]
@@ -959,6 +1109,7 @@ async fn start_sandbox_rejects_invalid_resources() {
                 }),
                 volumes: Some(SandboxVolumes {
                     docker: docker.to_string(),
+                    ..Default::default()
                 }),
                 ..start_request(name)
             },

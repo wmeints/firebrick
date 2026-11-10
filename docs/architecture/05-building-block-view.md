@@ -313,9 +313,10 @@ C4Component
   endpoint and its connections in `transport`, and the signals that stop the
   daemon in `shutdown`. It converts requested resources and volumes to vCPUs and
   MiB, falling back to the defaults from `firebrick-spec` (for the Docker volume
-  also when the request's `docker` size is empty), and rejects invalid values
-  with `INVALID_ARGUMENT`. It parses the network rules of a `StartSandbox` or
-  `UpdateNetwork` request with `firebrick-spec` and rejects an invalid rule with
+  and the root disk also when the request's `docker` or `root` size is empty),
+  and rejects invalid values with `INVALID_ARGUMENT`, a root disk below 4 GiB
+  too. It parses the network rules of a `StartSandbox` or `UpdateNetwork`
+  request with `firebrick-spec` and rejects an invalid rule with
   `INVALID_ARGUMENT`, also when the sandbox already exists. It rejects a port
   outside 1 to 65535 or a host port that is listed twice, and an
   `UpgradeSandbox` request without a sandbox name, with `INVALID_ARGUMENT`.
@@ -364,23 +365,23 @@ C4Component
   rejecting a relative host path, an invalid guest path, or one that equals the
   workspace path or `/var/lib/docker` with `INVALID_ARGUMENT`, attaches a
   sandbox-owned ext4 disk of the requested size at `/var/lib/docker` (see
-  [ADR 0015](decisions/0015-give-each-sandbox-a-docker-data-disk.md)), applies
-  the egress rules with the `network` module and adds the global secrets, with
-  the sandbox's own sandbox-scoped secrets in their place. The disk survives
-  stops and restarts, and microsandbox deletes it when the sandbox is removed.
-  With `init` on, it hands PID 1 to the image's `/sbin/init`. When that fails
-  because the image has no init, it removes the half-created sandbox and returns
-  `FAILED_PRECONDITION` with a hint to set `init: false`. A pull of an image
-  that doesn't exist returns `NOT_FOUND`, and one whose registry can't be
-  reached `UNAVAILABLE`, both naming the image. Invalid values are rejected
-  before it creates anything. When it creates or starts a sandbox, it uses the
-  `mise` module to trust the dotfiles' `mise.toml` in `/opt/firebrick/dotfiles`
-  and the mise config files at the workspace root, run `mise dot apply` for the
-  dotfiles and then `mise install`, unless the sandbox's `firebrick.mise` label,
-  stored at create time, turns mise off. The `mise` module streams mise's output
-  and reports the latest line without control characters, at most one every 100
-  ms, as start progress (see
-  [Starting a sandbox](06-runtime-view.md#starting-a-sandbox)). It starts,
+  [ADR 0015](decisions/0015-give-each-sandbox-a-docker-data-disk.md)), gives the
+  root filesystem a root disk of the requested size, applies the egress rules
+  with the `network` module and adds the global secrets, with the sandbox's own
+  sandbox-scoped secrets in their place. The disk survives stops and restarts,
+  and microsandbox deletes it when the sandbox is removed. With `init` on, it
+  hands PID 1 to the image's `/sbin/init`. When that fails because the image has
+  no init, it removes the half-created sandbox and returns `FAILED_PRECONDITION`
+  with a hint to set `init: false`. A pull of an image that doesn't exist
+  returns `NOT_FOUND`, and one whose registry can't be reached `UNAVAILABLE`,
+  both naming the image. Invalid values are rejected before it creates anything.
+  When it creates or starts a sandbox, it uses the `mise` module to trust the
+  dotfiles' `mise.toml` in `/opt/firebrick/dotfiles` and the mise config files
+  at the workspace root, run `mise dot apply` for the dotfiles and then `mise
+  install`, unless the sandbox's `firebrick.mise` label, stored at create time,
+  turns mise off. The `mise` module streams mise's output and reports the latest
+  line without control characters, at most one every 100 ms, as start progress
+  (see [Starting a sandbox](06-runtime-view.md#starting-a-sandbox)). It starts,
   stops, gets, lists and removes sandboxes, gives each sandbox a unique SSH host
   name, regenerates the SSH config, the editor settings and Zed's remote
   projects through `host_config` after every start and remove and when the
@@ -807,29 +808,29 @@ C4Component
   `SandboxSpec` with a `name`, an optional `image`, optional `init` and
   `clipboard` flags, an optional `mise` map (`enabled`, default `true`, and
   `config`, a host directory with the user's mise dotfiles, resolved like a
-  mount's `host`), optional `resources` (`cpu`, `memory`), `volumes` (`docker`,
-  the size of the Docker data disk), an optional `network` section (`enabled`,
-  default `true`, `enforce`, default `false`, and the `allow` and `deny` rules),
-  an optional `ports` list and optional `mounts` (`host`, `guest` and
-  `readonly`, default `false`), rejects unknown fields and reports the line and
-  column of a problem. A `PortMapping` in `ports` is written like Docker
-  Compose: `3000` forwards host port 3000 to guest port 3000, and `"8080:5173"`
-  host port 8080 to guest port 5173. Ports outside 1 to 65535, other forms and a
-  host port that appears twice are reported at the entry. `add_port` and
-  `remove_port` add, replace or remove one entry in the text of a spec file:
-  they edit only the lines of the top-level `ports` block, so comments and
-  formatting elsewhere stay, append a `ports` key when there is none, write
-  `ports: []` when the last entry goes, and rewrite a flow list such as `[3000]`
-  as a block list. They parse the result before returning it. `with_port`
-  replaces or adds a mapping by host port; the daemon uses it for the stored
-  ports too. The optional `env` map holds variable names with string, number or
-  boolean values, which it keeps as text (`3000` becomes `"3000"`) without
-  expanding `$VAR`. A list, map or null value, a name that doesn't match
-  `[A-Za-z_][A-Za-z0-9_]*` (`validate_env_name`), a name with the reserved
-  `MSB_` prefix and a name that appears twice are reported at the entry.
-  `guest_mount_path` checks a mount's `guest` the way microsandbox does: an
-  absolute path other than `/`, without `..`, `:`, `;` or `,`. It normalizes the
-  path (no `.` parts or trailing slash), and each normalized path may appear
+  mount's `host`), optional `resources` (`cpu`, `memory`), `volumes` (`root`,
+  the size of the root disk, and `docker`, the size of the Docker data disk), an
+  optional `network` section (`enabled`, default `true`, `enforce`, default
+  `false`, and the `allow` and `deny` rules), an optional `ports` list and
+  optional `mounts` (`host`, `guest` and `readonly`, default `false`), rejects
+  unknown fields and reports the line and column of a problem. A `PortMapping`
+  in `ports` is written like Docker Compose: `3000` forwards host port 3000 to
+  guest port 3000, and `"8080:5173"` host port 8080 to guest port 5173. Ports
+  outside 1 to 65535, other forms and a host port that appears twice are
+  reported at the entry. `add_port` and `remove_port` add, replace or remove one
+  entry in the text of a spec file: they edit only the lines of the top-level
+  `ports` block, so comments and formatting elsewhere stay, append a `ports` key
+  when there is none, write `ports: []` when the last entry goes, and rewrite a
+  flow list such as `[3000]` as a block list. They parse the result before
+  returning it. `with_port` replaces or adds a mapping by host port; the daemon
+  uses it for the stored ports too. The optional `env` map holds variable names
+  with string, number or boolean values, which it keeps as text (`3000` becomes
+  `"3000"`) without expanding `$VAR`. A list, map or null value, a name that
+  doesn't match `[A-Za-z_][A-Za-z0-9_]*` (`validate_env_name`), a name with the
+  reserved `MSB_` prefix and a name that appears twice are reported at the
+  entry. `guest_mount_path` checks a mount's `guest` the way microsandbox does:
+  an absolute path other than `/`, without `..`, `:`, `;` or `,`. It normalizes
+  the path (no `.` parts or trailing slash), and each normalized path may appear
   only once. The daemon uses the same check. The CLI resolves each mount's
   `host` against the spec file's directory, expanding `~` to `$HOME` and `~user`
   to that user's home directory
@@ -841,19 +842,20 @@ C4Component
   invalid. It owns the defaults (`ghcr.io/wmeints/firebrick-base:v<version>` as
   `DEFAULT_IMAGE`, which `default_spec` leaves out of the spec so it follows the
   release, `init: true`, `mise.enabled: true`, no shared clipboard, 2 vCPUs, `4
-  GiB` of memory, a `20 GiB` Docker volume in `VolumesSpec::default()`) and
-  `parse_size_mib`, which reads memory and volume sizes in `Mi`/`MiB` or
-  `Gi`/`GiB`. The CLI and daemon both use them. `NetworkSpec::allow` and
-  `NetworkSpec::deny` move rules between the lists, `NetworkSpec::is_enabled`
-  reads `enabled` with its default, and `to_file` writes a spec back as YAML,
-  leaving out unset fields. A boolean `mise`, the form before it became a map,
-  is reported at the value with a message naming `mise.enabled`; `migrate_mise`
-  rewrites the top-level `mise: <bool>` line in the text of a spec to `mise:`
-  with `enabled: <bool>`, keeping the rest of the text.
-  `MountSpec::mise_dotfiles` returns the read-only mount at
-  `/opt/firebrick/dotfiles`, which the CLI approves and the daemon creates. The
-  crate root holds `SandboxSpec` and its defaults, and re-exports the rest from
-  private modules: `network`, `ports`, `env`, `mounts` and `names` for the
+  GiB` of memory, a `16 GiB` root disk and a `20 GiB` Docker volume in
+  `VolumesSpec::default()`), `parse_size_mib`, which reads memory and volume
+  sizes in `Mi`/`MiB` or `Gi`/`GiB`, and `parse_root_disk_mib`, which also
+  rejects a root disk below `MIN_ROOT_DISK_MIB` (4 GiB). The CLI and daemon both
+  use them. `NetworkSpec::allow` and `NetworkSpec::deny` move rules between the
+  lists, `NetworkSpec::is_enabled` reads `enabled` with its default, and
+  `to_file` writes a spec back as YAML, leaving out unset fields. A boolean
+  `mise`, the form before it became a map, is reported at the value with a
+  message naming `mise.enabled`; `migrate_mise` rewrites the top-level `mise:
+  <bool>` line in the text of a spec to `mise:` with `enabled: <bool>`, keeping
+  the rest of the text. `MountSpec::mise_dotfiles` returns the read-only mount
+  at `/opt/firebrick/dotfiles`, which the CLI approves and the daemon creates.
+  The crate root holds `SandboxSpec` and its defaults, and re-exports the rest
+  from private modules: `network`, `ports`, `env`, `mounts` and `names` for the
   fields, `error`, `file` for reading and writing without following symlinks,
   and `edit` for the line-based edits of the text.
 - `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket
