@@ -111,6 +111,7 @@ test("the docs sidebar lists the pages in reading order", async ({ page }) => {
     "Secrets",
     "Editor support",
     "Custom images",
+    "Usage scenarios",
     "Command-line reference",
     "Troubleshooting",
     "Reporting security issues",
