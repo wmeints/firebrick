@@ -57,6 +57,7 @@ comments and formatting as they are:
 | -------- | ----------------------------------------------------------- |
 | Linux    | `~/.config/<editor>/User/settings.json`                     |
 | macOS    | `~/Library/Application Support/<editor>/User/settings.json` |
+| Windows  | `%APPDATA%\<editor>\User\settings.json`                     |
 
 `<editor>` is `Code`, `Code - Insiders`, `Cursor` or `VSCodium`. On Linux,
 `$XDG_CONFIG_HOME` replaces `~/.config` when it's set. `fbkd` skips an editor
@@ -83,9 +84,10 @@ are. `fbkd` adds one entry per sandbox, with its workspace as the project, to
 Remote Projects dialog. It owns the entries whose `host` ends in `.fbk` and
 leaves the rest of the file as you wrote it.
 
-Zed's settings live in `~/.config/zed/settings.json`; on Linux,
-`$XDG_CONFIG_HOME` replaces `~/.config` when it's set. `fbkd` does nothing when
-the `zed` directory doesn't exist.
+Zed's settings live in `~/.config/zed/settings.json` on Linux and macOS, and in
+`%APPDATA%\Zed\settings.json` on Windows. On Linux, `$XDG_CONFIG_HOME` replaces
+`~/.config` when it's set. `fbkd` does nothing when Zed's settings directory
+doesn't exist.
 
 Run the `zed` command that `fbk start` prints:
 

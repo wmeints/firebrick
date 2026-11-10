@@ -117,7 +117,7 @@ See
 
 ```text
 sandbox my-project is paused; try again once it has stopped
-sandbox my-project is paused; resume or stop it before upgrading
+sandbox my-project is paused; stop it before upgrading
 ```
 
 There's no resume command. Stop the sandbox with `fbk stop`, then run `fbk

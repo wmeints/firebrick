@@ -14,17 +14,27 @@ const PAUSE_STATE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long to wait before asking the runtime of a sandbox again whether it's paused.
 const PAUSE_STATE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Fails with `FailedPrecondition` when the sandbox is paused, because an upgrade can't pause
-/// it again.
-pub(super) async fn refuse_paused(sb: &SandboxHandle) -> Result<(), SandboxError> {
+/// The action of an upgrade, for [`refuse_paused`].
+pub(super) const UPGRADING: &str = "upgrading";
+
+/// The action of a network change, for [`refuse_paused`].
+pub(super) const UPDATING_NETWORK: &str = "updating its network rules";
+
+/// Fails with `FailedPrecondition` when the sandbox is paused, because a recreated sandbox
+/// can't be paused again. `action` names what the caller was about to do, such as
+/// [`UPGRADING`].
+pub(super) async fn refuse_paused(sb: &SandboxHandle, action: &str) -> Result<(), SandboxError> {
     if current_status(sb).await? != SandboxStatus::Paused {
         return Ok(());
     }
 
-    Err(SandboxError::failed_precondition(format!(
-        "sandbox {} is paused; resume or stop it before upgrading",
-        sb.name()
-    )))
+    Err(paused(sb.name(), action))
+}
+
+/// Returns the error for a paused sandbox that can't be changed. It tells the user to stop
+/// the sandbox, because `fbk` has no resume command and can't start a paused sandbox.
+fn paused(name: &str, action: &str) -> SandboxError {
+    SandboxError::failed_precondition(format!("sandbox {name} is paused; stop it before {action}"))
 }
 
 /// Returns the sandbox with the name.
@@ -241,6 +251,26 @@ mod tests {
         };
 
         (calls, listing)
+    }
+
+    #[test]
+    fn paused_upgrade_tells_the_user_to_stop_the_sandbox() {
+        assert_eq!(
+            paused("demo", UPGRADING),
+            SandboxError::FailedPrecondition(
+                "sandbox demo is paused; stop it before upgrading".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn paused_network_change_tells_the_user_to_stop_the_sandbox() {
+        assert_eq!(
+            paused("demo", UPDATING_NETWORK),
+            SandboxError::FailedPrecondition(
+                "sandbox demo is paused; stop it before updating its network rules".to_string()
+            )
+        );
     }
 
     fn not_found() -> MicrosandboxError {

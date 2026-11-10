@@ -3698,7 +3698,7 @@ async fn update_network_refuses_a_paused_sandbox() {
     assert_eq!(status.code(), Code::FailedPrecondition);
     assert_eq!(
         status.message(),
-        format!("sandbox {name} is paused; resume it before updating its network rules")
+        format!("sandbox {name} is paused; stop it before updating its network rules")
     );
     assert_eq!(paused, Some(SandboxStatus::Paused));
 }
@@ -4294,7 +4294,7 @@ async fn upgrade_refuses_a_paused_sandbox() {
     assert_eq!(status.code(), Code::FailedPrecondition);
     assert_eq!(
         status.message(),
-        format!("sandbox {name} is paused; resume or stop it before upgrading")
+        format!("sandbox {name} is paused; stop it before upgrading")
     );
     assert_eq!(paused, Some(SandboxStatus::Paused));
 }
