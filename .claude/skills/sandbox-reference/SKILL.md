@@ -389,6 +389,15 @@ Verified on Windows 11 x64 with WHP and microsandbox 0.7.8 (ADR 0050, 0051).
 
 - The runtime is `msb.exe` and `libkrunfw.dll`; `msb.exe run` boots VMs with WHP
   enabled and no other setup.
+- microsandbox's Windows guest kernel (0.7.14) has no netfilter, bridge or
+  mqueue, so `dockerd` can't start. The Windows `fbkd` embeds our own
+  `libkrunfw.dll` through `MSB_EMBED_ARTIFACTS_DIR` instead (ADR 0061,
+  `scripts/libkrunfw-windows/`). `MSB_LIBKRUNFW_PATH` only works together with
+  `MSB_PATH`.
+- With `download-binaries`, the `microsandbox` build script installs the runtime
+  into `MSB_HOME` but skips it when the installed `msb` has the same version,
+  without comparing `libkrunfw` (`build.rs`, checked on 0.7.14). Only
+  `runtime::ensure` replaces a library that differs.
 - A vsock route's host path must be a local named pipe (`\\.\pipe\<name>`,
   checked in `$M/sandbox/builder.rs`), and only stream routes work. microsandbox
   opens the pipe as a client (`WindowsNamedPipePortBackend`), so `fbkd` serves

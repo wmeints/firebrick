@@ -57,3 +57,10 @@ run = [
   "docker build -t localhost:5000/firebrick-base:dev .",
   "docker push localhost:5000/firebrick-base:dev",
 ]
+# On Windows fbkd embeds its own libkrunfw.dll, whose kernel has netfilter (ADR 0061).
+run_windows = [
+  "cargo install --locked --path crates/cli",
+  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-fbkd.ps1",
+  "docker build -t localhost:5000/firebrick-base:dev .",
+  "docker push localhost:5000/firebrick-base:dev",
+]

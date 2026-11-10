@@ -797,7 +797,10 @@ C4Component
   matches the runtime archive embedded in `fbkd` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,
   and replaces a runtime in the microsandbox home whose `msb` has another
-  version. An explicitly configured runtime with another version, or a partial
+  version, or whose `libkrunfw` differs from the embedded one when the build
+  recorded its hash, as the Windows release does
+  ([ADR 0061](decisions/0061-embed-a-libkrunfw-with-netfilter-on-windows.md)).
+  An explicitly configured runtime with another version, or a partial
   installation, is an error.
 
 ## Shared crates

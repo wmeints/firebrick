@@ -1,0 +1,84 @@
+name: libkrunfw for Windows
+
+# Builds the Windows runtime that fbkd embeds: microsandbox's msb.exe next to a libkrunfw.dll whose
+# kernel has netfilter, NAT, bridge and mqueue support (ADR 0061). The release workflow calls it for
+# the Windows package; pull requests and pushes that change its inputs check that it still builds.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The commit to build, such as a release tag
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - scripts/libkrunfw-windows/**
+      - .github/workflows/libkrunfw-windows.yaml
+  push:
+    branches: [main]
+    paths:
+      - scripts/libkrunfw-windows/**
+      - .github/workflows/libkrunfw-windows.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    name: Build the kernel
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      # build-kernel.sh fails unless the kernel has the options Docker needs.
+      - name: Build
+        run: |
+          set -euo pipefail
+          image=$(sed -n 's/^BUILD_IMAGE=//p' scripts/libkrunfw-windows/versions.env)
+          mkdir out
+          docker run --rm -v "$PWD/scripts/libkrunfw-windows:/patch:ro" -v "$PWD/out:/out" \
+            "$image" bash /patch/build-kernel.sh
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: libkrunfw-windows-kernel
+          path: out/kernel.c
+          if-no-files-found: error
+
+      # The complete source of the kernel and its configuration, which the release publishes next to
+      # the Windows package (GPL-2.0).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: libkrunfw-windows-source
+          path: |
+            out/kernel.config
+            out/libkrunfw-windows-source.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  runtime:
+    name: Link libkrunfw.dll
+    needs: kernel
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: libkrunfw-windows-kernel
+          path: kernel
+
+      - name: Build
+        shell: pwsh
+        run: .\scripts\libkrunfw-windows\build-runtime.ps1 -KernelBundle kernel\kernel.c -Output target\libkrunfw-windows
+
+      # msb.exe and libkrunfw.dll, for MSB_EMBED_ARTIFACTS_DIR.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: libkrunfw-windows-runtime
+          path: target/libkrunfw-windows/runtime/
+          if-no-files-found: error

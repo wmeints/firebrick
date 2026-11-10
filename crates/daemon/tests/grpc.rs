@@ -178,7 +178,7 @@ impl TestDaemon {
 
     async fn start_with(name: &str, secrets: SecretStore, restore_listeners: bool) -> Self {
         init_logging();
-        STALE_SWEEP.get_or_init(sweep_stale_sandboxes).await;
+        HOME_READY.get_or_init(prepare_home).await;
 
         let socket_path = daemon_endpoint(name);
         let _ = ipc::remove(&socket_path).await;
@@ -282,8 +282,8 @@ async fn wait_for_socket(path: &Path) {
 /// Prefix of every sandbox the tests create, followed by the id of the test process.
 const SANDBOX_PREFIX: &str = "fbk-it-";
 
-/// Runs the sweep of sandboxes left behind by killed test runs once per test process.
-static STALE_SWEEP: OnceCell<()> = OnceCell::const_new();
+/// Prepares the microsandbox home once per test process.
+static HOME_READY: OnceCell<()> = OnceCell::const_new();
 
 /// Returns the name of a test sandbox: `fbk-it-<pid>-<test>`. The process id keeps concurrent
 /// test runs that share the microsandbox home from touching each other's sandboxes.
@@ -336,6 +336,18 @@ fn process_is_alive(pid: u32) -> bool {
         .stderr(std::process::Stdio::null())
         .output()
         .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\"")))
+}
+
+/// Installs the runtime `fbkd` embeds, as `fbkd` does when it starts, and sweeps the sandboxes that
+/// killed test runs left behind. The `microsandbox` build script only installs a runtime with
+/// another `msb` version, so without this the tests would keep booting a `libkrunfw` that differs
+/// from the embedded one (ADR 0061).
+async fn prepare_home() {
+    let config = microsandbox::config::config().unwrap_or_else(|err| panic_unusable_home(err));
+    firebrick_daemon::runtime::ensure(&config)
+        .await
+        .unwrap_or_else(|err| panic_unusable_home(format!("{err:#}")));
+    sweep_stale_sandboxes().await;
 }
 
 /// Removes the sandboxes, and their host directories, of test processes that no longer run.
@@ -850,6 +862,30 @@ async fn sandbox_gets_default_docker_disk_that_survives_restart() {
     let (output, code) = run_command(&mut client, name, "cat", &["/var/lib/docker/marker"]).await;
     assert_eq!(code, 0, "unexpected output: {output:?}");
     assert!(output.contains("kept"), "marker was lost: {output:?}");
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+}
+
+/// `dockerd` needs netfilter for its NAT rules, the bridge driver with its netfilter hooks for the
+/// `bridge` network, and the mqueue filesystem that runc mounts in every container. microsandbox's
+/// Windows kernel has none of them, so fbkd embeds its own there (ADR 0061).
+#[tokio::test]
+async fn guest_kernel_supports_docker_networking() {
+    let name: &str = &sandbox_name("docker-kernel");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("docker-kernel").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, name).await;
+
+    let script = "test -d /proc/net/netfilter || echo 'no netfilter'; \
+        test -e /proc/sys/net/bridge/bridge-nf-call-iptables || echo 'no bridge netfilter'; \
+        grep -qw mqueue /proc/filesystems || echo 'no mqueue'";
+    let (output, code) = run_command(&mut client, name, "sh", &["-c", script]).await;
+
+    assert_eq!(code, 0, "unexpected output: {output:?}");
+    assert_eq!(output.trim(), "", "the guest kernel lacks features");
 
     daemon.stop().await;
     remove_sandbox(name).await;

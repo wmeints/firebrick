@@ -55,7 +55,9 @@ For the website, run these from the repository root:
 
 On Windows, run the `vm-tests` with `mise run integration-tests`: cargo's job
 object keeps microsandbox from starting VMs, so the task runs the test binaries
-itself (ADR 0050).
+itself (ADR 0050). It first builds the runtime the Windows release embeds, with
+our own `libkrunfw.dll` (ADR 0061), which needs Docker or Podman and the Visual
+Studio Build Tools.
 
 `mise.toml` defines tasks for the common commands: `mise run lint`, `mise run
 unit-tests` and `mise run integration-tests`; `mise run registry` starts the

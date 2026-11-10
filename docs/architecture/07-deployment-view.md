@@ -80,21 +80,31 @@ The Linux binaries are built on Ubuntu 22.04, so they need glibc 2.35 or newer.
 pipes ([ADR 0050](decisions/0050-talk-over-named-pipes-on-windows.md)). The
 Windows build links the C runtime statically, so it runs without the Microsoft
 Visual C++ Redistributable, and its archive is a `.zip`
-([ADR 0053](decisions/0053-release-a-windows-zip-archive.md)). The standard
-runner builds and packages it, but can't boot VMs, so no release check runs the
-Windows binaries against a sandbox. Windows users can also still run the Linux
-release in WSL 2 with nested virtualization, which exposes `/dev/kvm` to the
-distribution.
+([ADR 0053](decisions/0053-release-a-windows-zip-archive.md)). Its `fbkd` embeds
+microsandbox's `msb.exe` with a `libkrunfw.dll` we build, whose guest kernel has
+the netfilter, bridge and mqueue support that Docker needs and microsandbox's
+Windows kernel lacks. The `libkrunfw-windows.yaml` workflow builds the kernel on
+Linux and links the DLL with MSVC, and the release attaches the kernel's source
+and configuration
+([ADR 0061](decisions/0061-embed-a-libkrunfw-with-netfilter-on-windows.md)). The
+standard runner builds and packages it, but can't boot VMs, so no release check
+runs the Windows binaries against a sandbox. Windows users can also still run
+the Linux release in WSL 2 with nested virtualization, which exposes `/dev/kvm`
+to the distribution.
 
 ## Host requirements
 
 `fbkd` runs sandboxes through the microsandbox runtime (`msb` and `libkrunfw`),
 which needs KVM on Linux, Apple Silicon on macOS, or the Windows Hypervisor
 Platform (WHP) on Windows 11, where microsandbox's support is a preview. On
-Windows the runtime is `msb.exe` and `libkrunfw.dll`. `fbkd` embeds the runtime
-that matches the `microsandbox` crate it's built with (currently `0.7.14`). On
-startup it extracts that runtime when none is installed, and replaces an
-installed runtime with another version. See
+Windows the runtime is `msb.exe` and `libkrunfw.dll`. The Windows release
+replaces microsandbox's `libkrunfw.dll` with its own
+([ADR 0061](decisions/0061-embed-a-libkrunfw-with-netfilter-on-windows.md)).
+`fbkd` embeds the runtime that matches the `microsandbox` crate it's built with
+(currently `0.7.14`). On startup it extracts that runtime when none is
+installed, and replaces an installed runtime with another version, or one in the
+microsandbox home with another `libkrunfw` when the build embedded its own, as
+the Windows release does. See
 [ADR 0002](decisions/0002-embed-the-microsandbox-runtime-in-anvild.md).
 
 - The runtime, microsandbox's database (`db/msb.db`), its `config.json`, the
@@ -180,14 +190,15 @@ checks, or the workflow file itself, changed. `workflow_dispatch` runs a
 workflow by hand. See
 [ADR 0036](decisions/0036-run-each-ci-workflow-only-for-the-changes-it-checks.md).
 
-| Change                                                                                   | Workflow          | Checks                                               |
-| ---------------------------------------------------------------------------------------- | ----------------- | ---------------------------------------------------- |
-| `crates/**`, `Cargo.toml`, `Cargo.lock`, `.cargo/**`, `clippy.toml`, `mise.*`, `ci.yaml` | `ci.yaml`         | `cargo fmt`, clippy, unit tests, then the `vm-tests` |
-| `website/**`, `mise.*`, `website.yaml`                                                   | `website.yaml`    | The website's checks, build and end-to-end tests     |
-| `**/*.md`, `dprint.json`, `mise.*`, `markdown.yaml`                                      | `markdown.yaml`   | `dprint check`                                       |
-| `.github/workflows/**`, `mise.*`                                                         | `actionlint.yaml` | `actionlint`, with `shellcheck` on the `run` steps   |
-| `Dockerfile`, `image.yaml`                                                               | `image.yaml`      | Builds the `firebrick-base` image                    |
-| `audit.yaml`, and daily                                                                  | `audit.yaml`      | `cargo audit` against `Cargo.lock`                   |
+| Change                                                                                   | Workflow                 | Checks                                               |
+| ---------------------------------------------------------------------------------------- | ------------------------ | ---------------------------------------------------- |
+| `crates/**`, `Cargo.toml`, `Cargo.lock`, `.cargo/**`, `clippy.toml`, `mise.*`, `ci.yaml` | `ci.yaml`                | `cargo fmt`, clippy, unit tests, then the `vm-tests` |
+| `website/**`, `mise.*`, `website.yaml`                                                   | `website.yaml`           | The website's checks, build and end-to-end tests     |
+| `**/*.md`, `dprint.json`, `mise.*`, `markdown.yaml`                                      | `markdown.yaml`          | `dprint check`                                       |
+| `.github/workflows/**`, `mise.*`                                                         | `actionlint.yaml`        | `actionlint`, with `shellcheck` on the `run` steps   |
+| `Dockerfile`, `image.yaml`                                                               | `image.yaml`             | Builds the `firebrick-base` image                    |
+| `scripts/libkrunfw-windows/**`, `libkrunfw-windows.yaml`                                 | `libkrunfw-windows.yaml` | Builds the Windows `libkrunfw.dll`                   |
+| `audit.yaml`, and daily                                                                  | `audit.yaml`             | `cargo audit` against `Cargo.lock`                   |
 
 `mise.toml` pins the Rust toolchain, Node, pnpm, dprint, actionlint, shellcheck
 and cargo-audit, and `mise.lock` records their checksums, so `mise.*` stands for

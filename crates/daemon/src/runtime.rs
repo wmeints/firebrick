@@ -6,21 +6,39 @@
 use anyhow::{Context, Result, bail};
 use microsandbox::config::GlobalConfig;
 use microsandbox::setup::{InstallOptions, InstallSource, ResolvedRuntime, RuntimeOrigin, Version};
+use sha2::{Digest as _, Sha256};
+
+/// The SHA-256 of the `libkrunfw` embedded in `fbkd`, which `build.rs` records when the build
+/// supplies the runtime through `MSB_EMBED_ARTIFACTS_DIR`. The Windows release embeds its own
+/// `libkrunfw.dll` next to microsandbox's `msb.exe` that way (ADR 0061).
+const EMBEDDED_LIBKRUNFW_SHA256: Option<&str> = option_env!("FBKD_EMBEDDED_LIBKRUNFW_SHA256");
 
 /// Makes sure the microsandbox runtime matches the one embedded in `fbkd`.
 ///
 /// A missing runtime is extracted from the embedded archive, and a runtime in the microsandbox
-/// home with another version is replaced by it. A runtime configured outside the home with
-/// another version, or a partial installation, is an error.
+/// home with another version, or with another `libkrunfw` than the embedded one, is replaced by
+/// it. A runtime configured outside the home with another version, or a partial installation, is
+/// an error.
 pub async fn ensure(config: &GlobalConfig) -> Result<ResolvedRuntime> {
+    ensure_with(config, EMBEDDED_LIBKRUNFW_SHA256).await
+}
+
+/// Implements [`ensure`], comparing the library with `embedded_library`, the SHA-256 of the
+/// embedded `libkrunfw` when it's known.
+async fn ensure_with(
+    config: &GlobalConfig,
+    embedded_library: Option<&str>,
+) -> Result<ResolvedRuntime> {
     let runtime = microsandbox::setup::ensure_runtime(config, embedded(false))
         .await
         .context("failed to ensure the microsandbox runtime is installed")?;
     let expected = expected_version()?;
     let installed = installed_version(&runtime)?;
-    let runtime = match installed {
-        Some(ref version) if *version == expected => runtime,
-        _ if runtime.origin == RuntimeOrigin::Home => upgrade(config, installed, &expected).await?,
+    let current = installed.as_ref() == Some(&expected)
+        && !library_differs(&runtime, embedded_library).await?;
+    let runtime = match runtime.origin {
+        _ if current => runtime,
+        RuntimeOrigin::Home => upgrade(config, installed, &expected).await?,
         _ => bail!(
             "microsandbox runtime {} has version {}, but fbkd needs {expected}",
             runtime.msb_path.display(),
@@ -84,6 +102,40 @@ fn installed_version(runtime: &ResolvedRuntime) -> Result<Option<Version>> {
             )
         }),
     }
+}
+
+/// Returns whether a runtime in the microsandbox home has another `libkrunfw` than the embedded
+/// one, so a home that an earlier `fbkd` installed with the same `msb` gets the new library.
+///
+/// A library configured outside the home is the user's choice, such as a kernel under test, and
+/// an unreadable library in the home counts as different, so it gets replaced.
+async fn library_differs(runtime: &ResolvedRuntime, embedded: Option<&str>) -> Result<bool> {
+    let Some(embedded) = embedded else {
+        return Ok(false);
+    };
+    if runtime.origin != RuntimeOrigin::Home {
+        return Ok(false);
+    }
+    let path = runtime.libkrunfw_path.clone();
+    let digest = tokio::task::spawn_blocking(move || sha256_of(&path))
+        .await
+        .context("failed to hash the installed libkrunfw")?;
+    match digest {
+        Ok(digest) if digest == embedded => Ok(false),
+        Ok(_) => {
+            tracing::info!(path = %runtime.libkrunfw_path.display(), "installed libkrunfw differs from the embedded one");
+            Ok(true)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "failed to read the installed libkrunfw");
+            Ok(true)
+        }
+    }
+}
+
+/// Returns the SHA-256 of a file as lowercase hex, the format `build.rs` records.
+fn sha256_of(path: &std::path::Path) -> std::io::Result<String> {
+    Ok(format!("{:x}", Sha256::digest(std::fs::read(path)?)))
 }
 
 /// Formats an installed version for messages.
@@ -207,5 +259,70 @@ mod tests {
         let error = ensure(&config).await.unwrap_err();
 
         assert!(format!("{error:#}").contains("expected both"), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn replaces_home_runtime_with_another_libkrunfw() {
+        let home = tempfile::tempdir().unwrap();
+        let config = config_in(&home);
+        let installed = ensure(&config).await.unwrap();
+        let embedded = sha256_of(&installed.libkrunfw_path).unwrap();
+        std::fs::write(&installed.libkrunfw_path, b"a stock libkrunfw").unwrap();
+
+        let runtime = ensure_with(&config, Some(&embedded)).await.unwrap();
+
+        assert_eq!(runtime.libkrunfw_path, installed.libkrunfw_path);
+        assert_eq!(sha256_of(&runtime.libkrunfw_path).unwrap(), embedded);
+    }
+
+    #[tokio::test]
+    async fn keeps_home_runtime_with_embedded_libkrunfw() {
+        let home = tempfile::tempdir().unwrap();
+        let config = config_in(&home);
+        let installed = ensure(&config).await.unwrap();
+        let embedded = sha256_of(&installed.libkrunfw_path).unwrap();
+
+        let runtime = ensure_with(&config, Some(&embedded)).await.unwrap();
+
+        assert_eq!(runtime.origin, RuntimeOrigin::Home);
+        assert_eq!(
+            modified(&runtime.libkrunfw_path),
+            modified(&installed.libkrunfw_path)
+        );
+    }
+
+    #[tokio::test]
+    async fn keeps_libkrunfw_of_explicit_runtime() {
+        let source = tempfile::tempdir().unwrap();
+        let installed = ensure(&config_in(&source)).await.unwrap();
+        std::fs::write(&installed.libkrunfw_path, b"a kernel under test").unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let mut config = config_in(&home);
+        config.paths.msb = Some(installed.msb_path.clone());
+        config.paths.libkrunfw = Some(installed.libkrunfw_path.clone());
+
+        let runtime = ensure_with(&config, Some(&"0".repeat(64))).await.unwrap();
+
+        assert_eq!(runtime.origin, RuntimeOrigin::Configuration);
+        let library = std::fs::read(&runtime.libkrunfw_path).unwrap();
+        assert_eq!(library, b"a kernel under test");
+    }
+
+    /// The Windows runtime pairs microsandbox's `msb.exe` with a `libkrunfw.dll` built from the
+    /// libkrunfw commit of that microsandbox release, so a microsandbox upgrade needs new pins.
+    #[test]
+    fn windows_runtime_is_pinned_to_the_microsandbox_version() {
+        let pins = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/libkrunfw-windows/versions.env"
+        ))
+        .unwrap();
+
+        let pinned = pins
+            .lines()
+            .find_map(|line| line.strip_prefix("MICROSANDBOX_VERSION="))
+            .unwrap();
+
+        assert_eq!(pinned, expected_version().unwrap().to_string());
     }
 }

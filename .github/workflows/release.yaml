@@ -21,8 +21,16 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  # The Windows package embeds a libkrunfw.dll whose kernel has netfilter (ADR 0061).
+  libkrunfw-windows:
+    name: libkrunfw for Windows
+    uses: ./.github/workflows/libkrunfw-windows.yaml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+
   package:
     name: Package ${{ matrix.target }}
+    needs: libkrunfw-windows
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -66,6 +74,18 @@ jobs:
             echo "::error::Tag $TAG doesn't match the workspace version v$version"
             exit 1
           fi
+
+      # microsandbox's build script embeds msb.exe and our libkrunfw.dll from this directory.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: runner.os == 'Windows'
+        with:
+          name: libkrunfw-windows-runtime
+          path: libkrunfw-windows-runtime
+
+      - name: Embed the Windows runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-Content -LiteralPath $env:GITHUB_ENV -Value "MSB_EMBED_ARTIFACTS_DIR=$PWD\libkrunfw-windows-runtime"
 
       - name: Build
         run: cargo build --release --locked --bin fbk --bin fbkd
@@ -213,6 +233,18 @@ jobs:
           pattern: firebrick-*
           path: dist
           merge-multiple: true
+
+      # The source and configuration of the kernel in the Windows package, which the GPL-2.0 asks us to
+      # publish with it.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: libkrunfw-windows-source
+          path: libkrunfw-windows-source
+
+      - name: Add the Windows kernel source
+        run: |
+          mv libkrunfw-windows-source/libkrunfw-windows-source.tar.gz dist/
+          mv libkrunfw-windows-source/kernel.config dist/libkrunfw-windows-kernel.config
 
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:

@@ -10,6 +10,12 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
+# Test the runtime the Windows release embeds, whose kernel has netfilter (ADR 0061), unless the
+# caller supplies one.
+if (-not $env:MSB_EMBED_ARTIFACTS_DIR -and -not $env:MSB_EMBED_RUNTIME_BUNDLE_PATH) {
+    $env:MSB_EMBED_ARTIFACTS_DIR = & "$PSScriptRoot/libkrunfw-windows/build-runtime.ps1"
+}
+
 $build = cargo test --manifest-path "$root/Cargo.toml" -p firebrick-daemon `
     --features vm-tests --no-run --message-format=json-render-diagnostics
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
