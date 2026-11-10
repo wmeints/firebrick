@@ -85,6 +85,7 @@ export default defineConfig({
         "docs/editor-support",
         "docs/custom-images",
         "docs/usage-scenarios",
+        "docs/lifecycle",
         "docs/command-line-reference",
         "docs/troubleshooting",
         "docs/security",
