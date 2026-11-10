@@ -137,7 +137,7 @@ instead of setting it up again after each `fbk rm`.
    [dotfiles]
    "~/.gitconfig" = { source = "git/config", mode = "copy" }
    "~/.bashrc" = { source = "bashrc" }
-   "~/.config/mise/config.toml" = { source = "mise/global.toml" }
+   "~/.config/mise/config.toml" = { source = "mise/global.toml", mode = "copy" }
    "~/.omp/agent/models.yml" = { source = "omp/models.yml", mode = "copy" }
    ```
 
@@ -233,9 +233,10 @@ works on the files in the sandbox instead of on your host.
    ```
 
 3. Open the workspace at `/workspaces/<leaf>` on the `<leaf>.fbk` host. In VS
-   Code, Cursor and Zed, run the printed command. In a JetBrains IDE, create an
-   SSH connection to `my-app.fbk` in Gateway or under **File | Remote
-   Development**. See [Editor support](/docs/editor-support/).
+   Code and Zed, run the printed command; for Cursor, replace `code` with
+   `cursor`. In a JetBrains IDE, create an SSH connection to `my-app.fbk` in
+   Gateway or under **File | Remote Development**. See
+   [Editor support](/docs/editor-support/).
 
 4. Sign the agent in. The IDE's own sign-in for an extension stores its token in
    the sandbox, where the agent can read it. To keep the token out, run the
