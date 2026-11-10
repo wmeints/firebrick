@@ -106,6 +106,12 @@ exit race, were verified on 0.7.8 by running VMs and only checked against the
   `.init("auto")` probes common init paths and refuses to boot an image that has
   none, so firebrick passes an explicit path (ADR 0007).
 
+- Every `msb` process runs a metrics sampler, by default once per second
+  (`run_metrics_sampler` in `microsandbox-runtime`). It calls `mincore` over all
+  guest memory, which costs about 10% of a host core for an idle 4 GiB sandbox
+  on macOS. `SandboxBuilder::disable_metrics_sample()` turns it off; `modify()`
+  can't change it. `fbkd` turns it off (ADR 0060). Verified on 0.7.14.
+
 **Image pull progress**
 
 - `SandboxBuilder::create_detached_with_pull_progress()` returns a

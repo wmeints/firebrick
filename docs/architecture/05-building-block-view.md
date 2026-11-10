@@ -368,20 +368,23 @@ C4Component
   [ADR 0015](decisions/0015-give-each-sandbox-a-docker-data-disk.md)), gives the
   root filesystem a root disk of the requested size, applies the egress rules
   with the `network` module and adds the global secrets, with the sandbox's own
-  sandbox-scoped secrets in their place. The disk survives stops and restarts,
-  and microsandbox deletes it when the sandbox is removed. With `init` on, it
-  hands PID 1 to the image's `/sbin/init`. When that fails because the image has
-  no init, it removes the half-created sandbox and returns `FAILED_PRECONDITION`
-  with a hint to set `init: false`. A pull of an image that doesn't exist
-  returns `NOT_FOUND`, and one whose registry can't be reached `UNAVAILABLE`,
-  both naming the image. Invalid values are rejected before it creates anything.
-  When it creates or starts a sandbox, it uses the `mise` module to trust the
-  dotfiles' `mise.toml` in `/opt/firebrick/dotfiles` and the mise config files
-  at the workspace root, run `mise dot apply` for the dotfiles and then `mise
-  install`, unless the sandbox's `firebrick.mise` label, stored at create time,
-  turns mise off. The `mise` module streams mise's output and reports the latest
-  line without control characters, at most one every 100 ms, as start progress
-  (see [Starting a sandbox](06-runtime-view.md#starting-a-sandbox)). It starts,
+  sandbox-scoped secrets in their place. It turns microsandbox's metrics sampler
+  off, because nothing reads the metrics (see
+  [ADR 0060](decisions/0060-turn-off-microsandbox-metrics-sampling.md)). The
+  disk survives stops and restarts, and microsandbox deletes it when the sandbox
+  is removed. With `init` on, it hands PID 1 to the image's `/sbin/init`. When
+  that fails because the image has no init, it removes the half-created sandbox
+  and returns `FAILED_PRECONDITION` with a hint to set `init: false`. A pull of
+  an image that doesn't exist returns `NOT_FOUND`, and one whose registry can't
+  be reached `UNAVAILABLE`, both naming the image. Invalid values are rejected
+  before it creates anything. When it creates or starts a sandbox, it uses the
+  `mise` module to trust the dotfiles' `mise.toml` in `/opt/firebrick/dotfiles`
+  and the mise config files at the workspace root, run `mise dot apply` for the
+  dotfiles and then `mise install`, unless the sandbox's `firebrick.mise` label,
+  stored at create time, turns mise off. The `mise` module streams mise's output
+  and reports the latest line without control characters, at most one every 100
+  ms, as start progress (see
+  [Starting a sandbox](06-runtime-view.md#starting-a-sandbox)). It starts,
   stops, gets, lists and removes sandboxes, gives each sandbox a unique SSH host
   name, regenerates the SSH config, the editor settings and Zed's remote
   projects through `host_config` after every start and remove and when the

@@ -135,7 +135,10 @@ impl SandboxSettings {
             .fold(Sandbox::builder(&self.name), |builder, (key, value)| {
                 builder.label(key, value)
             })
-            .detached(true);
+            .detached(true)
+            // Nothing reads the metrics, and on macOS the sampler costs about 10% of a host core
+            // per idle sandbox: every second it calls mincore over all guest memory (ADR 0060).
+            .disable_metrics_sample();
         let builder = with_workspace(builder, self.workspace.as_ref());
         let builder = with_mounts(builder, &self.mounts);
         let builder = env::with_env(builder, &self.env);
@@ -490,6 +493,26 @@ mod tests {
             spec.labels.get(env::NAMES_LABEL).map(String::as_str),
             Some("")
         );
+    }
+
+    #[tokio::test]
+    async fn new_sandbox_samples_no_metrics() {
+        let netlogs = NetLogs::new(
+            Some(test_endpoint_dir(Path::new("/run/fbk"), "netlog")),
+            None,
+        );
+        let clipboards = Clipboards::new(
+            Some(test_endpoint_dir(Path::new("/run/fbk"), "clipboard")),
+            Arc::new(HostTools::new(None, None)),
+        );
+
+        let config = new_settings("", false)
+            .image_builder(&netlogs, &clipboards, "ubuntu:26.04")
+            .build()
+            .await
+            .unwrap();
+
+        assert_eq!(config.effective_metrics_interval(), None);
     }
 
     #[tokio::test]
