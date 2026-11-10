@@ -8,7 +8,8 @@ that Docker works with it before we decide on a fix.
 - `windows-netfilter.patch` changes `config-libkrunfw-windows_x86_64` in
   microsandbox's libkrunfw fork (`superradcompany/libkrunfw` at `223f116`, the
   `vendor/libkrunfw` submodule of microsandbox 0.7.14). It enables the 95
-  netfilter, NAT and bridge options that the Linux config
+  netfilter, NAT and bridge options and the two POSIX message queue options
+  (runc mounts `mqueue` at `/dev/mqueue`) that the Linux config
   `config-libkrunfw_x86_64` sets and the Windows config doesn't.
 - `build.sh` clones the fork, applies the patch, builds the x86_64 kernel and
   links `libkrunfw.dll` with MinGW. It runs in an `ubuntu:24.04` container.

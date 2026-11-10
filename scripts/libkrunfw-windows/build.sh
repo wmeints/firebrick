@@ -42,8 +42,8 @@ if ! grep -qE '^# Linux/x86(_64)? ' linux-*/.config; then
     exit 1
 fi
 
-echo "--- netfilter and bridge options in the built kernel"
-grep -E '^CONFIG_(NETFILTER|NF_TABLES|NFT_COMPAT|NF_NAT|NF_CONNTRACK|IP_NF_IPTABLES|IP_NF_NAT|BRIDGE|BRIDGE_NETFILTER|VETH)=' \
+echo "--- netfilter, bridge and mqueue options in the built kernel"
+grep -E '^CONFIG_(NETFILTER|NF_TABLES|NFT_COMPAT|NF_NAT|NF_CONNTRACK|IP_NF_IPTABLES|IP_NF_NAT|BRIDGE|BRIDGE_NETFILTER|VETH|POSIX_MQUEUE)=' \
     linux-*/.config
 
 # Linked with MinGW for the prototype, with the command libkrunfw's Makefile uses for
