@@ -5,7 +5,8 @@
 use super::error::{SandboxError, create_error};
 use super::settings::{SandboxSettings, sandbox_image};
 use super::status::{
-    current_status, get_sandbox, is_live, list_all_sandboxes, refuse_paused, stop_or_kill,
+    UPDATING_NETWORK, UPGRADING, get_sandbox, is_live, list_all_sandboxes, refuse_paused,
+    stop_or_kill,
 };
 use super::{
     IMAGE_LABEL, STOP_TIMEOUT, SandboxManager, Upgrade, image_reference, install_mise_tools,
@@ -17,7 +18,7 @@ use crate::sandboxes::provision::network;
 use crate::sandboxes::provision::pull::{self, PullUpdate};
 use crate::secrets::{self, Secret};
 use firebrick_spec::NetworkSpec;
-use microsandbox::sandbox::{PullPolicy, SandboxBuilder, SandboxHandle, SandboxStatus};
+use microsandbox::sandbox::{PullPolicy, SandboxBuilder, SandboxHandle};
 use microsandbox::snapshot::Snapshot;
 use microsandbox::{MicrosandboxError, Sandbox};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -53,11 +54,7 @@ impl SandboxManager {
             return Ok(false);
         }
 
-        if current_status(&sb).await? == SandboxStatus::Paused {
-            return Err(SandboxError::failed_precondition(format!(
-                "sandbox {name} is paused; resume it before updating its network rules"
-            )));
-        }
+        refuse_paused(&sb, UPDATING_NETWORK).await?;
 
         let recreation = Recreation {
             settings: &settings,
@@ -83,7 +80,7 @@ impl SandboxManager {
     ) -> Result<Upgrade, SandboxError> {
         let _recreation = self.recreations.read().await;
         let image = sandbox_image(image);
-        refuse_paused(&get_sandbox(name).await?).await?;
+        refuse_paused(&get_sandbox(name).await?, UPGRADING).await?;
 
         // The pull can take minutes, so it runs before the sandbox is locked.
         let digest = pull_image(name, image, on_pull).await?;
@@ -91,7 +88,7 @@ impl SandboxManager {
         let _guard = self.lock_sandbox(name).await;
         // Get the sandbox again, because it may have changed while the image was pulled.
         let sb = get_sandbox(name).await?;
-        refuse_paused(&sb).await?;
+        refuse_paused(&sb, UPGRADING).await?;
         let config = sb
             .config()
             .map_err(|err| change_failed(name, Change::Image(image), &err))?;
