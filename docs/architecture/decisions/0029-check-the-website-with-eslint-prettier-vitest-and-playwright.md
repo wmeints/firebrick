@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted. The Claude Code stop hook this record mentions has been removed; the
+website's end-to-end tests now run by hand and in CI.
 
 ## Context
 

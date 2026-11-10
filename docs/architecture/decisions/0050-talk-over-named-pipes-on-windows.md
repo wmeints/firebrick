@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted. The Claude Code stop hook this record mentions has been removed; the
+Windows `vm-tests` now run only by hand with `mise run integration-tests`.
 
 ## Context
 

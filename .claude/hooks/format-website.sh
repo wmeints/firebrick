@@ -11,7 +11,8 @@ file=$(python3 -c 'import json, sys; print(json.load(sys.stdin).get("tool_input"
 cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}" || exit 0
 
 [[ "$(realpath "$file")" == "$PWD"/website/* ]] || exit 0
-# Without node_modules there's no Prettier to run; the stop hook installs it.
+# Without node_modules there's no Prettier to run; `pnpm --dir website install`
+# installs it.
 [ -d website/node_modules ] || exit 0
 
 if ! output=$(mise exec -- pnpm --dir website exec prettier --write --ignore-unknown -- "$(realpath "$file")" 2>&1); then
