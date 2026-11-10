@@ -44,7 +44,11 @@ keeps microsandbox from starting VMs, so the plain `cargo test` command can't
 run them there
 ([ADR 0050](docs/architecture/decisions/0050-talk-over-named-pipes-on-windows.md)).
 The repository checks out with LF line endings, which the format checks expect,
-also with Git for Windows' `core.autocrlf=true`.
+also with Git for Windows' `core.autocrlf=true`. On Windows, `mise run
+integration-tests` and `mise run install-dev` also build the runtime the Windows
+release embeds, with our own `libkrunfw.dll`
+([ADR 0061](docs/architecture/decisions/0061-embed-a-libkrunfw-with-netfilter-on-windows.md)),
+so they need Docker or Podman, and their first run takes a few minutes.
 
 Install the toolchain (Rust, Node, pnpm, `buf`, `protoc`, `dprint`,
 `actionlint`, `cargo-audit`, `lefthook`, the GitHub CLI and Claude Code) with

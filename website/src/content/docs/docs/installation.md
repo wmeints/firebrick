@@ -207,7 +207,8 @@ SmartScreen may refuse to start `fbkd`. To build the binaries from source
 instead, install the Visual Studio Build Tools with the C++ workload, which Rust
 needs to link them, from an administrator PowerShell, then follow
 [Building from source](#building-from-source). Cargo installs `fbk.exe` and
-`fbkd.exe` in `%USERPROFILE%\.cargo\bin`.
+`fbkd.exe` in `%USERPROFILE%\.cargo\bin`. To run Docker in the sandboxes, build
+`fbkd` with the runtime the release embeds, as described there.
 
 ```powershell
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
@@ -320,6 +321,10 @@ daemon with `Stop-Process -Name fbkd` first, because Windows can't replace a
 running program. To uninstall, stop the daemon and run `cargo uninstall
 firebrick-cli firebrick-daemon`.
 
+On Windows, `cargo install firebrick-daemon` embeds microsandbox's own runtime,
+whose guest kernel has no netfilter, so `dockerd` can't start in the sandboxes.
+Use the release zip, or build from source as below, to run Docker there.
+
 ## Building from source
 
 Install the development toolchain with [mise](https://mise.jdx.dev) from a clone
@@ -337,3 +342,11 @@ cargo install --locked --path crates/daemon
 A build from source that isn't a release defaults to a `firebrick-base` image
 tag that may not exist yet. Set `image` in `.firebrick.yml` to a released tag or
 your own image; see [Custom images](/docs/custom-images/).
+
+On Windows, install `fbkd` with `powershell -ExecutionPolicy Bypass -File
+scripts/install-fbkd.ps1` instead of the second `cargo install`. It first builds
+the runtime the Windows release embeds, a `libkrunfw.dll` whose guest kernel has
+the netfilter, bridge and mqueue support that Docker needs, which takes a few
+minutes and needs Docker or Podman. A plain `cargo install` embeds
+microsandbox's own runtime, and `dockerd` can't start in sandboxes with it:
+`docker` reports `failed to create NAT chain DOCKER`.

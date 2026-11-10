@@ -127,7 +127,11 @@ async fn library_differs(runtime: &ResolvedRuntime, embedded: Option<&str>) -> R
             Ok(true)
         }
         Err(error) => {
-            tracing::warn!(%error, "failed to read the installed libkrunfw");
+            tracing::warn!(
+                path = %runtime.libkrunfw_path.display(),
+                %error,
+                "failed to read the installed libkrunfw, replacing it with the embedded one"
+            );
             Ok(true)
         }
     }
@@ -156,6 +160,16 @@ mod tests {
         std::fs::metadata(path).unwrap().modified().unwrap()
     }
 
+    /// Sets the modification time of a file to a fixed value and returns it. A reinstall can't
+    /// keep it: microsandbox copies the files with the archive's times, which `fs::copy` keeps
+    /// on Windows and macOS.
+    fn pin_modified(path: &std::path::Path) -> std::time::SystemTime {
+        let pinned = std::time::UNIX_EPOCH + std::time::Duration::from_secs(86_400);
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(pinned).unwrap();
+        pinned
+    }
+
     fn config_in(home: &tempfile::TempDir) -> GlobalConfig {
         GlobalConfig {
             home: Some(home.path().to_path_buf()),
@@ -180,12 +194,15 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let config = config_in(&home);
         let installed = ensure(&config).await.unwrap();
+        let msb = pin_modified(&installed.msb_path);
+        let library = pin_modified(&installed.libkrunfw_path);
 
         let runtime = ensure(&config).await.unwrap();
 
         assert_eq!(runtime.origin, RuntimeOrigin::Home);
         assert_eq!(runtime.msb_path, installed.msb_path);
-        assert_eq!(modified(&runtime.msb_path), modified(&installed.msb_path));
+        assert_eq!(modified(&runtime.msb_path), msb);
+        assert_eq!(modified(&runtime.libkrunfw_path), library);
     }
 
     #[tokio::test]
@@ -281,14 +298,12 @@ mod tests {
         let config = config_in(&home);
         let installed = ensure(&config).await.unwrap();
         let embedded = sha256_of(&installed.libkrunfw_path).unwrap();
+        let pinned = pin_modified(&installed.libkrunfw_path);
 
         let runtime = ensure_with(&config, Some(&embedded)).await.unwrap();
 
         assert_eq!(runtime.origin, RuntimeOrigin::Home);
-        assert_eq!(
-            modified(&runtime.libkrunfw_path),
-            modified(&installed.libkrunfw_path)
-        );
+        assert_eq!(modified(&runtime.libkrunfw_path), pinned);
     }
 
     #[tokio::test]

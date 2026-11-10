@@ -64,12 +64,15 @@ script. Linux and macOS keep microsandbox's runtime.
 ## Consequences
 
 - Docker in sandboxes on Windows hosts works as on Linux and macOS: bridge and
-  Compose networks, `-p`, builds and mqueue. A vm-test checks that the guest
-  kernel has netfilter, the bridge's netfilter hooks and mqueue on every host.
+  Compose networks, `-p`, builds and mqueue. A vm-test starts `dockerd` on every
+  host and checks its `DOCKER` NAT chain, the `bridge` network and mqueue.
+  Another checks that `fbkd` keeps the runtime it installed, so the recorded
+  hash matches the library microsandbox embeds.
 - A microsandbox upgrade needs new pins in `versions.env`, and the patch may
   need porting. A unit test fails until `MICROSANDBOX_VERSION` matches the
   `microsandbox` crate.
-- The release takes longer: the Windows package waits for the kernel build.
+- The release takes longer: every package waits for the kernel build, and a
+  failed kernel build stops the release.
 - Building or testing on Windows needs Docker or Podman for the kernel and the
   Visual Studio Build Tools for the DLL. The first build takes a few minutes;
   `build-runtime.ps1` reuses the result while its inputs don't change.
@@ -77,4 +80,6 @@ script. Linux and macOS keep microsandbox's runtime.
   embeds microsandbox's runtime, whose kernel can't run Docker. So does `cargo
   install firebrick-daemon`.
 - Each release publishes the kernel source, about 230 MB.
+- Sandboxes that run while `fbkd` replaces the library keep the old kernel until
+  they restart.
 - Drop the custom build once microsandbox's Windows kernel has these options.

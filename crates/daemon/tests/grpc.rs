@@ -867,28 +867,66 @@ async fn sandbox_gets_default_docker_disk_that_survives_restart() {
     remove_sandbox(name).await;
 }
 
-/// `dockerd` needs netfilter for its NAT rules, the bridge driver with its netfilter hooks for the
-/// `bridge` network, and the mqueue filesystem that runc mounts in every container. microsandbox's
+/// An image with `dockerd` and `iptables`, to start Docker in a sandbox without init.
+const DOCKER_IMAGE: &str = "docker:29.9.3-dind";
+
+/// `dockerd` needs netfilter with NAT for its `DOCKER` chain and the bridge driver for the
+/// `bridge` network, and runc mounts the mqueue filesystem in every container. microsandbox's
 /// Windows kernel has none of them, so fbkd embeds its own there (ADR 0061).
 #[tokio::test]
-async fn guest_kernel_supports_docker_networking() {
-    let name: &str = &sandbox_name("docker-kernel");
+async fn dockerd_starts_with_bridge_networking() {
+    let name: &str = &sandbox_name("dockerd");
     remove_sandbox(name).await;
 
-    let daemon = TestDaemon::start("docker-kernel").await;
+    let daemon = TestDaemon::start("dockerd").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, name).await;
+    let request = StartSandboxRequest {
+        image: DOCKER_IMAGE.to_string(),
+        ..start_request(name)
+    };
+    start_and_wait(&mut client, request).await;
 
-    let script = "test -d /proc/net/netfilter || echo 'no netfilter'; \
-        test -e /proc/sys/net/bridge/bridge-nf-call-iptables || echo 'no bridge netfilter'; \
-        grep -qw mqueue /proc/filesystems || echo 'no mqueue'";
+    let script = "setsid dockerd </dev/null >/tmp/dockerd.log 2>&1 & \
+        for i in $(seq 60); do docker info >/dev/null 2>&1 && break; sleep 1; done; \
+        docker network inspect bridge >/dev/null && iptables -t nat -S DOCKER >/dev/null \
+        || { cat /tmp/dockerd.log; exit 1; }; \
+        grep -qw mqueue /proc/filesystems || { echo 'no mqueue'; exit 1; }";
     let (output, code) = run_command(&mut client, name, "sh", &["-c", script]).await;
 
-    assert_eq!(code, 0, "unexpected output: {output:?}");
-    assert_eq!(output.trim(), "", "the guest kernel lacks features");
+    assert_eq!(code, 0, "dockerd failed: {output}");
 
     daemon.stop().await;
     remove_sandbox(name).await;
+}
+
+/// The vm-tests build `fbkd` with the runtime the release embeds, so this checks that the hash
+/// `build.rs` records is the library microsandbox embeds: otherwise every start would replace
+/// the runtime it just installed.
+#[tokio::test]
+async fn embedded_runtime_is_kept_on_the_next_start() {
+    let home = test_temp_dir().join(format!("fbk-it-{}-runtime", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let config = microsandbox::config::GlobalConfig {
+        home: Some(home.clone()),
+        ..Default::default()
+    };
+    let installed = firebrick_daemon::runtime::ensure(&config).await.unwrap();
+    // A reinstall can't keep this time: it copies the files with the archive's times.
+    let pinned = std::time::UNIX_EPOCH + Duration::from_secs(86_400);
+    std::fs::File::options()
+        .write(true)
+        .open(&installed.libkrunfw_path)
+        .unwrap()
+        .set_modified(pinned)
+        .unwrap();
+
+    let runtime = firebrick_daemon::runtime::ensure(&config).await.unwrap();
+
+    let modified = std::fs::metadata(&runtime.libkrunfw_path)
+        .unwrap()
+        .modified();
+    assert_eq!(modified.unwrap(), pinned, "fbkd replaced its own runtime");
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 /// Returns a start request for the sandbox with a root disk of `root`.
