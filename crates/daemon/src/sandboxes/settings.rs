@@ -135,7 +135,10 @@ impl SandboxSettings {
             .fold(Sandbox::builder(&self.name), |builder, (key, value)| {
                 builder.label(key, value)
             })
-            .detached(true);
+            .detached(true)
+            // Nothing reads the metrics, and on macOS the sampler costs about 10% of a host core
+            // per idle sandbox: every second it calls mincore over all guest memory (ADR 0060).
+            .disable_metrics_sample();
         let builder = with_workspace(builder, self.workspace.as_ref());
         let builder = with_mounts(builder, &self.mounts);
         let builder = env::with_env(builder, &self.env);
@@ -405,6 +408,7 @@ mod tests {
     use crate::guest::test_endpoint_dir;
     use crate::sandboxes::tests::host;
     use firebrick_spec::NetworkSpec;
+    use microsandbox::sandbox::SandboxConfig;
     use std::sync::Arc;
 
     /// Returns the settings of a new sandbox created for a request with the image and the
@@ -451,6 +455,11 @@ mod tests {
 
     /// Returns the spec microsandbox would create the sandbox with, with its sockets in `/run`.
     async fn built_spec(settings: &SandboxSettings) -> SandboxSpec {
+        built_config(settings).await.spec
+    }
+
+    /// Returns the config microsandbox would create the sandbox with, with its sockets in `/run`.
+    async fn built_config(settings: &SandboxSettings) -> SandboxConfig {
         let netlogs = NetLogs::new(
             Some(test_endpoint_dir(Path::new("/run/fbk"), "netlog")),
             None,
@@ -466,7 +475,6 @@ mod tests {
             .build()
             .await
             .unwrap()
-            .spec
     }
 
     #[tokio::test]
@@ -490,6 +498,13 @@ mod tests {
             spec.labels.get(env::NAMES_LABEL).map(String::as_str),
             Some("")
         );
+    }
+
+    #[tokio::test]
+    async fn new_sandbox_samples_no_metrics() {
+        let config = built_config(&new_settings("", false)).await;
+
+        assert_eq!(config.effective_metrics_interval(), None);
     }
 
     #[tokio::test]
