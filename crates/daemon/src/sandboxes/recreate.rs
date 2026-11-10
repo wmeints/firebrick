@@ -3,6 +3,7 @@
 //! before an upgrade replaces the sandbox.
 
 use super::error::{SandboxError, create_error};
+use super::root_disk;
 use super::settings::{SandboxSettings, sandbox_image};
 use super::status::{
     UPDATING_NETWORK, UPGRADING, get_sandbox, is_live, list_all_sandboxes, refuse_paused,
@@ -17,7 +18,7 @@ use crate::sandboxes::provision::mise::{self};
 use crate::sandboxes::provision::network;
 use crate::sandboxes::provision::pull::{self, PullUpdate};
 use crate::secrets::{self, Secret};
-use firebrick_spec::NetworkSpec;
+use firebrick_spec::{DEFAULT_ROOT_DISK_MIB, NetworkSpec};
 use microsandbox::sandbox::{PullPolicy, SandboxBuilder, SandboxHandle};
 use microsandbox::snapshot::Snapshot;
 use microsandbox::{MicrosandboxError, Sandbox};
@@ -123,6 +124,9 @@ impl SandboxManager {
         settings
             .labels
             .insert(IMAGE_LABEL.to_string(), image.to_string());
+        // A fresh root disk is never smaller than the default, so an upgrade also grows the
+        // disks of sandboxes created with a smaller default.
+        settings.grow_root_disk_to(DEFAULT_ROOT_DISK_MIB);
         let recreation = Recreation {
             settings: &settings,
             network,
@@ -227,9 +231,7 @@ impl SandboxManager {
             Change::Network => settings
                 .builder(&self.netlogs, &self.clipboards)
                 .override_snapshot(snapshot),
-            Change::Image(image) => settings
-                .builder(&self.netlogs, &self.clipboards)
-                .image(image),
+            Change::Image(image) => settings.image_builder(&self.netlogs, &self.clipboards, image),
         };
 
         let sb = match self.create_from(settings, network, builder).await {
@@ -237,6 +239,9 @@ impl SandboxManager {
             Err(err) => return Err(recreate_failed(name, snapshot, change, &err).await),
         };
 
+        if let Some(size_mib) = settings.root_disk_mib() {
+            root_disk::record(&sb, size_mib).await;
+        }
         remove_snapshot(snapshot).await;
         tracing::info!("{}", change.done(name));
 

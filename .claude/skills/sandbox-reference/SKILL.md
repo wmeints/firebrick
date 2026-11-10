@@ -144,6 +144,15 @@ exit race, were verified on 0.7.8 by running VMs and only checked against the
   The sandbox's `config().spec.mounts` lists it as `VolumeMount::Owned` with
   `OwnedVolumeStorage::Disk { capacity_mib }`. `fbkd` puts Docker's data on such
   a disk because the root filesystem is overlayfs (ADR 0015).
+- The overlayfs root's writable layer sits on a sandbox-owned ext4 root disk
+  (`upper.ext4`). Without `.root_disk(mib)` it gets
+  `DEFAULT_OCI_UPPER_SIZE_MIB`, 4 GiB. `.root_disk(..)` needs an OCI image set
+  first, so call it after `.image(..)`. The config stores it as
+  `RootfsSource::Oci(oci).root_disk`: `None` or `RootDisk::Managed { size_mib:
+  None }` means 4096 MiB. A sandbox created from a snapshot gets `Managed {
+  size_mib: None }`, also when the snapshot's disk is larger; `fbkd` records the
+  old size afterwards with `modify().root_disk_size(..).next_start()`. `fbkd`
+  sizes it from `volumes.root` (ADR 0059).
 
 **Guest filesystem**
 
@@ -169,6 +178,11 @@ exit race, were verified on 0.7.8 by running VMs and only checked against the
   labels, workdir, secrets and published ports. Use `.next_start()` or
   `.restart()` to choose when changes apply. It can't change the shell or the
   scripts, so those need a recreate.
+- `modify().root_disk_size(mib)` only grows a managed or flat root disk: a
+  smaller or equal size fails the apply with a conflict. On a stopped sandbox
+  `apply()` grows `upper.ext4` right away and keeps its contents; a running one
+  needs `.next_start()` and grows on the next boot. Verified on 0.7.14, also on
+  a sandbox recreated from a snapshot that has booted once.
 - `SandboxBuilder::env` and `modify().env(..)` reject the `MSB_` prefix, an
   empty key, `=` or NUL in a key and NUL in a value (`validate_env`); create,
   start and modify all check this. At create time microsandbox merges the

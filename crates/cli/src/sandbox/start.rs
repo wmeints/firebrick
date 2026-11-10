@@ -16,6 +16,8 @@ use tokio::time::{Instant, sleep};
 use tonic::Streaming;
 use tonic::transport::Channel;
 
+use crate::api::RootDiskNotice;
+use crate::api::root_disk_notice::Reason;
 use crate::api::{
     EnvVars, GetSandboxRequest, GetSandboxResponse, GitIdentity, ImagePullProgress,
     MiseInstallProgress, NetworkPolicy, PortForward, PortForwards, SandboxResources,
@@ -136,6 +138,45 @@ pub(super) fn warn_env_pending_restart(started: &SandboxStarted) {
         eprintln!(
             "env changes in {SPEC_FILE_NAME} apply after the sandbox restarts: fbk stop && fbk start"
         );
+    }
+}
+
+/// Prints a notice to stderr when the sandbox's root disk didn't get the size the spec asks for.
+pub(super) fn warn_root_disk(started: &SandboxStarted) {
+    if let Some(warning) = started.root_disk.as_ref().and_then(root_disk_warning) {
+        eprintln!("{warning}");
+    }
+}
+
+/// Returns the notice for a root disk that didn't get the requested size, or `None` for a
+/// reason the client doesn't know.
+fn root_disk_warning(notice: &RootDiskNotice) -> Option<String> {
+    let requested = format_mib(notice.requested_mib);
+    let current = format_mib(notice.current_mib());
+
+    match notice.reason() {
+        Reason::PendingRestart => Some(format!(
+            "root disk grows to {requested} after the sandbox restarts: fbk stop && fbk start"
+        )),
+        Reason::ShrinkUnsupported => Some(format!(
+            "volumes.root ({requested}) is smaller than the sandbox's root disk ({current}); \
+             recreate the sandbox to shrink it: fbk rm --force && fbk start"
+        )),
+        Reason::GrowFailed => Some(format!(
+            "warning: failed to grow the root disk to {requested}: {}",
+            notice.error
+        )),
+        Reason::Unspecified => None,
+    }
+}
+
+/// Formats a size in MiB with a binary unit: `16 GiB`, or `1536 MiB` when it isn't a whole
+/// number of GiB.
+fn format_mib(mib: u32) -> String {
+    if mib.is_multiple_of(1024) {
+        format!("{} GiB", mib / 1024)
+    } else {
+        format!("{mib} MiB")
     }
 }
 
@@ -323,6 +364,7 @@ pub(super) fn build_start_request(
         }),
         volumes: Some(SandboxVolumes {
             docker: spec.volumes.docker,
+            root: spec.volumes.root,
         }),
         workspace: workspace.to_string_lossy().into_owned(),
         init: Some(spec.init.unwrap_or(true)),
@@ -390,6 +432,7 @@ pub(crate) async fn ensure_running(
 
     warn_failed_forwards(&started);
     warn_env_pending_restart(&started);
+    warn_root_disk(&started);
 
     Ok(started)
 }
@@ -437,12 +480,51 @@ pub(super) async fn follow_pull<R, T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::api::Mount;
     use crate::spec_file::read_spec_file;
     use crate::test_support::symlinked_spec;
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    /// Returns a root disk notice for the reason, from 16 GiB to the requested size.
+    fn notice(reason: Reason, requested_mib: u32, error: &str) -> RootDiskNotice {
+        RootDiskNotice {
+            reason: reason.into(),
+            requested_mib,
+            current_mib: Some(16 * 1024),
+            error: error.to_string(),
+        }
+    }
+
+    #[test]
+    fn root_disk_warning_tells_how_to_apply_the_size() {
+        let cases = [
+            (
+                notice(Reason::PendingRestart, 32 * 1024, ""),
+                "root disk grows to 32 GiB after the sandbox restarts: fbk stop && fbk start",
+            ),
+            (
+                notice(Reason::ShrinkUnsupported, 8 * 1024, ""),
+                "volumes.root (8 GiB) is smaller than the sandbox's root disk (16 GiB); \
+                 recreate the sandbox to shrink it: fbk rm --force && fbk start",
+            ),
+            (
+                notice(Reason::GrowFailed, 20 * 1024 + 512, "disk full"),
+                "warning: failed to grow the root disk to 20992 MiB: disk full",
+            ),
+        ];
+
+        for (notice, expected) in cases {
+            assert_eq!(root_disk_warning(&notice).as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn unknown_root_disk_reason_has_no_warning() {
+        assert_eq!(root_disk_warning(&notice(Reason::Unspecified, 1, "")), None);
+    }
 
     fn sandbox(hostname: &str, workspace_path: &str) -> GetSandboxResponse {
         GetSandboxResponse {
@@ -531,7 +613,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(
             dir.path().join(SPEC_FILE_NAME),
-            "name: dev\nimage: alpine:3.22\ninit: false\nmise:\n  enabled: false\nresources:\n  cpu: 4\n  memory: 8Gi\nvolumes:\n  docker: 40 GiB\n",
+            "name: dev\nimage: alpine:3.22\ninit: false\nmise:\n  enabled: false\nresources:\n  cpu: 4\n  memory: 8Gi\nvolumes:\n  docker: 40 GiB\n  root: 32 GiB\n",
         )
         .unwrap();
 
@@ -547,7 +629,11 @@ mod tests {
         assert_eq!(request.init, Some(false));
         assert_eq!(request.mise, Some(false));
         assert_eq!((resources.cpu, resources.memory.as_str()), (4, "8Gi"));
-        assert_eq!(request.volumes.unwrap().docker, "40 GiB");
+        let volumes = request.volumes.unwrap();
+        assert_eq!(
+            (volumes.docker.as_str(), volumes.root.as_str()),
+            ("40 GiB", "32 GiB")
+        );
     }
 
     #[test]
@@ -706,8 +792,11 @@ mod tests {
         assert_eq!(resources.cpu, u32::from(defaults.cpu));
         assert_eq!(resources.memory, defaults.memory);
         assert_eq!(
-            request.volumes.unwrap().docker,
-            firebrick_spec::VolumesSpec::default().docker
+            request.volumes,
+            Some(SandboxVolumes {
+                docker: firebrick_spec::VolumesSpec::default().docker,
+                root: "16 GiB".to_string(),
+            })
         );
     }
 

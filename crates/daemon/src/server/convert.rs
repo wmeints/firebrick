@@ -4,9 +4,9 @@
 use crate::api::{
     EnvVars, GitIdentity, ImagePullProgress, MiseInstallProgress, Mount, NetworkActivity,
     NetworkActivityKind, NetworkPolicy, PortForward, PortForwardFailure, PortForwards,
-    SandboxResources, SandboxStarted, SandboxStatus, SandboxSummary, SandboxUpgraded,
-    SecretSummary, StartSandboxRequest, StartSandboxResponse, UpgradeSandboxResponse,
-    start_sandbox_response, upgrade_sandbox_response,
+    RootDiskNotice as RootDiskMessage, SandboxResources, SandboxStarted, SandboxStatus,
+    SandboxSummary, SandboxUpgraded, SecretSummary, StartSandboxRequest, StartSandboxResponse,
+    UpgradeSandboxResponse, start_sandbox_response, upgrade_sandbox_response,
 };
 use crate::forward::ForwardFailure;
 use crate::guest::netlog::{ConnectionEntry, DnsEntry, Protocol, Record};
@@ -15,7 +15,8 @@ use crate::sandboxes::provision::mise::MiseUpdate;
 use crate::sandboxes::provision::network;
 use crate::sandboxes::provision::pull::PullUpdate;
 use crate::sandboxes::{
-    Resources, SandboxError, SandboxInfo, StartProgress, StartSandbox, Started, Upgrade,
+    NoticeReason, Resources, RootDiskNotice, SandboxError, SandboxInfo, StartProgress,
+    StartSandbox, Started, Upgrade,
 };
 use crate::secrets::Secret;
 use anyhow::Result;
@@ -33,6 +34,7 @@ pub(super) struct ParsedStart {
     ports: Option<Vec<PortMapping>>,
     mounts: Vec<MountSpec>,
     env: Option<BTreeMap<String, String>>,
+    root_disk_mib: u32,
 }
 
 impl ParsedStart {
@@ -47,6 +49,7 @@ impl ParsedStart {
             ports: request.ports.as_ref().map(port_mappings).transpose()?,
             mounts: mount_specs(&request.mounts),
             env: request.env.as_ref().map(env_vars).transpose()?,
+            root_disk_mib: root_disk_mib(request)?,
         })
     }
 }
@@ -71,6 +74,22 @@ pub(super) fn start_sandbox_from<'a>(
         clipboard: request.clipboard.unwrap_or(false),
         env: parsed.env.as_ref(),
         git_identity: request.git_identity.as_ref().map(git_identity),
+        root_disk_mib: parsed.root_disk_mib,
+    }
+}
+
+/// Reads the root disk size of a request in MiB, using the default for a missing or empty size
+/// and failing with `InvalidArgument` on a size that
+/// [`firebrick_spec::parse_root_disk_mib`] refuses.
+fn root_disk_mib(request: &StartSandboxRequest) -> Result<u32, Status> {
+    match request
+        .volumes
+        .as_ref()
+        .map(|volumes| volumes.root.as_str())
+    {
+        None | Some("") => Ok(firebrick_spec::DEFAULT_ROOT_DISK_MIB),
+        Some(size) => firebrick_spec::parse_root_disk_mib(size)
+            .map_err(|err| Status::invalid_argument(format!("volumes.root: {err}"))),
     }
 }
 
@@ -142,6 +161,7 @@ pub(super) fn sandbox_started(started: Started) -> SandboxStarted {
 
     SandboxStarted {
         env_pending_restart: started.env_pending_restart,
+        root_disk: started.root_disk.map(root_disk_notice),
         forwards: report.open.into_iter().map(port_forward).collect(),
         failed_forwards: report
             .failed
@@ -151,6 +171,24 @@ pub(super) fn sandbox_started(started: Started) -> SandboxStarted {
                 reason,
             })
             .collect(),
+    }
+}
+
+/// Converts a root disk notice to its protobuf message.
+fn root_disk_notice(notice: RootDiskNotice) -> RootDiskMessage {
+    use crate::api::root_disk_notice::Reason;
+
+    let (reason, error) = match notice.reason {
+        NoticeReason::PendingRestart => (Reason::PendingRestart, String::new()),
+        NoticeReason::ShrinkUnsupported => (Reason::ShrinkUnsupported, String::new()),
+        NoticeReason::GrowFailed(error) => (Reason::GrowFailed, error),
+    };
+
+    RootDiskMessage {
+        reason: reason.into(),
+        requested_mib: notice.requested_mib,
+        current_mib: notice.current_mib,
+        error,
     }
 }
 
@@ -423,6 +461,7 @@ pub(super) fn map_sandbox_status(s: Option<microsandbox::sandbox::SandboxStatus>
 mod tests {
     use super::*;
     use crate::api::SandboxVolumes;
+    use crate::api::root_disk_notice::Reason;
     use crate::forward::ForwardReport;
     use microsandbox::sandbox::SandboxStatus as MsbStatus;
 
@@ -641,9 +680,11 @@ mod tests {
         let response = sandbox_started(Started {
             forwards: report,
             env_pending_restart: true,
+            root_disk: None,
         });
 
         assert!(response.env_pending_restart);
+        assert_eq!(response.root_disk, None);
         assert_eq!(response.forwards, [port_forward(mapping(8080, 5173))]);
         assert_eq!(
             response.failed_forwards,
@@ -856,6 +897,95 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sandbox_started_carries_the_root_disk_notice() {
+        let reasons = [
+            (NoticeReason::PendingRestart, Reason::PendingRestart, ""),
+            (
+                NoticeReason::ShrinkUnsupported,
+                Reason::ShrinkUnsupported,
+                "",
+            ),
+            (
+                NoticeReason::GrowFailed("disk full".to_string()),
+                Reason::GrowFailed,
+                "disk full",
+            ),
+        ];
+
+        for (notice_reason, reason, error) in reasons {
+            let response = sandbox_started(Started {
+                forwards: ForwardReport::default(),
+                env_pending_restart: false,
+                root_disk: Some(RootDiskNotice {
+                    requested_mib: 32768,
+                    current_mib: Some(16384),
+                    reason: notice_reason,
+                }),
+            });
+
+            let message = response.root_disk.unwrap();
+            assert_eq!(
+                (message.reason(), message.requested_mib, message.current_mib),
+                (reason, 32768, Some(16384))
+            );
+            assert_eq!(message.error, error);
+        }
+    }
+
+    /// Returns a start request with the root disk size.
+    fn root_disk_request(root: Option<&str>) -> StartSandboxRequest {
+        StartSandboxRequest {
+            name: "dev".to_string(),
+            volumes: root.map(|root| SandboxVolumes {
+                root: root.to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn root_disk_notice_without_a_current_size_leaves_it_unset() {
+        let response = sandbox_started(Started {
+            forwards: ForwardReport::default(),
+            env_pending_restart: false,
+            root_disk: Some(RootDiskNotice {
+                requested_mib: 32768,
+                current_mib: None,
+                reason: NoticeReason::GrowFailed("unreadable".to_string()),
+            }),
+        });
+
+        assert_eq!(response.root_disk.unwrap().current_mib, None);
+    }
+
+    #[test]
+    fn start_reads_the_root_disk_size_or_the_default() {
+        let cases = [(Some("32 GiB"), 32768), (Some(""), 16384), (None, 16384)];
+
+        for (root, expected) in cases {
+            let request = root_disk_request(root);
+            let parsed = ParsedStart::of(&request).unwrap();
+
+            assert_eq!(
+                start_sandbox_from(&request, &parsed).root_disk_mib,
+                expected,
+                "{root:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn start_rejects_an_invalid_root_disk_size() {
+        for root in ["16 GB", "0 GiB", "2 GiB"] {
+            let status = ParsedStart::of(&root_disk_request(Some(root))).unwrap_err();
+
+            assert_eq!(status.code(), tonic::Code::InvalidArgument, "{root:?}");
+            assert!(status.message().starts_with("volumes.root: "), "{root:?}");
+        }
+    }
+
     /// Returns a start request with the resources and Docker volume size.
     fn resources_request(cpu: u32, memory: &str, docker: Option<&str>) -> StartSandboxRequest {
         StartSandboxRequest {
@@ -865,6 +995,7 @@ mod tests {
             }),
             volumes: docker.map(|docker| SandboxVolumes {
                 docker: docker.to_string(),
+                ..Default::default()
             }),
             ..Default::default()
         }

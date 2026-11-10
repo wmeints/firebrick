@@ -27,10 +27,10 @@ pub use file::{exists, from_file, read_text, to_file, write_text};
 use mounts::deserialize_mounts;
 pub use mounts::{InvalidGuestPath, MountSpec, guest_mount_path};
 pub use names::{
-    InvalidImage, InvalidSandboxName, MAX_SANDBOX_NAME_BYTES, parse_size_mib, validate_image,
-    validate_sandbox_name,
+    DEFAULT_ROOT_DISK_MIB, InvalidImage, InvalidSandboxName, MAX_SANDBOX_NAME_BYTES,
+    MIN_ROOT_DISK_MIB, parse_root_disk_mib, parse_size_mib, validate_image, validate_sandbox_name,
 };
-use names::{deserialize_image, deserialize_sandbox_name, deserialize_size};
+use names::{deserialize_image, deserialize_root_size, deserialize_sandbox_name, deserialize_size};
 pub use network::{InvalidNetworkRule, NetworkRule, NetworkSpec};
 use ports::deserialize_ports;
 pub use ports::{InvalidPortMapping, PortMapping};
@@ -153,6 +153,13 @@ impl Default for SandboxResourcesSpec {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct VolumesSpec {
+    /// Size of the sandbox's root disk, which holds the changes to the root filesystem, such as
+    /// installed packages. At least [`MIN_ROOT_DISK_MIB`].
+    #[serde(
+        default = "default_root_volume",
+        deserialize_with = "deserialize_root_size"
+    )]
+    pub root: String,
     /// Size of the disk mounted at `/var/lib/docker`.
     #[serde(
         default = "default_docker_volume",
@@ -165,9 +172,15 @@ impl Default for VolumesSpec {
     /// Returns the volume sizes a sandbox gets when its spec doesn't set them.
     fn default() -> Self {
         Self {
+            root: default_root_volume(),
             docker: default_docker_volume(),
         }
     }
+}
+
+/// Size of the root disk when the spec doesn't set one.
+fn default_root_volume() -> String {
+    format!("{} GiB", DEFAULT_ROOT_DISK_MIB / 1024)
 }
 
 /// Size of the Docker volume when the spec doesn't set one.
@@ -684,6 +697,61 @@ mod tests {
                 diagnostic.message
             );
         }
+    }
+
+    #[test]
+    fn root_volume_defaults_to_16_gib() {
+        let file = write_spec("name: dev\nvolumes:\n  docker: 40GiB\n");
+
+        let spec = from_file(file.path()).unwrap().unwrap();
+
+        assert_eq!(spec.volumes.root, "16 GiB");
+        assert_eq!(parse_root_disk_mib(&spec.volumes.root), Ok(16 * 1024));
+    }
+
+    #[test]
+    fn parses_root_volume() {
+        let file = write_spec("name: dev\nvolumes:\n  root: 32GiB\n");
+
+        let spec = from_file(file.path()).unwrap().unwrap();
+
+        assert_eq!(spec.volumes.root, "32GiB");
+        assert_eq!(spec.volumes.docker, "20 GiB");
+    }
+
+    #[test]
+    fn invalid_root_volume_returns_diagnostic() {
+        let cases = [
+            ("16 GB", "volumes.root: invalid size `16 GB`"),
+            ("0 GiB", "volumes.root: invalid size `0 GiB`"),
+            ("2 GiB", "volumes.root: must be at least 4 GiB"),
+        ];
+
+        for (size, message) in cases {
+            let file = write_spec(&format!("name: dev\nvolumes:\n  root: {size}\n"));
+
+            let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+            assert_eq!((diagnostic.line, diagnostic.column), (3, 9), "{size:?}");
+            assert!(
+                diagnostic.message.starts_with(message),
+                "{}",
+                diagnostic.message
+            );
+        }
+    }
+
+    #[test]
+    fn root_disk_size_has_a_minimum() {
+        assert_eq!(parse_root_disk_mib("4 GiB"), Ok(MIN_ROOT_DISK_MIB));
+        assert_eq!(
+            parse_root_disk_mib("4095 MiB"),
+            Err(SizeError::TooSmall("4095 MiB".to_string()))
+        );
+        assert!(matches!(
+            parse_root_disk_mib("lots"),
+            Err(SizeError::Invalid(_))
+        ));
     }
 
     #[test]

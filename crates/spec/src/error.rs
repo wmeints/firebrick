@@ -42,6 +42,9 @@ pub enum SizeError {
     Invalid(String),
     #[error("size `{0}` is too large")]
     TooLarge(String),
+    /// The size is below the minimum of the root disk, [`crate::MIN_ROOT_DISK_MIB`].
+    #[error("must be at least 4 GiB, got `{0}`")]
+    TooSmall(String),
 }
 
 /// A problem in a spec file, pinned to the 1-based line and column it occurs at.

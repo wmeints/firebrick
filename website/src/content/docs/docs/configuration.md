@@ -20,6 +20,7 @@ init: true
 mise:
   enabled: true
 volumes:
+  root: 16 GiB
   docker: 20 GiB
 ```
 
@@ -37,6 +38,7 @@ refuses to replace an existing file; `fbk init --force` overwrites it.
 | `mise.config`       | Host directory with your mise dotfiles, resolved like `mounts[].host`.                                                | None                                        |
 | `resources.cpu`     | Number of vCPUs.                                                                                                      | `2`                                         |
 | `resources.memory`  | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`.                                                       | `4 GiB`                                     |
+| `volumes.root`      | Size of the root disk, which holds installed packages, in the same units as `memory`. At least `4 GiB`.               | `16 GiB`                                    |
 | `volumes.docker`    | Size of the Docker data disk, in the same units as `memory`.                                                          | `20 GiB`                                    |
 | `network.enabled`   | Give the sandbox a network device.                                                                                    | `true`                                      |
 | `network.enforce`   | Deny outgoing traffic unless a rule allows it.                                                                        | `false`                                     |
@@ -138,11 +140,13 @@ fbk start
 ```
 
 `fbk rm` deletes the sandbox's disk, including the tools installed in it and its
-Docker data; your project files stay on the host. There are three exceptions:
+Docker data; your project files stay on the host. There are four exceptions:
 `fbk start` applies `ports` to an existing sandbox, also while it runs, it
 applies `env` the next time the sandbox starts (see
-[Environment variables](#environment-variables)), and `fbk network` changes the
-network rules without removing the sandbox. See [Networking](/docs/networking/).
+[Environment variables](#environment-variables)), it grows the root disk to a
+larger `volumes.root` the next time the sandbox starts (see
+[Root disk](#root-disk)), and `fbk network` changes the network rules without
+removing the sandbox. See [Networking](/docs/networking/).
 
 The agent can edit `.firebrick.yml` like any other file in the workspace, so
 review changes you didn't make before you apply them. See
@@ -453,6 +457,28 @@ fbkd has no display`; stop `fbkd` and run `fbk` from your desktop. On Linux,
 without it, `fbk start` refuses to create a sandbox with `clipboard: true`. In a
 sandbox without the setting, `wl-paste` and `wl-copy` print `clipboard sharing
 is off for this sandbox`.
+
+## Root disk
+
+The sandbox's root filesystem keeps your changes, such as installed packages and
+files outside the project directory, on a disk of its own. `volumes.root` sets
+its size, `16 GiB` by default and at least `4 GiB`. The disk keeps its contents
+when the sandbox stops, and `fbk rm` deletes it with the sandbox.
+
+When you raise `volumes.root`, `fbk start` grows the disk of a stopped sandbox
+before it boots, without losing what's on it. Sandboxes created by an older
+version have a 4 GiB root disk, which grows to 16 GiB the same way. A running
+sandbox keeps its disk until it restarts:
+
+```console
+$ fbk start
+root disk grows to 32 GiB after the sandbox restarts: fbk stop && fbk start
+```
+
+A root disk can't shrink. With a smaller `volumes.root`, the sandbox keeps its
+disk and `fbk start` tells you to recreate the sandbox with `fbk rm --force &&
+fbk start`. When growing the disk fails, the sandbox starts with its current
+disk and `fbk start` prints the error.
 
 ## Docker data disk
 

@@ -7,6 +7,7 @@ mod error;
 mod ports;
 pub mod provision;
 mod recreate;
+mod root_disk;
 mod secret_updates;
 mod settings;
 mod status;
@@ -35,6 +36,7 @@ pub use error::SandboxError;
 use error::{connect_failed, create_failed, remove_failed, stop_before_remove_failed};
 pub use recreate::PROBE_LABEL;
 use recreate::create_with;
+pub use root_disk::{NoticeReason, RootDiskNotice};
 use settings::{
     check_mounts, dotfiles_mount, new_sandbox_settings, sandbox_image, workspace_host_path_in,
     workspace_mount_path, workspace_path_of,
@@ -114,6 +116,9 @@ pub struct StartSandbox<'a> {
     /// Environment variables of the sandbox, applied when it's created or starts; `None` keeps
     /// the stored ones. No name is also the name of a secret the sandbox gets.
     pub env: Option<&'a BTreeMap<String, String>>,
+    /// Size of the root disk in MiB, at least [`firebrick_spec::MIN_ROOT_DISK_MIB`]. Applied
+    /// when the sandbox is created, and grown to when a stopped sandbox starts.
+    pub root_disk_mib: u32,
     /// The git identity of the sandbox's default user, applied whenever the request leaves the
     /// sandbox running; `None` leaves its git config alone.
     pub git_identity: Option<GitIdentity<'a>>,
@@ -127,6 +132,17 @@ pub struct Started {
     /// Whether the sandbox was already running with other environment variables than the
     /// requested ones, which it gets when it restarts.
     pub env_pending_restart: bool,
+    /// Why the root disk of an existing sandbox didn't get the requested size, if it didn't.
+    pub root_disk: Option<RootDiskNotice>,
+}
+
+/// The requested settings an existing sandbox didn't get when it started.
+#[derive(Debug, Default)]
+struct Pending {
+    /// Whether it runs with other environment variables than the requested ones.
+    env_restart: bool,
+    /// Why its root disk didn't get the requested size.
+    root_disk: Option<RootDiskNotice>,
 }
 
 /// The name, status, SSH host name and workspace paths of a sandbox.
@@ -336,18 +352,19 @@ impl SandboxManager {
                 Ok(()) => self
                     .create_and_install(request, resources, on_progress)
                     .await
-                    .map(|()| false),
+                    .map(|()| Pending::default()),
                 Err(err) => Err(err),
             },
         };
 
         sync_ssh_config().await;
-        let env_pending_restart = result?;
+        let pending = result?;
         self.set_up_running(request).await;
 
         Ok(Started {
             forwards: self.open_forwards(request.name, request.ports).await,
-            env_pending_restart,
+            env_pending_restart: pending.env_restart,
+            root_disk: pending.root_disk,
         })
     }
     /// Listens for the network logs and clipboards of the sandboxes that have their routes,
@@ -651,9 +668,11 @@ impl SandboxManager {
 
         let mut settings = new_sandbox_settings(request, &guest_path, &hostname, resources);
         settings.mounts.extend(dotfiles);
-        let builder = settings
-            .builder(&self.netlogs, &self.clipboards)
-            .image(sandbox_image(request.image));
+        let builder = settings.image_builder(
+            &self.netlogs,
+            &self.clipboards,
+            sandbox_image(request.image),
+        );
 
         let sb = match create_with(builder, &secrets, request.network, on_pull).await {
             Ok(sb) => sb,
@@ -691,16 +710,16 @@ fn image_reference(image: RootfsSource) -> Option<String> {
     }
 }
 
-/// Starts an existing sandbox, first giving it a host name when it has none and the requested
-/// environment variables, then installs its workspace's mise tools when the sandbox has mise
-/// enabled, passing their progress to `on_mise`. Doesn't change a sandbox that is already
-/// running or starting, and returns whether it runs with other variables than the requested
-/// ones.
+/// Starts an existing sandbox, first giving it a host name when it has none, the requested
+/// environment variables and a root disk grown to the requested size, then installs its
+/// workspace's mise tools when the sandbox has mise enabled, passing their progress to
+/// `on_mise`. Doesn't change a sandbox that is already running or starting, and returns the
+/// requested settings the sandbox doesn't run with.
 async fn start_existing_sandbox(
     sb: &SandboxHandle,
     request: StartSandbox<'_>,
     on_mise: impl FnMut(MiseUpdate) + Send,
-) -> Result<bool, SandboxError> {
+) -> Result<Pending, SandboxError> {
     // Sandboxes created before SSH support have no host name yet.
     if ssh::hostname_of(sb).is_none() {
         assign_hostname(sb, request).await?;
@@ -710,12 +729,10 @@ async fn start_existing_sandbox(
         sb.status_snapshot(),
         SandboxStatus::Running | SandboxStatus::Starting
     ) {
-        return env_pending_restart(sb, request);
+        return pending_restart(sb, request);
     }
 
-    if let Some(wanted) = request.env {
-        sync_env(sb, wanted).await?;
-    }
+    let root_disk = prepare_stopped(sb, request).await?;
 
     let started = match sb.start_detached().await {
         Ok(started) => started,
@@ -723,7 +740,7 @@ async fn start_existing_sandbox(
         // It may have booted it before the sync, so report a change against the config `sb`
         // read before it.
         Err(MicrosandboxError::SandboxStillRunning(_)) => {
-            return env_pending_restart(sb, request);
+            return pending_restart(sb, request);
         }
         Err(err) => {
             tracing::error!(error = ?err, "failed to start sandbox {}", request.name);
@@ -734,7 +751,31 @@ async fn start_existing_sandbox(
     tracing::info!("started sandbox {}", request.name);
     install_tools_of_existing(sb, &started, on_mise).await?;
 
-    Ok(false)
+    Ok(Pending {
+        env_restart: false,
+        root_disk,
+    })
+}
+
+/// Gives the stopped sandbox the requested environment variables and grows its root disk to the
+/// requested size. Returns why its root disk didn't get that size, if it didn't.
+async fn prepare_stopped(
+    sb: &SandboxHandle,
+    request: StartSandbox<'_>,
+) -> Result<Option<RootDiskNotice>, SandboxError> {
+    if let Some(wanted) = request.env {
+        sync_env(sb, wanted).await?;
+    }
+
+    Ok(root_disk::grow_stopped(sb, request.root_disk_mib).await)
+}
+
+/// Returns the requested settings the running sandbox gets when it restarts.
+fn pending_restart(sb: &SandboxHandle, request: StartSandbox<'_>) -> Result<Pending, SandboxError> {
+    Ok(Pending {
+        env_restart: env_pending_restart(sb, request)?,
+        root_disk: root_disk::pending(sb, request.root_disk_mib),
+    })
 }
 
 /// Installs the workspace's mise tools in the started sandbox when it has mise enabled.
