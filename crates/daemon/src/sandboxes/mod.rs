@@ -36,7 +36,7 @@ pub use error::SandboxError;
 use error::{connect_failed, create_failed, remove_failed, stop_before_remove_failed};
 pub use recreate::PROBE_LABEL;
 use recreate::create_with;
-pub use root_disk::{NoticeReason, RootDiskNotice, default_mib as default_root_disk_mib};
+pub use root_disk::{NoticeReason, RootDiskNotice};
 use settings::{
     check_mounts, dotfiles_mount, new_sandbox_settings, sandbox_image, workspace_host_path_in,
     workspace_mount_path, workspace_path_of,

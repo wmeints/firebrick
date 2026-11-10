@@ -16,7 +16,7 @@ use crate::sandboxes::provision::network;
 use crate::sandboxes::provision::pull::PullUpdate;
 use crate::sandboxes::{
     NoticeReason, Resources, RootDiskNotice, SandboxError, SandboxInfo, StartProgress,
-    StartSandbox, Started, Upgrade, default_root_disk_mib,
+    StartSandbox, Started, Upgrade,
 };
 use crate::secrets::Secret;
 use anyhow::Result;
@@ -87,7 +87,7 @@ fn root_disk_mib(request: &StartSandboxRequest) -> Result<u32, Status> {
         .as_ref()
         .map(|volumes| volumes.root.as_str())
     {
-        None | Some("") => Ok(default_root_disk_mib()),
+        None | Some("") => Ok(firebrick_spec::DEFAULT_ROOT_DISK_MIB),
         Some(size) => firebrick_spec::parse_root_disk_mib(size)
             .map_err(|err| Status::invalid_argument(format!("volumes.root: {err}"))),
     }
@@ -919,7 +919,7 @@ mod tests {
                 env_pending_restart: false,
                 root_disk: Some(RootDiskNotice {
                     requested_mib: 32768,
-                    current_mib: 16384,
+                    current_mib: Some(16384),
                     reason: notice_reason,
                 }),
             });
@@ -927,7 +927,7 @@ mod tests {
             let message = response.root_disk.unwrap();
             assert_eq!(
                 (message.reason(), message.requested_mib, message.current_mib),
-                (reason, 32768, 16384)
+                (reason, 32768, Some(16384))
             );
             assert_eq!(message.error, error);
         }
@@ -946,21 +946,33 @@ mod tests {
     }
 
     #[test]
-    fn start_reads_the_root_disk_size() {
-        let parsed = ParsedStart::of(&root_disk_request(Some("32 GiB"))).unwrap();
+    fn root_disk_notice_without_a_current_size_leaves_it_unset() {
+        let response = sandbox_started(Started {
+            forwards: ForwardReport::default(),
+            env_pending_restart: false,
+            root_disk: Some(RootDiskNotice {
+                requested_mib: 32768,
+                current_mib: None,
+                reason: NoticeReason::GrowFailed("unreadable".to_string()),
+            }),
+        });
 
-        assert_eq!(
-            start_sandbox_from(&StartSandboxRequest::default(), &parsed).root_disk_mib,
-            32768
-        );
+        assert_eq!(response.root_disk.unwrap().current_mib, None);
     }
 
     #[test]
-    fn start_uses_the_default_root_disk_size_when_missing_or_empty() {
-        for root in [None, Some("")] {
-            let parsed = ParsedStart::of(&root_disk_request(root)).unwrap();
+    fn start_reads_the_root_disk_size_or_the_default() {
+        let cases = [(Some("32 GiB"), 32768), (Some(""), 16384), (None, 16384)];
 
-            assert_eq!(parsed.root_disk_mib, 16384, "{root:?}");
+        for (root, expected) in cases {
+            let request = root_disk_request(root);
+            let parsed = ParsedStart::of(&request).unwrap();
+
+            assert_eq!(
+                start_sandbox_from(&request, &parsed).root_disk_mib,
+                expected,
+                "{root:?}"
+            );
         }
     }
 

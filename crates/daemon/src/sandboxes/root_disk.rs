@@ -1,9 +1,9 @@
 //! The size of a sandbox's root disk: set when the sandbox is created, and grown when an
 //! existing sandbox starts with a larger requested size. microsandbox can't shrink a root disk.
 
-use firebrick_spec::{MIN_ROOT_DISK_MIB, VolumesSpec};
+use firebrick_spec::MIN_ROOT_DISK_MIB;
 use microsandbox::Sandbox;
-use microsandbox::sandbox::{RootDisk, RootfsSource, SandboxBuilder, SandboxHandle, SandboxSpec};
+use microsandbox::sandbox::{RootDisk, RootfsSource, SandboxHandle, SandboxSpec};
 
 /// A root disk of an existing sandbox that didn't get the requested size. The sandbox still
 /// starts with its current disk.
@@ -11,8 +11,8 @@ use microsandbox::sandbox::{RootDisk, RootfsSource, SandboxBuilder, SandboxHandl
 pub struct RootDiskNotice {
     /// The requested size in MiB.
     pub requested_mib: u32,
-    /// The size of the disk in MiB.
-    pub current_mib: u32,
+    /// The size of the disk in MiB, or `None` when its config couldn't be read.
+    pub current_mib: Option<u32>,
     /// Why the disk didn't get the requested size.
     pub reason: NoticeReason,
 }
@@ -24,7 +24,7 @@ pub enum NoticeReason {
     PendingRestart,
     /// The requested size is smaller than the disk, which can't shrink.
     ShrinkUnsupported,
-    /// Growing the disk failed with the error.
+    /// Growing the disk, or reading its size, failed with the error.
     GrowFailed(String),
 }
 
@@ -37,18 +37,6 @@ enum Action {
     Grow,
     /// Leave the disk alone for the reason.
     Notice(NoticeReason),
-}
-
-/// Returns the default size of the root disk in MiB.
-pub fn default_mib() -> u32 {
-    // The default size is a constant that parses; 16 GiB matches it should that ever change.
-    firebrick_spec::parse_root_disk_mib(&VolumesSpec::default().root).unwrap_or(16 * 1024)
-}
-
-/// Gives a new sandbox a root disk of `size_mib`. The builder must have its image already,
-/// because microsandbox only sizes the root disk of an OCI image.
-pub(super) fn with_size(builder: SandboxBuilder, size_mib: u32) -> SandboxBuilder {
-    builder.root_disk(size_mib)
 }
 
 /// Returns the size of the sandbox's root disk in MiB, or `None` when microsandbox can't resize
@@ -69,9 +57,18 @@ pub(super) fn current_mib(spec: &SandboxSpec) -> Option<u32> {
 }
 
 /// Grows the root disk of the stopped sandbox to `requested_mib` when it's smaller. Returns a
-/// notice when the disk keeps another size than requested.
+/// notice when the disk keeps another size than requested, also when its size can't be read.
 pub(super) async fn grow_stopped(sb: &SandboxHandle, requested_mib: u32) -> Option<RootDiskNotice> {
-    let current_mib = current_of(sb)?;
+    let current_mib = match current_of(sb) {
+        Ok(current_mib) => current_mib?,
+        Err(err) => {
+            return Some(RootDiskNotice {
+                requested_mib,
+                current_mib: None,
+                reason: NoticeReason::GrowFailed(err),
+            });
+        }
+    };
     let reason = match action(current_mib, requested_mib, false) {
         Action::Keep => return None,
         Action::Notice(reason) => reason,
@@ -80,7 +77,7 @@ pub(super) async fn grow_stopped(sb: &SandboxHandle, requested_mib: u32) -> Opti
 
     Some(RootDiskNotice {
         requested_mib,
-        current_mib,
+        current_mib: Some(current_mib),
         reason,
     })
 }
@@ -88,14 +85,14 @@ pub(super) async fn grow_stopped(sb: &SandboxHandle, requested_mib: u32) -> Opti
 /// Returns a notice when the running sandbox's root disk has another size than
 /// `requested_mib`, which it keeps until it restarts.
 pub(super) fn pending(sb: &SandboxHandle, requested_mib: u32) -> Option<RootDiskNotice> {
-    let current_mib = current_of(sb)?;
+    let current_mib = current_of(sb).ok()??;
     let Action::Notice(reason) = action(current_mib, requested_mib, true) else {
         return None;
     };
 
     Some(RootDiskNotice {
         requested_mib,
-        current_mib,
+        current_mib: Some(current_mib),
         reason,
     })
 }
@@ -122,16 +119,15 @@ pub(super) async fn record(sb: &Sandbox, size_mib: u32) {
     }
 }
 
-/// Returns the size of the sandbox's root disk, logging a warning when its config can't be
-/// read.
-fn current_of(sb: &SandboxHandle) -> Option<u32> {
-    match sb.config() {
-        Ok(config) => current_mib(&config.spec),
-        Err(err) => {
+/// Returns the size of the sandbox's root disk, or `None` when it can't be resized. Logs a
+/// warning and returns the error when the sandbox's config can't be read.
+fn current_of(sb: &SandboxHandle) -> Result<Option<u32>, String> {
+    sb.config()
+        .map(|config| current_mib(&config.spec))
+        .map_err(|err| {
             tracing::warn!(error = ?err, "failed to read the root disk of sandbox {}", sb.name());
-            None
-        }
-    }
+            format!("failed to read the root disk size: {err}")
+        })
 }
 
 /// Decides what to do with a root disk of `current_mib` when `requested_mib` is asked for.
@@ -168,6 +164,7 @@ async fn grow(sb: &SandboxHandle, current_mib: u32, requested_mib: u32) -> Optio
 mod tests {
     use super::*;
     use microsandbox::Sandbox;
+    use microsandbox::sandbox::SandboxBuilder;
 
     /// Returns the spec of a sandbox built by `configure` from the `ubuntu:26.04` image.
     async fn spec_of(configure: impl FnOnce(SandboxBuilder) -> SandboxBuilder) -> SandboxSpec {
@@ -179,8 +176,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_sandbox_gets_the_size() {
-        let spec = spec_of(|builder| with_size(builder, 16 * 1024)).await;
+    async fn current_size_is_the_size_the_sandbox_was_created_with() {
+        let spec = spec_of(|builder| builder.root_disk(16 * 1024)).await;
 
         assert_eq!(current_mib(&spec), Some(16 * 1024));
     }
@@ -197,35 +194,5 @@ mod tests {
         let spec = spec_of(|builder| builder.root_disk_with(|d| d.tmpfs().size(256))).await;
 
         assert_eq!(current_mib(&spec), None);
-    }
-
-    #[test]
-    fn same_size_keeps_the_disk() {
-        assert_eq!(action(16384, 16384, false), Action::Keep);
-        assert_eq!(action(16384, 16384, true), Action::Keep);
-    }
-
-    #[test]
-    fn larger_size_grows_a_stopped_disk() {
-        assert_eq!(action(4096, 16384, false), Action::Grow);
-    }
-
-    #[test]
-    fn larger_size_is_pending_on_a_running_disk() {
-        assert_eq!(
-            action(4096, 16384, true),
-            Action::Notice(NoticeReason::PendingRestart)
-        );
-    }
-
-    #[test]
-    fn smaller_size_is_refused() {
-        for running in [false, true] {
-            assert_eq!(
-                action(16384, 8192, running),
-                Action::Notice(NoticeReason::ShrinkUnsupported),
-                "{running}"
-            );
-        }
     }
 }

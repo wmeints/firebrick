@@ -205,15 +205,15 @@ message RootDiskNotice {
     REASON_PENDING_RESTART = 1;
     // The requested size is smaller than the disk, and a root disk can't shrink.
     REASON_SHRINK_UNSUPPORTED = 2;
-    // Growing the disk failed; `error` says why.
+    // Growing the disk, or reading its size, failed; `error` says why.
     REASON_GROW_FAILED = 3;
   }
 
   Reason reason = 1;
   // The requested size in MiB.
   uint32 requested_mib = 2;
-  // The size of the root disk in MiB.
-  uint32 current_mib = 3;
+  // The size of the root disk in MiB. Unset when fbkd couldn't read it.
+  optional uint32 current_mib = 3;
   // Why growing the disk failed, for REASON_GROW_FAILED. Empty otherwise.
   string error = 4;
 }

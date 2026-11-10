@@ -17,7 +17,7 @@ use crate::sandboxes::provision::mise::{self};
 use crate::sandboxes::provision::network;
 use crate::sandboxes::provision::pull::{self, PullUpdate};
 use crate::secrets::{self, Secret};
-use firebrick_spec::NetworkSpec;
+use firebrick_spec::{DEFAULT_ROOT_DISK_MIB, NetworkSpec};
 use microsandbox::sandbox::{PullPolicy, SandboxBuilder, SandboxHandle, SandboxStatus};
 use microsandbox::snapshot::Snapshot;
 use microsandbox::{MicrosandboxError, Sandbox};
@@ -129,7 +129,7 @@ impl SandboxManager {
             .insert(IMAGE_LABEL.to_string(), image.to_string());
         // A fresh root disk is never smaller than the default, so an upgrade also grows the
         // disks of sandboxes created with a smaller default.
-        settings.grow_root_disk_to(root_disk::default_mib());
+        settings.grow_root_disk_to(DEFAULT_ROOT_DISK_MIB);
         let recreation = Recreation {
             settings: &settings,
             network,
@@ -242,7 +242,9 @@ impl SandboxManager {
             Err(err) => return Err(recreate_failed(name, snapshot, change, &err).await),
         };
 
-        root_disk::record(&sb, settings.root_disk_mib()).await;
+        if let Some(size_mib) = settings.root_disk_mib() {
+            root_disk::record(&sb, size_mib).await;
+        }
         remove_snapshot(snapshot).await;
         tracing::info!("{}", change.done(name));
 

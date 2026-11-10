@@ -27,8 +27,8 @@ pub use file::{exists, from_file, read_text, to_file, write_text};
 use mounts::deserialize_mounts;
 pub use mounts::{InvalidGuestPath, MountSpec, guest_mount_path};
 pub use names::{
-    InvalidImage, InvalidSandboxName, MAX_SANDBOX_NAME_BYTES, MIN_ROOT_DISK_MIB,
-    parse_root_disk_mib, parse_size_mib, validate_image, validate_sandbox_name,
+    DEFAULT_ROOT_DISK_MIB, InvalidImage, InvalidSandboxName, MAX_SANDBOX_NAME_BYTES,
+    MIN_ROOT_DISK_MIB, parse_root_disk_mib, parse_size_mib, validate_image, validate_sandbox_name,
 };
 use names::{deserialize_image, deserialize_root_size, deserialize_sandbox_name, deserialize_size};
 pub use network::{InvalidNetworkRule, NetworkRule, NetworkSpec};
@@ -180,7 +180,7 @@ impl Default for VolumesSpec {
 
 /// Size of the root disk when the spec doesn't set one.
 fn default_root_volume() -> String {
-    "16 GiB".to_string()
+    format!("{} GiB", DEFAULT_ROOT_DISK_MIB / 1024)
 }
 
 /// Size of the Docker volume when the spec doesn't set one.

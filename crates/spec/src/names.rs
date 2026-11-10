@@ -40,6 +40,9 @@ pub fn parse_size_mib(value: &str) -> Result<u32, SizeError> {
 /// images fit in.
 pub const MIN_ROOT_DISK_MIB: u32 = 4096;
 
+/// The root disk a sandbox gets when its spec doesn't set one, in MiB.
+pub const DEFAULT_ROOT_DISK_MIB: u32 = 16 * 1024;
+
 /// Parses the size of a sandbox's root disk like [`parse_size_mib`], rejecting sizes below
 /// [`MIN_ROOT_DISK_MIB`].
 pub fn parse_root_disk_mib(value: &str) -> Result<u32, SizeError> {

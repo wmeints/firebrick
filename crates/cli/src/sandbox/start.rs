@@ -152,7 +152,7 @@ pub(super) fn warn_root_disk(started: &SandboxStarted) {
 /// reason the client doesn't know.
 fn root_disk_warning(notice: &RootDiskNotice) -> Option<String> {
     let requested = format_mib(notice.requested_mib);
-    let current = format_mib(notice.current_mib);
+    let current = format_mib(notice.current_mib());
 
     match notice.reason() {
         Reason::PendingRestart => Some(format!(
@@ -481,12 +481,19 @@ pub(super) async fn follow_pull<R, T>(
 mod tests {
     use super::*;
 
+    use crate::api::Mount;
+    use crate::spec_file::read_spec_file;
+    use crate::test_support::symlinked_spec;
+    use std::fs;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
     /// Returns a root disk notice for the reason, from 16 GiB to the requested size.
     fn notice(reason: Reason, requested_mib: u32, error: &str) -> RootDiskNotice {
         RootDiskNotice {
             reason: reason.into(),
             requested_mib,
-            current_mib: 16 * 1024,
+            current_mib: Some(16 * 1024),
             error: error.to_string(),
         }
     }
@@ -518,12 +525,6 @@ mod tests {
     fn unknown_root_disk_reason_has_no_warning() {
         assert_eq!(root_disk_warning(&notice(Reason::Unspecified, 1, "")), None);
     }
-    use crate::api::Mount;
-    use crate::spec_file::read_spec_file;
-    use crate::test_support::symlinked_spec;
-    use std::fs;
-    use std::path::PathBuf;
-    use tempfile::TempDir;
 
     fn sandbox(hostname: &str, workspace_path: &str) -> GetSandboxResponse {
         GetSandboxResponse {

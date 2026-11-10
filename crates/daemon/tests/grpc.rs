@@ -867,14 +867,17 @@ fn root_disk_request(name: &str, root: &str) -> StartSandboxRequest {
 }
 
 /// Returns the size in MiB of the file system the sandbox's root sits on, as `df` reports it.
+/// Uses the POSIX output, which GNU df and busybox df share.
 async fn root_fs_mib(client: &mut SandboxManagementServiceClient<Channel>, name: &str) -> u32 {
-    let (output, code) = run_command(client, name, "df", &["-B1M", "--output=size", "/"]).await;
+    let (output, code) = run_command(client, name, "df", &["-Pk", "/"]).await;
     assert_eq!(code, 0, "unexpected output: {output:?}");
 
     output
         .lines()
         .last()
-        .and_then(|line| line.trim().parse().ok())
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|kib| kib.parse::<u32>().ok())
+        .map(|kib| kib / 1024)
         .unwrap_or_else(|| panic!("unexpected df output: {output:?}"))
 }
 
@@ -897,10 +900,9 @@ fn recorded_root_disk(spec: &SandboxSpec) -> Option<RootDisk> {
 
 /// Returns the reason and the sizes of the root disk notice of a start.
 fn notice_of(started: &SandboxStarted) -> Option<(root_disk_notice::Reason, u32, u32)> {
-    started
-        .root_disk
-        .as_ref()
-        .map(|notice: &RootDiskNotice| (notice.reason(), notice.requested_mib, notice.current_mib))
+    started.root_disk.as_ref().map(|notice: &RootDiskNotice| {
+        (notice.reason(), notice.requested_mib, notice.current_mib())
+    })
 }
 
 #[tokio::test]
@@ -988,6 +990,29 @@ async fn running_sandbox_keeps_its_root_disk_and_tells_why() {
 }
 
 #[tokio::test]
+async fn stopped_sandbox_keeps_a_root_disk_larger_than_requested() {
+    let name: &str = &sandbox_name("root-shrink");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("root-shrink").await;
+    let mut client = daemon.client().await;
+    start_with_root_disk(&mut client, name, "8 GiB").await;
+    stop_sandbox(&mut client, name).await;
+
+    let smaller = start_with_root_disk(&mut client, name, "4 GiB").await;
+    let size = root_fs_mib(&mut client, name).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert_eq!(
+        notice_of(&smaller),
+        Some((root_disk_notice::Reason::ShrinkUnsupported, 4096, 8192))
+    );
+    assert_fills_disk(size, 8 * 1024);
+}
+
+#[tokio::test]
 async fn update_network_keeps_the_root_disk_size() {
     let name: &str = &sandbox_name("root-network");
     remove_sandbox_and_snapshots(name).await;
@@ -1003,7 +1028,7 @@ async fn update_network_keeps_the_root_disk_size() {
     let recorded = recorded_root_disk(&sandbox_spec(name).await);
     let smaller = start_with_root_disk(&mut client, name, "4 GiB").await;
     stop_sandbox(&mut client, name).await;
-    let restarted = start_with_root_disk(&mut client, name, "8 GiB").await;
+    let grown = start_with_root_disk(&mut client, name, "16 GiB").await;
     let size = root_fs_mib(&mut client, name).await;
 
     daemon.stop().await;
@@ -1020,8 +1045,8 @@ async fn update_network_keeps_the_root_disk_size() {
         notice_of(&smaller),
         Some((root_disk_notice::Reason::ShrinkUnsupported, 4096, 8192))
     );
-    assert_eq!(notice_of(&restarted), None);
-    assert_fills_disk(size, 8 * 1024);
+    assert_eq!(notice_of(&grown), None);
+    assert_fills_disk(size, 16 * 1024);
 }
 
 #[tokio::test]
@@ -4076,6 +4101,56 @@ fn with_image_label(labels: &[(String, String)], image: &str) -> Vec<(String, St
             _ => (key.clone(), value.clone()),
         })
         .collect()
+}
+
+/// Creates a sandbox from [`OLD_IMAGE`] with a root disk of `root`, upgrades it, and returns
+/// the size of its root file system and the notice of a start with `root` afterwards.
+async fn upgraded_root_disk(
+    test: &str,
+    root: &str,
+) -> (u32, Option<(root_disk_notice::Reason, u32, u32)>) {
+    let name: &str = &sandbox_name(test);
+    remove_sandbox_and_snapshots(name).await;
+
+    let daemon = TestDaemon::start(test).await;
+    let mut client = daemon.client().await;
+    let request = StartSandboxRequest {
+        image: OLD_IMAGE.to_string(),
+        ..root_disk_request(name, root)
+    };
+    start_and_wait(&mut client, request).await;
+
+    let upgraded = upgrade(&mut client, name, UPGRADE_IMAGE).await;
+    wait_for_status(&mut client, name, SandboxStatus::Running).await;
+    let size = root_fs_mib(&mut client, name).await;
+    let started = start(&mut client, root_disk_request(name, root))
+        .await
+        .unwrap();
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
+
+    assert!(upgraded.expect("failed to upgrade the sandbox").upgraded);
+    (size, notice_of(&started))
+}
+
+#[tokio::test]
+async fn upgrade_keeps_a_root_disk_larger_than_the_default() {
+    let (size, notice) = upgraded_root_disk("upgrade-root-large", "32 GiB").await;
+
+    assert_fills_disk(size, 32 * 1024);
+    assert_eq!(notice, None);
+}
+
+#[tokio::test]
+async fn upgrade_raises_a_smaller_root_disk_to_the_default() {
+    let (size, notice) = upgraded_root_disk("upgrade-root-small", "8 GiB").await;
+
+    assert_fills_disk(size, 16 * 1024);
+    assert_eq!(
+        notice,
+        Some((root_disk_notice::Reason::ShrinkUnsupported, 8192, 16384))
+    );
 }
 
 #[tokio::test]

@@ -562,8 +562,9 @@ compares the requested size with the one in the sandbox's config
 - **Smaller size:** microsandbox can't shrink a disk, so fbkd keeps it and
   reports `REASON_SHRINK_UNSUPPORTED`; fbk tells the user to recreate the
   sandbox with `fbk rm --force && fbk start`.
-- **Growing fails:** fbkd logs a warning, starts the sandbox with its current
-  disk and reports `REASON_GROW_FAILED` with the error, which fbk prints.
+- **Growing fails, or the disk's size can't be read:** fbkd logs a warning,
+  starts the sandbox with its current disk and reports `REASON_GROW_FAILED` with
+  the error, which fbk prints.
 
 A disk of the requested size is left alone: microsandbox refuses a request for
 the size a disk already has. `UpdateNetwork` keeps the disk, because it

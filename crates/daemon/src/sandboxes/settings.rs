@@ -10,7 +10,7 @@ use crate::guest::netlog::NetLogs;
 use crate::sandboxes::provision::env;
 use crate::sandboxes::provision::mise::{self};
 use crate::ssh;
-use firebrick_spec::{MIN_ROOT_DISK_MIB, MountSpec, VolumesSpec};
+use firebrick_spec::{MountSpec, VolumesSpec};
 use microsandbox::sandbox::{
     HostPermissions, MountBuilder, OwnedVolumeStorage, SandboxBuilder, SandboxHandle, SandboxSpec,
     VolumeMount,
@@ -60,8 +60,9 @@ pub(super) struct SandboxSettings {
     env: BTreeMap<String, String>,
     init: bool,
     resources: Resources,
-    /// Size of the root disk in MiB, which a sandbox created from an image gets.
-    root_disk_mib: u32,
+    /// Size of the root disk in MiB, which a sandbox created from an image gets, or `None` for a
+    /// root disk microsandbox can't resize, which gets microsandbox's default.
+    root_disk_mib: Option<u32>,
 }
 
 /// A host directory bind-mounted into the sandbox as its working directory.
@@ -79,7 +80,7 @@ impl SandboxSettings {
             .zip(workspace_path_of(handle))
             .map(|(host, guest)| Workspace { host, guest });
         let workdir = spec.runtime.workdir.as_deref();
-        let root_disk_mib = root_disk::current_mib(&spec).unwrap_or(MIN_ROOT_DISK_MIB);
+        let root_disk_mib = root_disk::current_mib(&spec);
 
         Ok(Self {
             name: handle.name().to_string(),
@@ -97,14 +98,14 @@ impl SandboxSettings {
         })
     }
 
-    /// Returns the size of the root disk in MiB.
-    pub(super) fn root_disk_mib(&self) -> u32 {
+    /// Returns the size of the root disk in MiB, or `None` when microsandbox can't resize it.
+    pub(super) fn root_disk_mib(&self) -> Option<u32> {
         self.root_disk_mib
     }
 
     /// Grows the root disk the sandbox gets from an image to at least `size_mib`.
     pub(super) fn grow_root_disk_to(&mut self, size_mib: u32) {
-        self.root_disk_mib = self.root_disk_mib.max(size_mib);
+        self.root_disk_mib = Some(self.root_disk_mib.map_or(size_mib, |mib| mib.max(size_mib)));
     }
 
     /// Returns a builder like [`Self::builder`] with the image as root filesystem, on a root
@@ -115,10 +116,13 @@ impl SandboxSettings {
         clipboards: &Clipboards,
         image: &str,
     ) -> SandboxBuilder {
-        root_disk::with_size(
-            self.builder(netlogs, clipboards).image(image),
-            self.root_disk_mib,
-        )
+        // microsandbox only sizes the root disk of an OCI image, so the image comes first.
+        let builder = self.builder(netlogs, clipboards).image(image);
+
+        match self.root_disk_mib {
+            Some(mib) => builder.root_disk(mib),
+            None => builder,
+        }
     }
 
     /// Returns a builder for a detached sandbox with these settings, the route of its network
@@ -208,7 +212,7 @@ pub(super) fn new_sandbox_settings(
         env: request.env.cloned().unwrap_or_default(),
         init: request.init,
         resources,
-        root_disk_mib: request.root_disk_mib,
+        root_disk_mib: Some(request.root_disk_mib),
     }
 }
 
