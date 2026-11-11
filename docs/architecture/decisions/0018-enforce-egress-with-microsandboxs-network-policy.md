@@ -60,8 +60,12 @@ The daemon builds the policy in its `network` module with the
   as SSH to `github.com:22`. Those need an IP or CIDR rule.
 - TLS interception adds the microsandbox CA to the guest's trust store. Clients
   with their own CA store or certificate pinning fail, as they already do when a
-  secret is set ([ADR 0004](0004-store-secrets-in-a-private-file.md)). QUIC
-  (UDP/443) is dropped and clients fall back to TCP.
+  secret is set ([ADR 0004](0004-store-secrets-in-a-private-file.md)). Java,
+  whose JDKs only read their own `cacerts`, is the exception: fbkd builds a
+  PKCS12 trust store from the system bundle on every start and points every JVM
+  at it with `JAVA_TOOL_OPTIONS` (see
+  [Trusting the interception CA in Java](../06-runtime-view.md#trusting-the-interception-ca-in-java)).
+  QUIC (UDP/443) is dropped and clients fall back to TCP.
 - A secret's allowed hosts don't open the network: with enforcement on, they
   must also be allowed by the network policy.
 - Changing the rules means recreating the sandbox, because microsandbox can't

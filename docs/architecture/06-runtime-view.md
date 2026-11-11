@@ -492,6 +492,57 @@ config is written back to the host (see the
   seconds: fbkd logs a warning naming the sandbox and the key, and
   `StartSandbox` succeeds.
 
+### Trusting the interception CA in Java
+
+A sandbox with TLS interception, from an enforced network policy or at least one
+secret, trusts microsandbox's interception CA in its system bundle
+`/etc/ssl/certs/ca-certificates.crt`, and microsandbox points OpenSSL, Python
+and Node at it with `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` and
+`NODE_EXTRA_CA_CERTS`. A JDK only reads its own `lib/security/cacerts`, so every
+HTTPS request from Java would fail with `PKIX path building failed`. JDKs are
+usually installed with mise after the sandbox starts, so fbkd doesn't import the
+CA into a JDK: it keeps one PKCS12 trust store that belongs to no JDK at
+`/etc/ssl/certs/java/firebrick.p12`, and points every JVM at it with
+`JAVA_TOOL_OPTIONS`:
+
+```text
+-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/firebrick.p12 -Djavax.net.ssl.trustStorePassword=changeit
+```
+
+When fbkd creates the sandbox, and when `UpdateNetwork` or `UpgradeSandbox`
+recreates it, it adds these options to the variables from the spec when the
+network policy or the secrets turn on TLS interception, after a
+`JAVA_TOOL_OPTIONS` of the spec's own, and records the variable in the
+`firebrick.env` label. When `StartSandbox` syncs the variables of a stopped
+sandbox, it adds them the same way when the sandbox's stored config has TLS
+interception, so a sandbox that got its first secret, or one created before fbkd
+set the options, gets them on its next start, and the user's options are kept. A
+sandbox without TLS interception doesn't get the variable, and a recreate
+without it removes the options again. Every JVM prints `Picked up
+JAVA_TOOL_OPTIONS: ...` to stderr.
+
+Once a sandbox with TLS interception runs, after its mise tools are installed,
+fbkd (re)builds the store as root, on every start and after a recreate of a
+running sandbox, so it follows changes to the system bundle:
+
+```sh
+openssl pkcs12 -export -nokeys -jdktrust anyExtendedKeyUsage \
+  -in /etc/ssl/certs/ca-certificates.crt -out /etc/ssl/certs/java/firebrick.p12.tmp \
+  -passout pass:changeit
+chmod 644 /etc/ssl/certs/java/firebrick.p12.tmp
+mv -f /etc/ssl/certs/java/firebrick.p12.tmp /etc/ssl/certs/java/firebrick.p12
+```
+
+`openssl pkcs12` writes mode `0600`, which the `agent` user couldn't read. The
+store holds only the CA certificates the guest already trusts system-wide, so
+its well-known password protects nothing secret and the store widens no trust
+(see the [threat model](concepts/threat-model.md)).
+
+- The image has no `openssl`, an OpenSSL older than 3.2, which lacks
+  `-jdktrust`, or no system bundle, or the build doesn't finish within 30
+  seconds: fbkd logs a warning naming the sandbox and the reason, and
+  `StartSandbox` succeeds. Java then fails as it did without the store.
+
 ### Setting environment variables
 
 The `env` map in `.firebrick.yml` gives every process in the sandbox plain
@@ -662,7 +713,7 @@ sequenceDiagram
         end
         D->>MS: List sandboxes for taken host names
         D->>D: Pick unique project.fbk host name
-        D->>MS: Create detached sandbox with pull progress (image, init, cpus, memory,<br/>firebrick.hostname, firebrick.mise and firebrick.ports labels,<br/>workspace mounted at /workspaces/project,<br/>extra mounts at their guest paths,<br/>owned ext4 disk at /var/lib/docker,<br/>network policy with TLS interception when enforced)
+        D->>MS: Create detached sandbox with pull progress (image, init, cpus, memory,<br/>firebrick.hostname, firebrick.mise and firebrick.ports labels,<br/>workspace mounted at /workspaces/project,<br/>extra mounts at their guest paths,<br/>owned ext4 disk at /var/lib/docker,<br/>network policy with TLS interception when enforced,<br/>JAVA_TOOL_OPTIONS with the Java trust store with TLS interception)
         opt Image isn't cached
             loop While layers download (at most every 100 ms)
                 MS-->>D: PullProgress events
@@ -696,6 +747,13 @@ sequenceDiagram
         alt mise exits non-zero or times out
             Note over D: Result: FAILED_PRECONDITION (mise install failed), sandbox keeps running
         else Image has no mise
+            D->>D: Log a warning
+        end
+    end
+
+    opt StartSandbox left the sandbox running and it has TLS interception
+        D->>MS: As root: build /etc/ssl/certs/java/firebrick.p12 from<br/>/etc/ssl/certs/ca-certificates.crt with openssl pkcs12, chmod 644
+        opt No openssl, OpenSSL older than 3.2 or no system bundle
             D->>D: Log a warning
         end
     end

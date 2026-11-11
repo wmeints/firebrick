@@ -54,6 +54,11 @@ Keep in mind that:
 - Firebrick intercepts HTTPS to check the host name, with a certificate
   authority that the sandbox trusts. Tools that pin certificates or bring their
   own CA store fail. HTTP/3 is blocked, so clients fall back to HTTP/2 or 1.1.
+- Java trusts that certificate authority through `JAVA_TOOL_OPTIONS`, which
+  points every JVM at a trust store Firebrick builds when the sandbox starts, so
+  JDKs you install later with `mise use java@...` work too. Every JVM prints
+  `Picked up JAVA_TOOL_OPTIONS: ...` to stderr. A custom image needs OpenSSL 3.2
+  or newer to build the store.
 - A secret's allowed hosts must be allowed by the network rules too. See
   [Secrets](/docs/secrets/).
 - `mise install` downloads its tools when the sandbox starts, so allow the hosts

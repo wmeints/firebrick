@@ -69,9 +69,13 @@ and trust boundaries these risks belong to.
   non-HTTP traffic get a reset or a close. Strict mode blocks protocols other
   than HTTP(S) on ports 80 and 443, such as SSH, to hosts allowed only by a
   domain rule; they need an IP or CIDR rule. TLS interception breaks clients
-  that pin certificates or bring their own CA store. microsandbox has no API for
-  denied connections; the network log records the attempts the guest makes, but
-  not which ones the policy denied
+  that pin certificates or bring their own CA store. Java trusts the CA through
+  a trust store that fbkd builds with `openssl pkcs12 -jdktrust` and
+  `JAVA_TOOL_OPTIONS`; in an image without OpenSSL 3.2 or newer the build only
+  logs a warning and Java fails, and a JVM started with its own
+  `javax.net.ssl.trustStore` still does. microsandbox has no API for denied
+  connections; the network log records the attempts the guest makes, but not
+  which ones the policy denied
   ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
 - **The agent can tamper with the network record:** the logger that reports a
   sandbox's DNS lookups and connections runs inside the VM, and the `agent` user

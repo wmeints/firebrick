@@ -3054,6 +3054,124 @@ async fn enforced_network_policy_denies_host_that_is_also_allowed() {
     assert!(denied.trim_end().ends_with("000"), "{denied:?}");
 }
 
+/// The options fbkd gives the JVMs of a sandbox with TLS interception.
+const JAVA_TRUST_STORE_OPTIONS: &str = "-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/firebrick.p12 \
+     -Djavax.net.ssl.trustStorePassword=changeit";
+
+/// Downloads the latest Temurin 25 JDK into `/opt/jdk`, writes a Java program that prints the
+/// status code of a GET request to its first argument, and runs it against `$1`. The shell
+/// waits a second after Java exits so its output is read first, see [`fetch`].
+const JAVA_FETCH_SCRIPT: &str = r#"set -e
+case "$(uname -m)" in aarch64) arch=aarch64 ;; *) arch=x64 ;; esac
+mkdir -p /opt/jdk
+curl -4 -fsSL "https://api.adoptium.net/v3/binary/latest/25/ga/linux/$arch/jdk/hotspot/normal/eclipse" \
+  | tar -xz -C /opt/jdk --strip-components 1
+cat > /tmp/Fetch.java <<'JAVA'
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+public class Fetch {
+    public static void main(String[] args) throws Exception {
+        var request = HttpRequest.newBuilder(URI.create(args[0])).build();
+        var response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.discarding());
+        System.out.println("status " + response.statusCode());
+    }
+}
+JAVA
+code=0
+/opt/jdk/bin/java /tmp/Fetch.java "$1" 2>&1 || code=$?
+sleep 1
+exit $code
+"#;
+
+/// Returns the start request of a sandbox from the curl image with its own
+/// `JAVA_TOOL_OPTIONS`, that enforces rules allowing `example.com` and the hosts the Temurin
+/// download needs.
+fn java_request(name: &str) -> StartSandboxRequest {
+    let allow = [
+        "example.com",
+        "api.adoptium.net",
+        "github.com",
+        "*.githubusercontent.com",
+    ];
+
+    StartSandboxRequest {
+        image: CURL_IMAGE.to_string(),
+        network: Some(allow_policy(true, &allow)),
+        env: Some(env_vars(&[("JAVA_TOOL_OPTIONS", "-Dfirebrick.test=kept")])),
+        ..start_request(name)
+    }
+}
+
+#[tokio::test]
+async fn java_trusts_the_tls_interception_ca_and_keeps_the_users_options() {
+    let name: &str = &sandbox_name("network-java");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("network-java").await;
+    let mut client = daemon.client().await;
+    let request = java_request(name);
+    start_and_wait(&mut client, request.clone()).await;
+
+    let (output, code) = run_command(
+        &mut client,
+        name,
+        "sh",
+        &["-c", JAVA_FETCH_SCRIPT, "java-fetch", "https://example.com"],
+    )
+    .await;
+    stop_sandbox(&mut client, name).await;
+    start_and_wait(&mut client, request).await;
+    let synced = sandbox_spec(name).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("status 200"), "{output}");
+    // Every JVM reports the variable it picked up, with the user's options first.
+    let options = format!("-Dfirebrick.test=kept {JAVA_TRUST_STORE_OPTIONS}");
+    assert!(
+        output.contains(&format!("Picked up JAVA_TOOL_OPTIONS: {options}")),
+        "{output}"
+    );
+    // An env sync on a later start keeps both.
+    assert_eq!(
+        env::stored(&synced).get("JAVA_TOOL_OPTIONS"),
+        Some(&options)
+    );
+}
+
+#[tokio::test]
+async fn sandbox_without_tls_interception_gets_no_java_options() {
+    let name: &str = &sandbox_name("network-no-java");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("network-no-java").await;
+    let mut client = daemon.client().await;
+    start_and_wait(&mut client, start_request(name)).await;
+    let (output, _) = run_command(
+        &mut client,
+        name,
+        "sh",
+        &["-c", "ls /etc/ssl/certs/java/firebrick.p12 2>&1; sleep 1"],
+    )
+    .await;
+    let spec = sandbox_spec(name).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert!(
+        spec.env.iter().all(|var| var.key != "JAVA_TOOL_OPTIONS"),
+        "{:?}",
+        spec.env
+    );
+    assert!(output.contains("No such file or directory"), "{output}");
+}
+
 #[tokio::test]
 async fn enforced_network_policy_allows_and_denies_ip_addresses() {
     let name: &str = &sandbox_name("network-ip");
@@ -3173,7 +3291,10 @@ struct KeptSettings {
     init: bool,
     docker_disk_mib: Option<u32>,
     clipboard_route: bool,
+    /// The variables from the spec, without `JAVA_TOOL_OPTIONS`.
     env: BTreeMap<String, String>,
+    /// The `JAVA_TOOL_OPTIONS` fbkd gives a sandbox with TLS interception.
+    java_tool_options: Option<String>,
 }
 
 async fn kept_settings(
@@ -3193,7 +3314,33 @@ async fn kept_settings(
         docker_disk_mib: docker_disk_mib(&spec),
         clipboard_route: has_clipboard_route(name, &spec),
         env: env::stored(&spec),
+        java_tool_options: None,
     }
+    .with_java_tool_options_apart()
+}
+
+impl KeptSettings {
+    /// Moves `JAVA_TOOL_OPTIONS` from the variables to its own field.
+    fn with_java_tool_options_apart(mut self) -> Self {
+        self.java_tool_options = self.env.remove("JAVA_TOOL_OPTIONS");
+        self
+    }
+}
+
+/// Asserts that a sandbox recreated without TLS interception kept its settings, but lost the
+/// `JAVA_TOOL_OPTIONS` it had with TLS interception, because Java needs no trust store.
+fn assert_kept_without_java_options(after: KeptSettings, before: KeptSettings) {
+    assert_eq!(
+        before.java_tool_options.as_deref(),
+        Some(JAVA_TRUST_STORE_OPTIONS)
+    );
+    assert_eq!(
+        after,
+        KeptSettings {
+            java_tool_options: None,
+            ..before
+        }
+    );
 }
 
 /// Asserts that a recreated sandbox kept its settings, including its clipboard route.
@@ -3418,7 +3565,7 @@ async fn update_network_of_stopped_sandbox_keeps_it_stopped() {
     remove_sandbox(name).await;
 
     assert_eq!(after.status, Some(SandboxStatus::Stopped));
-    assert_eq!(after.settings, before);
+    assert_kept_without_java_options(after.settings, before);
     // Without enforcement, microsandbox gets no policy with the rules.
     assert!(
         !after.stored_network.contains("example.com"),
