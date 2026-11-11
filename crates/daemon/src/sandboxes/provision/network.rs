@@ -1,16 +1,19 @@
 //! Network settings of sandboxes: removes the network device of a sandbox whose network is
 //! disabled, and otherwise turns the egress rules of a spec into microsandbox's network policy,
 //! with TLS interception and an HTTP deny response that tells the user how to allow a blocked
-//! host.
+//! host. On Windows hosts, TLS interception also trusts the public roots of
+//! [`upstream_roots`](super::upstream_roots) for upstream servers.
 
 use firebrick_spec::{NetworkRule, NetworkSpec, ProxyEndpoint, ProxySpec};
 use microsandbox::MicrosandboxError;
 use microsandbox::sandbox::{SandboxBuilder, SandboxSpec};
+use microsandbox_network::builder::TlsBuilder;
 use microsandbox_network::config::HttpDenyResponseFormat;
 use microsandbox_network::policy::{
     Action, NetworkPolicy, Rule, RuleBuilder, RuleDestinationBuilder,
 };
 use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use url::Host;
 
@@ -183,7 +186,8 @@ fn same_prefix(network: u128, ip: u128, prefix: u8, width: u32) -> bool {
 
 /// Adds the network settings to a sandbox that is being created. A disabled network removes
 /// the sandbox's network device and ignores the rules. Without `enforce`, the sandbox keeps
-/// microsandbox's default policy and no TLS interception.
+/// microsandbox's default policy and no TLS interception. On Windows hosts this first writes
+/// the upstream roots, and fails with an error that names their path when it can't.
 pub async fn add_to_builder(
     builder: SandboxBuilder,
     network: &NetworkSpec,
@@ -192,10 +196,25 @@ pub async fn add_to_builder(
         return Ok(builder.disable_network());
     }
 
+    let roots = upstream_roots().await?;
+    add_with_roots(builder, network, roots.as_deref()).await
+}
+
+/// Adds the settings of an enabled network, with the extra roots that TLS interception trusts
+/// for upstream servers. Without `enforce` the roots are recorded with interception turned
+/// off, so the secrets, which turn it on, reach the same upstream servers.
+async fn add_with_roots(
+    builder: SandboxBuilder,
+    network: &NetworkSpec,
+    roots: Option<&Path>,
+) -> Result<SandboxBuilder, MicrosandboxError> {
     let builder = with_proxy(builder, network.proxy.as_ref()).await?;
 
     if !network.enforce {
-        return Ok(builder);
+        return Ok(match roots {
+            Some(roots) => builder.network(|n| n.tls(|t| trust(t.enabled(false), Some(roots)))),
+            None => builder,
+        });
     }
 
     let policy = policy(network)?;
@@ -203,12 +222,43 @@ pub async fn add_to_builder(
     // `tls(|t| t)` intercepts TLS on port 443, so HTTPS requests can get the deny response too.
     // Only the text format renders `deny_message`; the default JSON format ignores it.
     Ok(builder.network(|n| {
-        n.policy(policy).tls(|t| t).http(|h| {
+        n.policy(policy).tls(|t| trust(t, roots)).http(|h| {
             h.deny_response(true)
                 .deny_response_format(HttpDenyResponseFormat::Text)
                 .deny_message(DENY_MESSAGE)
         })
     }))
+}
+
+/// Adds the roots to the ones TLS interception trusts for upstream servers.
+fn trust(tls: TlsBuilder, roots: Option<&Path>) -> TlsBuilder {
+    match roots {
+        Some(roots) => tls.upstream_ca_cert(roots),
+        None => tls,
+    }
+}
+
+/// Writes the Mozilla roots into the microsandbox home and returns their path. Windows hosts
+/// need them because Windows installs most roots only on demand (ADR 0061).
+#[cfg(windows)]
+async fn upstream_roots() -> Result<Option<PathBuf>, MicrosandboxError> {
+    let path = microsandbox::config::config()?
+        .home()
+        .join(super::upstream_roots::BUNDLE_PATH);
+
+    super::upstream_roots::ensure(&path).await.map_err(|err| {
+        MicrosandboxError::InvalidConfig(format!(
+            "failed to write the upstream root certificates to {}: {err}",
+            path.display()
+        ))
+    })?;
+    Ok(Some(path))
+}
+
+/// Linux and macOS hosts verify upstream servers against their own store alone.
+#[cfg(not(windows))]
+async fn upstream_roots() -> Result<Option<PathBuf>, MicrosandboxError> {
+    Ok(None)
 }
 
 /// Adds the host-side transport without replacing policy or TLS settings.
@@ -306,6 +356,7 @@ mod tests {
     use crate::secrets::Secret;
     use microsandbox::sandbox::{Sandbox, SandboxConfig};
     use microsandbox_network::policy::{Destination, Direction};
+    use microsandbox_network::tls::TlsConfig;
 
     #[test]
     fn proxy_labels_round_trip_with_and_without_enforcement() {
@@ -481,6 +532,75 @@ mod tests {
             .build()
             .await
             .unwrap()
+    }
+
+    /// Returns the config microsandbox would create a sandbox with after `add_with_roots`.
+    async fn config_with_roots(network: &NetworkSpec, roots: Option<&Path>) -> SandboxConfig {
+        let builder = Sandbox::builder("fbk-unit-network").image("alpine");
+
+        add_with_roots(builder, network, roots)
+            .await
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+    }
+
+    /// Returns the TLS settings of the config, which are the defaults when it has none.
+    fn tls_of(config: &SandboxConfig) -> TlsConfig {
+        config.spec.network.tls.clone().unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn enforced_network_trusts_the_upstream_roots() {
+        let roots = Path::new("/msb/tls/upstream-roots.pem");
+
+        let config = config_with_roots(&enforced(&["example.com"], &[]), Some(roots)).await;
+        let tls = tls_of(&config);
+
+        assert!(tls.enabled);
+        assert_eq!(tls.upstream_ca_cert, [roots]);
+    }
+
+    #[tokio::test]
+    async fn network_that_is_not_enforced_records_the_roots_without_interception() {
+        let roots = Path::new("/msb/tls/upstream-roots.pem");
+
+        let config = config_with_roots(&NetworkSpec::default(), Some(roots)).await;
+        let tls = tls_of(&config);
+
+        assert!(!tls.enabled);
+        assert_eq!(tls.upstream_ca_cert, [roots]);
+    }
+
+    #[tokio::test]
+    async fn secrets_intercept_tls_with_the_upstream_roots() {
+        let roots = Path::new("/msb/tls/upstream-roots.pem");
+        let secret = Secret::new("GH_TOKEN".to_string(), "abc".to_string(), vec![]).unwrap();
+        let builder = Sandbox::builder("fbk-unit-network").image("alpine");
+        let builder = add_with_roots(builder, &NetworkSpec::default(), Some(roots))
+            .await
+            .unwrap();
+
+        let config = crate::secrets::add_to_builder(builder, &[secret])
+            .build()
+            .await
+            .unwrap();
+        let tls = tls_of(&config);
+
+        assert!(tls.enabled);
+        assert_eq!(tls.upstream_ca_cert, [roots]);
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn linux_and_macos_hosts_trust_no_extra_upstream_roots() {
+        let enforced = config_with(&enforced(&["example.com"], &[]), &[]).await;
+        let off = config_with(&NetworkSpec::default(), &[]).await;
+
+        assert!(tls_of(&enforced).upstream_ca_cert.is_empty());
+        assert!(!tls_of(&off).enabled);
+        assert!(tls_of(&off).upstream_ca_cert.is_empty());
     }
 
     /// Describes an egress rule as `<action> <destination>`.

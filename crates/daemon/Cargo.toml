@@ -65,6 +65,11 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 [target.'cfg(windows)'.dependencies]
 # `CREATE_NO_WINDOW` for the host tools fbkd runs; the version tokio uses.
 windows-sys = { version = "0.61.2", features = ["Win32_System_Threading"] }
+# The Mozilla roots that TLS interception trusts for upstream servers on Windows hosts, which
+# install most roots only on demand, and their PEM encoding; the versions already in
+# Cargo.lock (ADR 0061).
+webpki-root-certs = "1.0.12"
+base64 = "0.22.1"
 
 [dev-dependencies]
 hyper-util = { version = "0.1.21", features = ["tokio"] }

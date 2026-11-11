@@ -523,6 +523,12 @@ C4Component
     host and `fbk network allow <host>`; the default JSON format ignores the
     message
     ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
+    On Windows hosts, it first has `upstream_roots` write the Mozilla roots to
+    `tls/upstream-roots.pem` in the microsandbox home and adds the file to the
+    roots that TLS interception trusts for upstream servers, with interception
+    off when the policy isn't enforced, because Windows installs most roots only
+    on demand
+    ([ADR 0061](decisions/0061-trust-the-mozilla-roots-upstream-on-windows-hosts.md)).
 - `forward` - Forwards host loopback ports to a sandbox's loopback
   ([ADR 0019](decisions/0019-forward-ports-through-the-ssh-servers-direct-tcpip.md)).
   Its submodules hold the loopback listeners that both kinds of forwards share

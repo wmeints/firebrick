@@ -2013,6 +2013,7 @@ version = "0.13.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "dunce",
@@ -2038,6 +2039,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "url",
+ "webpki-root-certs",
  "windows-sys 0.61.2",
 ]
 
