@@ -124,15 +124,17 @@ mod tests {
         assert_eq!(files, 1, "a temporary file is left behind");
     }
 
+    /// Returns whether the DER certificate contains the name.
+    fn names(cert: &[u8], name: &[u8]) -> bool {
+        cert.windows(name.len()).any(|window| window == name)
+    }
+
     #[tokio::test]
     async fn ensure_writes_the_mozilla_roots() {
         let home = tempfile::tempdir().unwrap();
         let ssl_com = webpki_root_certs::TLS_SERVER_ROOT_CERTS
             .iter()
-            .find(|cert| {
-                cert.windows(28)
-                    .any(|name| name == b"SSL.com TLS ECC Root CA 2022")
-            })
+            .find(|cert| names(cert, b"SSL.com TLS ECC Root CA 2022"))
             .expect("the Mozilla roots include SSL.com TLS ECC Root CA 2022");
 
         let path = home.path().join(BUNDLE_PATH);
