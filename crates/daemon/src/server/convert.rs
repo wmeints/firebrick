@@ -162,6 +162,7 @@ pub(super) fn sandbox_started(started: Started) -> SandboxStarted {
     SandboxStarted {
         env_pending_restart: started.env_pending_restart,
         root_disk: started.root_disk.map(root_disk_notice),
+        java_trust_store_error: started.java_trust_store_error,
         forwards: report.open.into_iter().map(port_forward).collect(),
         failed_forwards: report
             .failed
@@ -681,10 +682,15 @@ mod tests {
             forwards: report,
             env_pending_restart: true,
             root_disk: None,
+            java_trust_store_error: Some("the build exited with code 1: no openssl".to_string()),
         });
 
         assert!(response.env_pending_restart);
         assert_eq!(response.root_disk, None);
+        assert_eq!(
+            response.java_trust_store_error.as_deref(),
+            Some("the build exited with code 1: no openssl")
+        );
         assert_eq!(response.forwards, [port_forward(mapping(8080, 5173))]);
         assert_eq!(
             response.failed_forwards,
@@ -914,15 +920,11 @@ mod tests {
         ];
 
         for (notice_reason, reason, error) in reasons {
-            let response = sandbox_started(Started {
-                forwards: ForwardReport::default(),
-                env_pending_restart: false,
-                root_disk: Some(RootDiskNotice {
-                    requested_mib: 32768,
-                    current_mib: Some(16384),
-                    reason: notice_reason,
-                }),
-            });
+            let response = sandbox_started(started_with_root_disk(RootDiskNotice {
+                requested_mib: 32768,
+                current_mib: Some(16384),
+                reason: notice_reason,
+            }));
 
             let message = response.root_disk.unwrap();
             assert_eq!(
@@ -930,6 +932,16 @@ mod tests {
                 (reason, 32768, Some(16384))
             );
             assert_eq!(message.error, error);
+        }
+    }
+
+    /// Returns a started sandbox with the root disk notice and nothing else to report.
+    fn started_with_root_disk(notice: RootDiskNotice) -> Started {
+        Started {
+            forwards: ForwardReport::default(),
+            env_pending_restart: false,
+            root_disk: Some(notice),
+            java_trust_store_error: None,
         }
     }
 
@@ -947,15 +959,11 @@ mod tests {
 
     #[test]
     fn root_disk_notice_without_a_current_size_leaves_it_unset() {
-        let response = sandbox_started(Started {
-            forwards: ForwardReport::default(),
-            env_pending_restart: false,
-            root_disk: Some(RootDiskNotice {
-                requested_mib: 32768,
-                current_mib: None,
-                reason: NoticeReason::GrowFailed("unreadable".to_string()),
-            }),
-        });
+        let response = sandbox_started(started_with_root_disk(RootDiskNotice {
+            requested_mib: 32768,
+            current_mib: None,
+            reason: NoticeReason::GrowFailed("unreadable".to_string()),
+        }));
 
         assert_eq!(response.root_disk.unwrap().current_mib, None);
     }

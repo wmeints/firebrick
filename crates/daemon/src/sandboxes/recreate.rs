@@ -14,6 +14,7 @@ use super::{
     sync_ssh_config,
 };
 use crate::guest::clipboard;
+use crate::sandboxes::provision::java;
 use crate::sandboxes::provision::mise::{self};
 use crate::sandboxes::provision::network;
 use crate::sandboxes::provision::pull::{self, PullUpdate};
@@ -180,7 +181,8 @@ impl SandboxManager {
     /// Stops the sandbox when it's live, takes a snapshot of its disk and replaces it with one
     /// created with the change and the egress rules, and stops that one again when the sandbox
     /// was stopped. A new image gets the workspace's mise tools when the sandbox has mise
-    /// enabled; a failed install is returned once the sandbox is in the state it was in.
+    /// enabled, and a live sandbox its Java trust store; a failed install is returned once the
+    /// sandbox is in the state it was in.
     async fn replace(
         &self,
         sb: &SandboxHandle,
@@ -206,8 +208,13 @@ impl SandboxManager {
         let recreated = self.recreate(recreation, &snapshot).await?;
         let installed = install_tools_after(change, &recreated, recreation.settings).await;
 
-        // The recreated sandbox boots, so stop it again when it was stopped before.
-        if !was_live {
+        if was_live {
+            // `apply` logs a failed build, and the next start reports it to the user. The
+            // update itself succeeded, so its response doesn't fail over it.
+            java::apply(&recreated).await.ok();
+        } else {
+            // The recreated sandbox boots, so stop it again; it builds the store when it
+            // starts again.
             stop_recreated(name, change).await?;
         }
 
@@ -226,7 +233,7 @@ impl SandboxManager {
             change,
         } = *recreation;
         let name = &settings.name;
-        let builder = match change {
+        let builder = |settings: &SandboxSettings| match change {
             // `image(..)` would discard the pending snapshot, so the builder must not set one.
             Change::Network => settings
                 .builder(&self.netlogs, &self.clipboards)
@@ -247,22 +254,27 @@ impl SandboxManager {
 
         Ok(sb)
     }
-    /// Creates the sandbox of the settings from the builder with its secrets and the egress
-    /// rules. microsandbox boots it.
+    /// Creates the sandbox of the settings from the builder `builder` returns for them with its
+    /// secrets and the egress rules. The settings get the Java trust store options when the
+    /// secrets or the rules turn on TLS interception, and lose them otherwise. microsandbox
+    /// boots the sandbox.
     async fn create_from(
         &self,
         settings: &SandboxSettings,
         network: &NetworkSpec,
-        builder: SandboxBuilder,
+        builder: impl FnOnce(&SandboxSettings) -> SandboxBuilder,
     ) -> Result<Sandbox, String> {
         let _secrets_guard = self.secrets_lock.lock().await;
         let secrets = self
             .load_secrets_for(&settings.name)
             .map_err(|err| err.to_string())?;
+        let settings = settings
+            .clone()
+            .with_java_trust_store(java::will_intercept(network, &secrets));
 
         // A snapshot has no image to pull, and a new image was pulled before, so there's no
         // progress to report.
-        create_with(builder, &secrets, network, |_| {})
+        create_with(builder(&settings), &secrets, network, |_| {})
             .await
             .map_err(|err| format!("{err:?}"))
     }

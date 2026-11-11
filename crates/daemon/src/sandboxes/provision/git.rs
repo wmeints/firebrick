@@ -1,6 +1,7 @@
 //! Writes the host's git identity into the global git config of a sandbox's default user, so
 //! commits in the sandbox carry the same author as commits on the host.
 
+use super::{ExitError, check_exit};
 use microsandbox::{MicrosandboxError, Sandbox};
 use std::time::Duration;
 use thiserror::Error;
@@ -33,13 +34,8 @@ enum SetError {
     #[error(transparent)]
     Exec(#[from] MicrosandboxError),
     /// `git config` exited non-zero.
-    #[error("git config exited with code {code}: {stderr}")]
-    Exited {
-        /// The exit code.
-        code: i32,
-        /// What git wrote to stderr.
-        stderr: String,
-    },
+    #[error("git config {0}")]
+    Exited(#[from] ExitError),
 }
 
 /// Sets each key of the identity that has a value in the global git config of the running
@@ -64,16 +60,6 @@ async fn set(sb: &Sandbox, key: &str, value: &str) -> Result<(), SetError> {
                 .timeout(CONFIG_TIMEOUT)
         })
         .await?;
-    let status = output.status();
 
-    if status.success {
-        return Ok(());
-    }
-
-    Err(SetError::Exited {
-        code: status.code,
-        stderr: String::from_utf8_lossy(output.stderr_bytes())
-            .trim()
-            .to_string(),
-    })
+    Ok(check_exit(&output)?)
 }

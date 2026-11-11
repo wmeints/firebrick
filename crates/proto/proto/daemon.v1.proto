@@ -195,6 +195,10 @@ message SandboxStarted {
   // Set when the root disk of an existing sandbox didn't get the requested size on this start.
   // The sandbox still started.
   optional RootDiskNotice root_disk = 4;
+  // Set when the sandbox has TLS interception and fbkd couldn't build the Java trust store that
+  // JAVA_TOOL_OPTIONS points at, for example because the image has no OpenSSL 3.2 or newer. Says
+  // why. The sandbox still started, but Java doesn't trust the interception CA.
+  optional string java_trust_store_error = 5;
 }
 
 // Why the root disk of an existing sandbox didn't get the requested size.

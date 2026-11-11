@@ -19,6 +19,7 @@ use crate::guest::open::{Opener, Relays};
 use crate::host_config;
 use crate::sandboxes::provision::env;
 use crate::sandboxes::provision::git::{self, GitIdentity};
+use crate::sandboxes::provision::java;
 use crate::sandboxes::provision::mise::{self, MiseError, MiseUpdate};
 use crate::sandboxes::provision::network;
 use crate::sandboxes::provision::pull::PullUpdate;
@@ -134,6 +135,9 @@ pub struct Started {
     pub env_pending_restart: bool,
     /// Why the root disk of an existing sandbox didn't get the requested size, if it didn't.
     pub root_disk: Option<RootDiskNotice>,
+    /// Why fbkd couldn't build the Java trust store of a sandbox with TLS interception, if it
+    /// couldn't.
+    pub java_trust_store_error: Option<String>,
 }
 
 /// The requested settings an existing sandbox didn't get when it started.
@@ -359,12 +363,13 @@ impl SandboxManager {
 
         sync_ssh_config().await;
         let pending = result?;
-        self.set_up_running(request).await;
+        let java_trust_store = self.set_up_running(request).await;
 
         Ok(Started {
             forwards: self.open_forwards(request.name, request.ports).await,
             env_pending_restart: pending.env_restart,
             root_disk: pending.root_disk,
+            java_trust_store_error: java_trust_store.err().map(|err| err.to_string()),
         })
     }
     /// Listens for the network logs and clipboards of the sandboxes that have their routes,
@@ -611,16 +616,18 @@ impl SandboxManager {
         }
     }
     /// Connects to the sandbox a start request left running, starts its URL relay unless it has
-    /// one and gives it the request's git identity, logging a warning when it can't connect.
-    async fn set_up_running(&self, request: StartSandbox<'_>) {
+    /// one, gives it the request's git identity and builds its Java trust store, logging a
+    /// warning when it can't connect. Returns why the trust store couldn't be built.
+    async fn set_up_running(&self, request: StartSandbox<'_>) -> Result<(), java::BuildError> {
         let sb = match connect(request.name).await {
             Ok(sb) => sb,
             Err(err) => {
                 tracing::warn!(
-                    "failed to start the URL relay and set the git identity of sandbox {}: {err}",
+                    "failed to start the URL relay, set the git identity and build the Java \
+                     trust store of sandbox {}: {err}",
                     request.name
                 );
-                return;
+                return Ok(());
             }
         };
 
@@ -629,6 +636,8 @@ impl SandboxManager {
         if let Some(identity) = request.git_identity {
             git::apply(&sb, identity).await;
         }
+
+        java::apply(&sb).await
     }
     /// Creates a sandbox, then installs its workspace's mise tools when the request enables
     /// mise, passing the progress of both to `on_progress`.
@@ -666,7 +675,8 @@ impl SandboxManager {
         let _secrets_guard = self.secrets_lock.lock().await;
         let secrets = self.load_secrets_for(request.name)?;
 
-        let mut settings = new_sandbox_settings(request, &guest_path, &hostname, resources);
+        let mut settings = new_sandbox_settings(request, &guest_path, &hostname, resources)
+            .with_java_trust_store(java::will_intercept(request.network, &secrets));
         settings.mounts.extend(dotfiles);
         let builder = settings.image_builder(
             &self.netlogs,
@@ -763,9 +773,7 @@ async fn prepare_stopped(
     sb: &SandboxHandle,
     request: StartSandbox<'_>,
 ) -> Result<Option<RootDiskNotice>, SandboxError> {
-    if let Some(wanted) = request.env {
-        sync_env(sb, wanted).await?;
-    }
+    sync_env(sb, request.env).await?;
 
     Ok(root_disk::grow_stopped(sb, request.root_disk_mib).await)
 }
@@ -805,17 +813,15 @@ fn sets_variable(sb: &SandboxHandle, name: &str) -> bool {
     }
 }
 
-/// Whether the running sandbox has other environment variables than the request asks for. A
-/// request without variables keeps the stored ones, so it has none pending.
+/// Whether the running sandbox has other environment variables than it gets from the request,
+/// see [`wanted_env`].
 fn env_pending_restart(
     sb: &SandboxHandle,
     request: StartSandbox<'_>,
 ) -> Result<bool, SandboxError> {
-    let Some(wanted) = request.env else {
-        return Ok(false);
-    };
+    let differs = wanted_env(sb, request.env).and_then(|wanted| env::differs(sb, &wanted));
 
-    env::differs(sb, wanted).map_err(|err| {
+    differs.map_err(|err| {
         tracing::error!(error = ?err, "failed to read the environment of sandbox {}", sb.name());
         SandboxError::internal(format!(
             "failed to read the environment variables of sandbox {}",
@@ -824,18 +830,34 @@ fn env_pending_restart(
     })
 }
 
-/// Gives a stopped sandbox the environment variables from its next start on.
+/// Gives a stopped sandbox the environment variables it gets from the request from its next
+/// start on, see [`wanted_env`].
 async fn sync_env(
     sb: &SandboxHandle,
-    wanted: &BTreeMap<String, String>,
+    requested: Option<&BTreeMap<String, String>>,
 ) -> Result<(), SandboxError> {
-    env::sync(sb, wanted).await.map_err(|err| {
+    let synced = async { env::sync(sb, &wanted_env(sb, requested)?).await }.await;
+
+    synced.map_err(|err| {
         tracing::error!(error = ?err, "failed to set the environment of sandbox {}", sb.name());
         SandboxError::internal(format!(
             "failed to set the environment variables of sandbox {}",
             sb.name()
         ))
     })
+}
+
+/// Returns the environment variables the sandbox gets from a request with the variables: the
+/// requested ones, or the stored ones when the request has none, with the Java trust store
+/// options when the sandbox has TLS interception.
+fn wanted_env(
+    sb: &SandboxHandle,
+    requested: Option<&BTreeMap<String, String>>,
+) -> Result<BTreeMap<String, String>, MicrosandboxError> {
+    let spec = sb.config()?.spec;
+    let env = requested.cloned().unwrap_or_else(|| env::stored(&spec));
+
+    Ok(java::with_tool_options(env, java::intercepts(&spec)))
 }
 
 /// Whether the sandbox installs its workspace's mise tools on start.

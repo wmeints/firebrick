@@ -8,6 +8,7 @@ use crate::forward::{self};
 use crate::guest::clipboard::{self, Clipboards};
 use crate::guest::netlog::NetLogs;
 use crate::sandboxes::provision::env;
+use crate::sandboxes::provision::java;
 use crate::sandboxes::provision::mise::{self};
 use crate::ssh;
 use firebrick_spec::{MountSpec, VolumesSpec};
@@ -96,6 +97,13 @@ impl SandboxSettings {
             },
             root_disk_mib,
         })
+    }
+
+    /// Returns the settings with the Java trust store options in `JAVA_TOOL_OPTIONS` when the
+    /// sandbox `intercepts` TLS, and without them otherwise.
+    pub(super) fn with_java_trust_store(mut self, intercepts: bool) -> Self {
+        self.env = java::with_tool_options(std::mem::take(&mut self.env), intercepts);
+        self
     }
 
     /// Returns the size of the root disk in MiB, or `None` when microsandbox can't resize it.
