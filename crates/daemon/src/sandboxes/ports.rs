@@ -5,6 +5,7 @@ use super::SandboxManager;
 use super::error::SandboxError;
 use super::status::{get_sandbox, list_all_sandboxes};
 use crate::forward::{self, ForwardReport};
+use crate::guest::listeners::{self, Listener};
 use firebrick_spec::{PortMapping, with_port};
 use microsandbox::Sandbox;
 use microsandbox::sandbox::{SandboxHandle, SandboxStatus};
@@ -90,6 +91,26 @@ impl SandboxManager {
 
         self.change_ports(&sb, &change).await
     }
+    /// Returns the ports stored with the sandbox and, when it runs, the TCP ports listening in
+    /// its guest. Fails with `NotFound` when the sandbox doesn't exist. Doesn't take the
+    /// sandbox's lock, so it answers while the sandbox starts.
+    pub async fn list_ports(&self, name: &str) -> Result<PortsListing, SandboxError> {
+        let sb = get_sandbox(name).await?;
+        let mut forwards = stored_ports(&sb);
+        forwards.sort_by_key(|port| port.host);
+        let running = sb.status_snapshot() == SandboxStatus::Running;
+        let listeners = if running {
+            read_listeners(&sb).await
+        } else {
+            Ok(vec![])
+        };
+
+        Ok(PortsListing {
+            running,
+            forwards,
+            listeners,
+        })
+    }
     /// Makes the open forwards of a running sandbox match the changed ports, then stores them
     /// with the sandbox. Returns whether the sandbox runs. When a new forward can't be opened or
     /// the ports can't be stored, reopens the stored forwards and fails.
@@ -125,6 +146,34 @@ impl SandboxManager {
 
         Err(SandboxError::failed_precondition(failure.reason.clone()))
     }
+}
+
+/// The ports of a sandbox, as [`SandboxManager::list_ports`] returns them.
+#[derive(Debug)]
+pub struct PortsListing {
+    /// Whether the sandbox runs.
+    pub running: bool,
+    /// The forwards stored with the sandbox, sorted by host port.
+    pub forwards: Vec<PortMapping>,
+    /// The TCP ports listening in the guest, empty when the sandbox doesn't run, or why they
+    /// couldn't be read.
+    pub listeners: Result<Vec<Listener>, String>,
+}
+
+/// Reads the listeners of the running sandbox, or returns why that failed.
+async fn read_listeners(sb: &SandboxHandle) -> Result<Vec<Listener>, String> {
+    let result = match sb.connect().await {
+        Ok(connected) => listeners::read(&connected).await,
+        Err(err) => Err(err.into()),
+    };
+
+    result.map_err(|err| {
+        tracing::warn!(
+            "failed to read the listening ports of sandbox {}: {err}",
+            sb.name()
+        );
+        err.to_string()
+    })
 }
 
 /// A change to the ports stored with a sandbox.

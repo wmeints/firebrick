@@ -884,6 +884,68 @@ sequenceDiagram
 `fbk port rm` follows the same steps with `RemovePort`, which closes the forward
 of a running sandbox.
 
+### Listing ports
+
+`fbk port ls` shows the forwards of the working directory's sandbox next to the
+TCP ports listening in it at that moment, so the user can see which ports to
+forward
+([ADR 0061](decisions/0061-read-the-listening-ports-of-a-sandbox-on-demand.md)).
+It only reads: it changes neither `.firebrick.yml` nor the sandbox, and nothing
+in `fbkd` watches the guest between calls.
+
+```text
+┌──────┬───────┬─────────────┬────────────┬───────────────┐
+│ HOST │ GUEST │ ADDRESS     │ PROCESS    │ STATUS        │
+├──────┼───────┼─────────────┼────────────┼───────────────┤
+│ 3000 │ 3000  │ 127.0.0.1   │ node (412) │ forwarded     │
+│ -    │ 5173  │ 0.0.0.0, :: │ vite (530) │ listening     │
+│ 8080 │ 8081  │ -           │ -          │ not listening │
+└──────┴───────┴─────────────┴────────────┴───────────────┘
+```
+
+fbk resolves the sandbox like `fbk network log` and sends `ListPorts(name)`.
+fbkd reads the stored forwards from the `firebrick.ports` label and, when the
+sandbox runs, connects to it and runs the listener script of `listeners` as
+root. fbk makes one row per forward, with what listens on its guest port, and
+one per listening port that no forward reaches.
+
+- The sandbox doesn't exist: `ListPorts` fails with `NOT_FOUND`, and fbk prints
+  `sandbox <name> doesn't exist` and exits with 1.
+- The sandbox doesn't run: fbk lists its forwards with status `stopped` and
+  prints `sandbox <name> isn't running; start it to see its listening ports` to
+  stderr.
+- The script fails, times out after 5 seconds or prints no socket table: fbkd
+  logs a warning and sets `listeners_error`, and fbk lists the forwards with
+  status `unknown`, prints `warning: couldn't read the listening ports of
+  sandbox <name>: <reason>` to stderr and exits with 0.
+- Nothing is forwarded or listening: fbk prints `Sandbox <name> has no forwards
+  or listening ports.`
+
+```mermaid
+sequenceDiagram
+    actor Dev as Developer
+    participant CLI as fbk
+    participant D as fbkd
+    participant MS as microsandbox
+    participant G as Guest
+
+    Dev->>CLI: fbk port ls
+    CLI->>D: ListPorts(name)
+    D->>MS: Sandbox::get(name), read firebrick.ports
+    alt NOT_FOUND
+        CLI-->>Dev: sandbox <name> doesn't exist
+    else Sandbox runs
+        D->>G: sh -c <listener script> as root
+        G-->>D: /proc/net/tcp, /proc/net/tcp6, fd links (at most 1 MiB, 5 s)
+        D->>D: Parse LISTEN sockets, join inodes to pids
+        D-->>CLI: ListPortsResponse(running, forwards, listeners)
+        CLI-->>Dev: Table of forwards and listening ports
+    else Sandbox stopped
+        D-->>CLI: ListPortsResponse(forwards)
+        CLI-->>Dev: Forwards with status stopped
+    end
+```
+
 ## Setting a secret
 
 `fbk secret set <name> <value>` stores a secret that sandboxes use without

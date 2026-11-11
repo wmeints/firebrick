@@ -35,6 +35,7 @@ use tokio::sync::OwnedMutexGuard;
 
 pub use error::SandboxError;
 use error::{connect_failed, create_failed, remove_failed, stop_before_remove_failed};
+pub use ports::PortsListing;
 pub use recreate::PROBE_LABEL;
 use recreate::create_with;
 pub use root_disk::{NoticeReason, RootDiskNotice};

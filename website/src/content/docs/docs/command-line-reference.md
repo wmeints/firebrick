@@ -312,16 +312,18 @@ fbk network presets apply claude rust github --yes
 ## `fbk port`
 
 Forwards host ports to the working directory's sandbox and records them in the
-`ports` list of `.firebrick.yml`. See
+`ports` list of `.firebrick.yml`, and lists the ports listening in it. See
 [Networking](/docs/networking/#forwarding-ports).
 
-| Command                   | Description                                                                                                                                                                        |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fbk port forward <PORT>` | Forward `localhost:<PORT>` to the same port in the sandbox, or `<HOST>:<GUEST>` to forward `localhost:<HOST>` to sandbox port `<GUEST>`. Applies right away when the sandbox runs. |
-| `fbk port rm <PORT>`      | Stop forwarding the host port `<PORT>`, from 1 to 65535.                                                                                                                           |
+| Command                              | Description                                                                                                                                                                        |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fbk port forward <PORT>`            | Forward `localhost:<PORT>` to the same port in the sandbox, or `<HOST>:<GUEST>` to forward `localhost:<HOST>` to sandbox port `<GUEST>`. Applies right away when the sandbox runs. |
+| `fbk port rm <PORT>`                 | Stop forwarding the host port `<PORT>`, from 1 to 65535.                                                                                                                           |
+| `fbk port ls [--format table\|json]` | List the forwards and the TCP ports listening in the sandbox, with the process that owns each one. Doesn't change the file.                                                        |
 
 ```sh
 fbk port forward 8080:5173
+fbk port ls
 fbk port rm 8080
 ```
 

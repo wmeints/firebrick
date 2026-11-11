@@ -2,21 +2,22 @@
 //! the requests, and turns results, progress, network records and errors into responses.
 
 use crate::api::{
-    EnvVars, GitIdentity, ImagePullProgress, MiseInstallProgress, Mount, NetworkActivity,
-    NetworkActivityKind, NetworkPolicy, PortForward, PortForwardFailure, PortForwards,
-    RootDiskNotice as RootDiskMessage, SandboxResources, SandboxStarted, SandboxStatus,
-    SandboxSummary, SandboxUpgraded, SecretSummary, StartSandboxRequest, StartSandboxResponse,
-    UpgradeSandboxResponse, start_sandbox_response, upgrade_sandbox_response,
+    EnvVars, GitIdentity, GuestListener, ImagePullProgress, ListPortsResponse, MiseInstallProgress,
+    Mount, NetworkActivity, NetworkActivityKind, NetworkPolicy, PortForward, PortForwardFailure,
+    PortForwards, RootDiskNotice as RootDiskMessage, SandboxResources, SandboxStarted,
+    SandboxStatus, SandboxSummary, SandboxUpgraded, SecretSummary, StartSandboxRequest,
+    StartSandboxResponse, UpgradeSandboxResponse, start_sandbox_response, upgrade_sandbox_response,
 };
 use crate::forward::ForwardFailure;
+use crate::guest::listeners::Listener;
 use crate::guest::netlog::{ConnectionEntry, DnsEntry, Protocol, Record};
 use crate::sandboxes::provision::git;
 use crate::sandboxes::provision::mise::MiseUpdate;
 use crate::sandboxes::provision::network;
 use crate::sandboxes::provision::pull::PullUpdate;
 use crate::sandboxes::{
-    NoticeReason, Resources, RootDiskNotice, SandboxError, SandboxInfo, StartProgress,
-    StartSandbox, Started, Upgrade,
+    NoticeReason, PortsListing, Resources, RootDiskNotice, SandboxError, SandboxInfo,
+    StartProgress, StartSandbox, Started, Upgrade,
 };
 use crate::secrets::Secret;
 use anyhow::Result;
@@ -256,6 +257,31 @@ pub(super) fn sandbox_upgraded(upgrade: Upgrade) -> UpgradeSandboxResponse {
             new_image: upgrade.new_image,
         },
     ))
+}
+
+/// Converts the ports of a sandbox to the response of `ListPorts`.
+pub(super) fn list_ports_response(listing: PortsListing) -> ListPortsResponse {
+    let (listeners, listeners_error) = match listing.listeners {
+        Ok(listeners) => (listeners, None),
+        Err(err) => (vec![], Some(err)),
+    };
+
+    ListPortsResponse {
+        running: listing.running,
+        forwards: listing.forwards.into_iter().map(port_forward).collect(),
+        listeners: listeners.into_iter().map(guest_listener).collect(),
+        listeners_error,
+    }
+}
+
+/// Converts a listener to its protobuf message.
+fn guest_listener(listener: Listener) -> GuestListener {
+    GuestListener {
+        port: listener.port.into(),
+        addresses: listener.addresses.iter().map(ToString::to_string).collect(),
+        pid: listener.process.as_ref().map(|p| p.pid),
+        process: listener.process.map(|p| p.name).unwrap_or_default(),
+    }
 }
 
 /// Converts a mapping to its protobuf message.
@@ -664,6 +690,70 @@ mod tests {
                     }
                 )),
             }
+        );
+    }
+
+    /// Returns a listener on the port and addresses, owned by the pid and name when given.
+    fn listener(port: u16, addresses: &[&str], process: Option<(u32, &str)>) -> Listener {
+        use crate::guest::listeners::Process;
+
+        Listener {
+            port,
+            addresses: addresses.iter().map(|a| a.parse().unwrap()).collect(),
+            process: process.map(|(pid, name)| Process {
+                pid,
+                name: name.to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn list_ports_response_carries_forwards_and_listeners() {
+        let forward = PortMapping {
+            host: 8080,
+            guest: 80,
+        };
+        let listeners = vec![
+            listener(80, &["0.0.0.0", "::"], Some((12, "nginx"))),
+            listener(22, &["127.0.0.1"], None),
+        ];
+
+        let response = list_ports_response(PortsListing {
+            running: true,
+            forwards: vec![forward],
+            listeners: Ok(listeners),
+        });
+
+        assert!(response.running);
+        assert_eq!(response.forwards, [port_forward(forward)]);
+        assert_eq!(response.listeners_error, None);
+        assert_eq!(
+            response.listeners[0],
+            GuestListener {
+                port: 80,
+                addresses: vec!["0.0.0.0".to_string(), "::".to_string()],
+                pid: Some(12),
+                process: "nginx".to_string(),
+            }
+        );
+        assert_eq!(response.listeners[1].pid, None);
+        assert_eq!(response.listeners[1].process, "");
+    }
+
+    #[test]
+    fn list_ports_response_carries_the_listeners_error() {
+        let listing = PortsListing {
+            running: true,
+            forwards: vec![],
+            listeners: Err("the guest didn't answer within 5 seconds".to_string()),
+        };
+
+        let response = list_ports_response(listing);
+
+        assert!(response.listeners.is_empty());
+        assert_eq!(
+            response.listeners_error.as_deref(),
+            Some("the guest didn't answer within 5 seconds")
         );
     }
 

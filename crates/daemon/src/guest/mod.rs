@@ -1,8 +1,10 @@
 //! Channels a sandbox uses to make fbkd act on the host: sharing the clipboard, recording the
 //! network activity and opening URLs in the host's browser. Each sandbox gets its own channel
-//! endpoint, and a rate limit keeps a loop in the guest from flooding the user.
+//! endpoint, and a rate limit keeps a loop in the guest from flooding the user. fbkd also reads
+//! the TCP ports listening in a guest on request.
 
 pub mod clipboard;
+pub mod listeners;
 pub mod netlog;
 pub mod open;
 mod rate_limit;
