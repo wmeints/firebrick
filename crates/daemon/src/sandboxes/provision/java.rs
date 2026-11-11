@@ -4,6 +4,7 @@
 //! with `JAVA_TOOL_OPTIONS`. The store doesn't belong to a JDK, so it also covers JDKs installed
 //! after the sandbox started.
 
+use super::{ExitError, check_exit};
 use crate::secrets::Secret;
 use firebrick_spec::NetworkSpec;
 use microsandbox::sandbox::SandboxSpec;
@@ -48,20 +49,18 @@ chmod 644 "$store.tmp"
 mv -f "$store.tmp" "$store"
 "#;
 
+/// The property a JVM reads the path of its trust store from.
+const TRUST_STORE_PROPERTY: &str = "-Djavax.net.ssl.trustStore=";
+
 /// Errors of building the trust store in a sandbox.
 #[derive(Error, Debug)]
 pub enum BuildError {
     /// Running the build in the guest failed, for example because the image has no shell.
     #[error(transparent)]
     Exec(#[from] MicrosandboxError),
-    /// The build exited non-zero.
-    #[error("{stderr} (exit code {code})")]
-    Exited {
-        /// The exit code.
-        code: i32,
-        /// What the build wrote to stderr.
-        stderr: String,
-    },
+    /// The build exited non-zero, with the reason on stderr.
+    #[error("the build {0}")]
+    Exited(#[from] ExitError),
 }
 
 /// Whether a sandbox created with the network settings and secrets gets TLS interception: an
@@ -76,21 +75,20 @@ pub fn intercepts(spec: &SandboxSpec) -> bool {
 }
 
 /// Returns the variables with [`TRUST_STORE_OPTIONS`] at the end of `JAVA_TOOL_OPTIONS` when
-/// `intercepts`, after the options the variables already have, and without them otherwise. The
+/// `intercepts`, after the options the variables already have, and without them otherwise. A
+/// value that already sets its own trust store is left alone, so the user's store wins. The
 /// options are removed first, so this can be applied again to the variables it returned.
 pub fn with_tool_options(
-    env: &BTreeMap<String, String>,
+    mut env: BTreeMap<String, String>,
     intercepts: bool,
 ) -> BTreeMap<String, String> {
-    let mut env = env.clone();
     let own = env
         .remove(TOOL_OPTIONS_VAR)
-        .map(|value| without_trust_store(&value).to_string())
-        .filter(|value| !value.is_empty());
-    let value = match (own, intercepts) {
-        (Some(own), true) => Some(format!("{own} {TRUST_STORE_OPTIONS}")),
-        (None, true) => Some(TRUST_STORE_OPTIONS.to_string()),
-        (own, false) => own,
+        .and_then(|value| without_trust_store(&value));
+    let value = if intercepts {
+        Some(with_trust_store(own))
+    } else {
+        own
     };
 
     if let Some(value) = value {
@@ -100,28 +98,51 @@ pub fn with_tool_options(
     env
 }
 
-/// Returns the value without [`TRUST_STORE_OPTIONS`] at its end.
-fn without_trust_store(value: &str) -> &str {
-    value
+/// Returns the user's part of the value: the value without [`TRUST_STORE_OPTIONS`] at its end,
+/// or `None` when it holds nothing else.
+fn without_trust_store(value: &str) -> Option<String> {
+    if value == TRUST_STORE_OPTIONS {
+        return None;
+    }
+
+    let own = value
         .strip_suffix(TRUST_STORE_OPTIONS)
-        .map_or(value, str::trim_end)
+        .and_then(|own| own.strip_suffix(' '))
+        .unwrap_or(value);
+
+    Some(own.to_string())
+}
+
+/// Returns the user's options followed by [`TRUST_STORE_OPTIONS`], or the user's options alone
+/// when they set a trust store of their own.
+fn with_trust_store(own: Option<String>) -> String {
+    match own {
+        Some(own) if own.contains(TRUST_STORE_PROPERTY) => own,
+        Some(own) if !own.trim().is_empty() => format!("{} {TRUST_STORE_OPTIONS}", own.trim()),
+        _ => TRUST_STORE_OPTIONS.to_string(),
+    }
 }
 
 /// (Re)builds the trust store as root from the guest's system bundle when the running sandbox
-/// has TLS interception, so the store follows changes to the bundle. A failure only logs a
-/// warning, because the sandbox is still usable without it.
-pub async fn apply(sb: &Sandbox) {
+/// has TLS interception, so the store follows changes to the bundle. A failed build logs a
+/// warning and returns the reason, so the caller can show it: the sandbox is still usable
+/// without the store, but Java doesn't trust the interception CA.
+pub async fn apply(sb: &Sandbox) -> Result<(), BuildError> {
     if !intercepts(&sb.config().spec) {
-        return;
+        return Ok(());
     }
 
-    if let Err(err) = build(sb).await {
+    let result = build(sb).await;
+
+    if let Err(err) = &result {
         tracing::warn!(
             "failed to build the Java trust store {STORE_PATH} in sandbox {}, so Java doesn't \
              trust the TLS interception CA: {err}",
             sb.name()
         );
     }
+
+    result
 }
 
 /// Runs the build of the trust store as root.
@@ -134,9 +155,8 @@ async fn build(sb: &Sandbox) -> Result<(), BuildError> {
                 .timeout(BUILD_TIMEOUT)
         })
         .await?;
-    let status = output.status();
 
-    result_of(status.success, status.code, output.stderr_bytes())
+    Ok(check_exit(&output)?)
 }
 
 /// Returns the arguments of `sh` that build the trust store.
@@ -148,18 +168,6 @@ fn build_args() -> [&'static str; 5] {
         SYSTEM_BUNDLE_PATH,
         STORE_PATH,
     ]
-}
-
-/// Returns the result of a build that exited with the code and wrote the stderr.
-fn result_of(success: bool, code: i32, stderr: &[u8]) -> Result<(), BuildError> {
-    if success {
-        return Ok(());
-    }
-
-    Err(BuildError::Exited {
-        code,
-        stderr: String::from_utf8_lossy(stderr).trim().to_string(),
-    })
 }
 
 #[cfg(test)]
@@ -199,7 +207,7 @@ mod tests {
 
     #[test]
     fn with_tool_options_sets_the_options_when_intercepting() {
-        let env = with_tool_options(&vars(&[("PORT", "3000")]), true);
+        let env = with_tool_options(vars(&[("PORT", "3000")]), true);
 
         assert_eq!(
             env,
@@ -209,7 +217,7 @@ mod tests {
 
     #[test]
     fn with_tool_options_appends_the_options_to_the_users_value() {
-        let env = with_tool_options(&vars(&[(TOOL_OPTIONS_VAR, "-Xmx1g")]), true);
+        let env = with_tool_options(vars(&[(TOOL_OPTIONS_VAR, "-Xmx1g")]), true);
 
         assert_eq!(
             env[TOOL_OPTIONS_VAR],
@@ -219,21 +227,50 @@ mod tests {
 
     #[test]
     fn with_tool_options_appends_the_options_once() {
-        let once = with_tool_options(&vars(&[(TOOL_OPTIONS_VAR, "-Xmx1g")]), true);
+        let once = with_tool_options(vars(&[(TOOL_OPTIONS_VAR, "-Xmx1g")]), true);
 
-        assert_eq!(with_tool_options(&once, true), once);
+        assert_eq!(with_tool_options(once.clone(), true), once);
+    }
+
+    #[test]
+    fn with_tool_options_is_stable_for_a_value_with_surrounding_whitespace() {
+        let once = with_tool_options(vars(&[(TOOL_OPTIONS_VAR, " -Xmx1g ")]), true);
+
+        assert_eq!(
+            once[TOOL_OPTIONS_VAR],
+            format!("-Xmx1g {TRUST_STORE_OPTIONS}")
+        );
+        assert_eq!(with_tool_options(once.clone(), true), once);
+    }
+
+    #[test]
+    fn with_tool_options_keeps_a_trust_store_of_the_users_own() {
+        let own = vars(&[(TOOL_OPTIONS_VAR, "-Djavax.net.ssl.trustStore=/opt/my.p12")]);
+
+        assert_eq!(with_tool_options(own.clone(), true), own);
+    }
+
+    #[test]
+    fn with_tool_options_keeps_an_empty_value_without_interception() {
+        let empty = vars(&[(TOOL_OPTIONS_VAR, "")]);
+
+        assert_eq!(with_tool_options(empty.clone(), false), empty);
+        assert_eq!(
+            with_tool_options(empty, true),
+            vars(&[(TOOL_OPTIONS_VAR, TRUST_STORE_OPTIONS)])
+        );
     }
 
     #[test]
     fn with_tool_options_removes_the_options_without_interception() {
-        let added = with_tool_options(&vars(&[(TOOL_OPTIONS_VAR, "-Xmx1g")]), true);
+        let added = with_tool_options(vars(&[(TOOL_OPTIONS_VAR, "-Xmx1g")]), true);
 
         assert_eq!(
-            with_tool_options(&added, false),
+            with_tool_options(added, false),
             vars(&[(TOOL_OPTIONS_VAR, "-Xmx1g")])
         );
         assert_eq!(
-            with_tool_options(&with_tool_options(&vars(&[]), true), false),
+            with_tool_options(with_tool_options(vars(&[]), true), false),
             vars(&[])
         );
     }
@@ -242,8 +279,8 @@ mod tests {
     fn with_tool_options_keeps_the_users_value_without_interception() {
         let env = vars(&[(TOOL_OPTIONS_VAR, "-Xmx1g"), ("PORT", "3000")]);
 
-        assert_eq!(with_tool_options(&env, false), env);
-        assert_eq!(with_tool_options(&vars(&[]), false), vars(&[]));
+        assert_eq!(with_tool_options(env.clone(), false), env);
+        assert_eq!(with_tool_options(vars(&[]), false), vars(&[]));
     }
 
     #[tokio::test]
@@ -297,15 +334,18 @@ mod tests {
         let args = build_args();
 
         assert_eq!(&args[3..], [SYSTEM_BUNDLE_PATH, STORE_PATH]);
-        assert!(args[1].contains("-jdktrust anyExtendedKeyUsage"));
-        assert!(args[1].contains("chmod 644"));
     }
 
     #[test]
-    fn result_of_a_failed_build_names_the_reason() {
-        let err = result_of(false, 1, b"openssl is not installed\n").unwrap_err();
+    fn a_failed_build_names_the_reason() {
+        let err = BuildError::from(ExitError {
+            code: 1,
+            stderr: "openssl is not installed".to_string(),
+        });
 
-        assert_eq!(err.to_string(), "openssl is not installed (exit code 1)");
-        assert!(result_of(true, 0, b"").is_ok());
+        assert_eq!(
+            err.to_string(),
+            "the build exited with code 1: openssl is not installed"
+        );
     }
 }

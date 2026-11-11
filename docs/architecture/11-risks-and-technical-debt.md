@@ -71,9 +71,10 @@ and trust boundaries these risks belong to.
   domain rule; they need an IP or CIDR rule. TLS interception breaks clients
   that pin certificates or bring their own CA store. Java trusts the CA through
   a trust store that fbkd builds with `openssl pkcs12 -jdktrust` and
-  `JAVA_TOOL_OPTIONS`; in an image without OpenSSL 3.2 or newer the build only
-  logs a warning and Java fails, and a JVM started with its own
-  `javax.net.ssl.trustStore` still does. microsandbox has no API for denied
+  `JAVA_TOOL_OPTIONS`; in an image without OpenSSL 3.2 or newer the build fails
+  with a warning from `fbk start` and Java fails, and a JVM started with its own
+  `javax.net.ssl.trustStore` still does. A `JAVA_TOOL_OPTIONS` that the image
+  sets is hidden by the one fbkd sets. microsandbox has no API for denied
   connections; the network log records the attempts the guest makes, but not
   which ones the policy denied
   ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).

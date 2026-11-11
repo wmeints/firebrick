@@ -208,13 +208,13 @@ impl SandboxManager {
         let recreated = self.recreate(recreation, &snapshot).await?;
         let installed = install_tools_after(change, &recreated, recreation.settings).await;
 
-        // A stopped sandbox builds the store when it starts again.
         if was_live {
-            java::apply(&recreated).await;
-        }
-
-        // The recreated sandbox boots, so stop it again when it was stopped before.
-        if !was_live {
+            // `apply` logs a failed build, and the next start reports it to the user. The
+            // update itself succeeded, so its response doesn't fail over it.
+            java::apply(&recreated).await.ok();
+        } else {
+            // The recreated sandbox boots, so stop it again; it builds the store when it
+            // starts again.
             stop_recreated(name, change).await?;
         }
 

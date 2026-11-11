@@ -518,8 +518,14 @@ sandbox, it adds them the same way when the sandbox's stored config has TLS
 interception, so a sandbox that got its first secret, or one created before fbkd
 set the options, gets them on its next start, and the user's options are kept. A
 sandbox without TLS interception doesn't get the variable, and a recreate
-without it removes the options again. Every JVM prints `Picked up
-JAVA_TOOL_OPTIONS: ...` to stderr.
+without it removes the options again. fbkd only strips its own options from the
+end of the value before it adds them again, so a value it already gave the
+sandbox doesn't change on the next start; a user value that sets its own
+`-Djavax.net.ssl.trustStore=` gets no options, so the user's store wins, and an
+empty value stays empty without TLS interception. Every JVM prints `Picked up
+JAVA_TOOL_OPTIONS: ...` to stderr. Because the sandbox's variables override the
+image's, a `JAVA_TOOL_OPTIONS` that the image sets is hidden in a sandbox with
+TLS interception; set it in the spec's `env` instead.
 
 Once a sandbox with TLS interception runs, after its mise tools are installed,
 fbkd (re)builds the store as root, on every start and after a recreate of a
@@ -541,7 +547,13 @@ its well-known password protects nothing secret and the store widens no trust
 - The image has no `openssl`, an OpenSSL older than 3.2, which lacks
   `-jdktrust`, or no system bundle, or the build doesn't finish within 30
   seconds: fbkd logs a warning naming the sandbox and the reason, and
-  `StartSandbox` succeeds. Java then fails as it did without the store.
+  `StartSandbox` succeeds with the reason in `java_trust_store_error` of
+  `SandboxStarted`, such as `the build exited with code 1: openssl is not
+  installed`. fbk prints `warning: Java won't trust HTTPS in the sandbox:
+  couldn't build its trust store: <reason>; use an image with OpenSSL 3.2 or
+  newer`. Java then fails as it did without the store. After `UpdateNetwork` or
+  `UpgradeSandbox` fbkd only logs the reason, because the change itself
+  succeeded; the next `fbk start` or `fbk run` reports it.
 
 ### Setting environment variables
 
@@ -754,7 +766,7 @@ sequenceDiagram
     opt StartSandbox left the sandbox running and it has TLS interception
         D->>MS: As root: build /etc/ssl/certs/java/firebrick.p12 from<br/>/etc/ssl/certs/ca-certificates.crt with openssl pkcs12, chmod 644
         opt No openssl, OpenSSL older than 3.2 or no system bundle
-            D->>D: Log a warning
+            D->>D: Log a warning, keep the reason for java_trust_store_error
         end
     end
 

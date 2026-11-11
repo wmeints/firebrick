@@ -135,6 +135,9 @@ pub struct Started {
     pub env_pending_restart: bool,
     /// Why the root disk of an existing sandbox didn't get the requested size, if it didn't.
     pub root_disk: Option<RootDiskNotice>,
+    /// Why fbkd couldn't build the Java trust store of a sandbox with TLS interception, if it
+    /// couldn't.
+    pub java_trust_store_error: Option<String>,
 }
 
 /// The requested settings an existing sandbox didn't get when it started.
@@ -360,12 +363,13 @@ impl SandboxManager {
 
         sync_ssh_config().await;
         let pending = result?;
-        self.set_up_running(request).await;
+        let java_trust_store = self.set_up_running(request).await;
 
         Ok(Started {
             forwards: self.open_forwards(request.name, request.ports).await,
             env_pending_restart: pending.env_restart,
             root_disk: pending.root_disk,
+            java_trust_store_error: java_trust_store.err().map(|err| err.to_string()),
         })
     }
     /// Listens for the network logs and clipboards of the sandboxes that have their routes,
@@ -613,8 +617,8 @@ impl SandboxManager {
     }
     /// Connects to the sandbox a start request left running, starts its URL relay unless it has
     /// one, gives it the request's git identity and builds its Java trust store, logging a
-    /// warning when it can't connect.
-    async fn set_up_running(&self, request: StartSandbox<'_>) {
+    /// warning when it can't connect. Returns why the trust store couldn't be built.
+    async fn set_up_running(&self, request: StartSandbox<'_>) -> Result<(), java::BuildError> {
         let sb = match connect(request.name).await {
             Ok(sb) => sb,
             Err(err) => {
@@ -623,7 +627,7 @@ impl SandboxManager {
                      trust store of sandbox {}: {err}",
                     request.name
                 );
-                return;
+                return Ok(());
             }
         };
 
@@ -633,7 +637,7 @@ impl SandboxManager {
             git::apply(&sb, identity).await;
         }
 
-        java::apply(&sb).await;
+        java::apply(&sb).await
     }
     /// Creates a sandbox, then installs its workspace's mise tools when the request enables
     /// mise, passing the progress of both to `on_progress`.
@@ -853,7 +857,7 @@ fn wanted_env(
     let spec = sb.config()?.spec;
     let env = requested.cloned().unwrap_or_else(|| env::stored(&spec));
 
-    Ok(java::with_tool_options(&env, java::intercepts(&spec)))
+    Ok(java::with_tool_options(env, java::intercepts(&spec)))
 }
 
 /// Whether the sandbox installs its workspace's mise tools on start.

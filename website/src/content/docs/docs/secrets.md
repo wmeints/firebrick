@@ -34,6 +34,11 @@ In the sandbox, the environment variable holds a placeholder such as
 placeholder in an HTTP header, the host replaces it with the real value.
 Requests that carry it to other hosts are blocked.
 
+To read the requests, Firebrick intercepts HTTPS with a certificate authority
+that the sandbox trusts, also without enforced network rules. Java trusts it
+through `JAVA_TOOL_OPTIONS`; see
+[Networking](/docs/networking/#restricting-outgoing-traffic).
+
 ## Allowed hosts
 
 These names have default allowed hosts:

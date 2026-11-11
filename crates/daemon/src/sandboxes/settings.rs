@@ -102,7 +102,7 @@ impl SandboxSettings {
     /// Returns the settings with the Java trust store options in `JAVA_TOOL_OPTIONS` when the
     /// sandbox `intercepts` TLS, and without them otherwise.
     pub(super) fn with_java_trust_store(mut self, intercepts: bool) -> Self {
-        self.env = java::with_tool_options(&self.env, intercepts);
+        self.env = java::with_tool_options(std::mem::take(&mut self.env), intercepts);
         self
     }
 

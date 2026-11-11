@@ -57,8 +57,11 @@ Keep in mind that:
 - Java trusts that certificate authority through `JAVA_TOOL_OPTIONS`, which
   points every JVM at a trust store Firebrick builds when the sandbox starts, so
   JDKs you install later with `mise use java@...` work too. Every JVM prints
-  `Picked up JAVA_TOOL_OPTIONS: ...` to stderr. A custom image needs OpenSSL 3.2
-  or newer to build the store.
+  `Picked up JAVA_TOOL_OPTIONS: ...` to stderr. Options you set in `env` come
+  first, and a `-Djavax.net.ssl.trustStore=` of your own replaces Firebrick's
+  store. A `JAVA_TOOL_OPTIONS` from the image is hidden, so set it in `env`
+  instead. A custom image needs OpenSSL 3.2 or newer to build the store; without
+  it, `fbk start` prints a warning.
 - A secret's allowed hosts must be allowed by the network rules too. See
   [Secrets](/docs/secrets/).
 - `mise install` downloads its tools when the sandbox starts, so allow the hosts

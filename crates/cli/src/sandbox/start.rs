@@ -148,6 +148,21 @@ pub(super) fn warn_root_disk(started: &SandboxStarted) {
     }
 }
 
+/// Prints a warning to stderr when fbkd couldn't build the Java trust store of the sandbox.
+pub(super) fn warn_java_trust_store(started: &SandboxStarted) {
+    if let Some(error) = &started.java_trust_store_error {
+        eprintln!("{}", java_trust_store_warning(error));
+    }
+}
+
+/// Returns the warning for a Java trust store that fbkd couldn't build for the reason.
+fn java_trust_store_warning(error: &str) -> String {
+    format!(
+        "warning: Java won't trust HTTPS in the sandbox: couldn't build its trust store: {error}; \
+         use an image with OpenSSL 3.2 or newer"
+    )
+}
+
 /// Returns the notice for a root disk that didn't get the requested size, or `None` for a
 /// reason the client doesn't know.
 fn root_disk_warning(notice: &RootDiskNotice) -> Option<String> {
@@ -433,6 +448,7 @@ pub(crate) async fn ensure_running(
     warn_failed_forwards(&started);
     warn_env_pending_restart(&started);
     warn_root_disk(&started);
+    warn_java_trust_store(&started);
 
     Ok(started)
 }
@@ -496,6 +512,17 @@ mod tests {
             current_mib: Some(16 * 1024),
             error: error.to_string(),
         }
+    }
+
+    #[test]
+    fn java_trust_store_warning_names_the_reason_and_the_fix() {
+        let warning = java_trust_store_warning("the build exited with code 1: no openssl");
+
+        assert_eq!(
+            warning,
+            "warning: Java won't trust HTTPS in the sandbox: couldn't build its trust store: the \
+             build exited with code 1: no openssl; use an image with OpenSSL 3.2 or newer"
+        );
     }
 
     #[test]

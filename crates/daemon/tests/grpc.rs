@@ -3115,13 +3115,8 @@ async fn java_trusts_the_tls_interception_ca_and_keeps_the_users_options() {
     let request = java_request(name);
     start_and_wait(&mut client, request.clone()).await;
 
-    let (output, code) = run_command(
-        &mut client,
-        name,
-        "sh",
-        &["-c", JAVA_FETCH_SCRIPT, "java-fetch", "https://example.com"],
-    )
-    .await;
+    let (output, code) = java_fetch(&mut client, name, "https://example.com").await;
+    let mode = java_trust_store_mode(&mut client, name).await;
     stop_sandbox(&mut client, name).await;
     start_and_wait(&mut client, request).await;
     let synced = sandbox_spec(name).await;
@@ -3131,6 +3126,8 @@ async fn java_trusts_the_tls_interception_ca_and_keeps_the_users_options() {
 
     assert_eq!(code, 0, "{output}");
     assert!(output.contains("status 200"), "{output}");
+    // The tests run as root, so the mode shows that the image's default user can read it too.
+    assert_eq!(mode.trim(), "644");
     // Every JVM reports the variable it picked up, with the user's options first.
     let options = format!("-Dfirebrick.test=kept {JAVA_TRUST_STORE_OPTIONS}");
     assert!(
@@ -3144,6 +3141,97 @@ async fn java_trusts_the_tls_interception_ca_and_keeps_the_users_options() {
     );
 }
 
+/// Downloads a JDK into the sandbox and requests the URL with Java's HTTP client, see
+/// [`JAVA_FETCH_SCRIPT`]. Returns the output and the exit code.
+async fn java_fetch(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    url: &str,
+) -> (String, i32) {
+    run_command(
+        client,
+        name,
+        "sh",
+        &["-c", JAVA_FETCH_SCRIPT, "java-fetch", url],
+    )
+    .await
+}
+
+/// Returns the mode of the sandbox's Java trust store in octal, or why `stat` couldn't read it.
+async fn java_trust_store_mode(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> String {
+    let script = "stat -c %a /etc/ssl/certs/java/firebrick.p12 2>&1; sleep 1";
+    let (output, _) = run_command(client, name, "sh", &["-c", script]).await;
+
+    output
+}
+
+#[tokio::test]
+async fn enforced_sandbox_without_openssl_starts_and_says_why_java_has_no_trust_store() {
+    let name: &str = &sandbox_name("network-no-openssl");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("network-no-openssl").await;
+    let mut client = daemon.client().await;
+    // The test image has no openssl.
+    let request = StartSandboxRequest {
+        network: Some(allow_policy(true, &["example.com"])),
+        ..start_request(name)
+    };
+    let started = start(&mut client, request).await;
+    let spec = sandbox_spec(name).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    let error = started.expect("the start failed").java_trust_store_error;
+    assert!(
+        error
+            .as_deref()
+            .is_some_and(|error| error.contains("openssl is not installed")),
+        "{error:?}"
+    );
+    assert_eq!(
+        env::stored(&spec)
+            .get("JAVA_TOOL_OPTIONS")
+            .map(String::as_str),
+        Some(JAVA_TRUST_STORE_OPTIONS)
+    );
+}
+
+#[tokio::test]
+async fn update_network_with_enforcement_gives_a_running_sandbox_the_java_trust_store() {
+    let name: &str = &sandbox_name("update-java");
+    remove_sandbox_and_snapshots(name).await;
+
+    let daemon = TestDaemon::start("update-java").await;
+    let mut client = daemon.client().await;
+    let request = StartSandboxRequest {
+        image: CURL_IMAGE.to_string(),
+        ..start_request(name)
+    };
+    start_and_wait(&mut client, request).await;
+    let before = kept_settings(&mut client, name).await;
+
+    let network = allow_policy(true, &["example.com"]);
+    assert!(update_network(&mut client, name, network).await.unwrap());
+
+    let after = kept_settings(&mut client, name).await;
+    let mode = java_trust_store_mode(&mut client, name).await;
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
+
+    assert_eq!(before.java_tool_options, None);
+    assert_eq!(
+        after.java_tool_options.as_deref(),
+        Some(JAVA_TRUST_STORE_OPTIONS)
+    );
+    assert_eq!(mode.trim(), "644");
+}
+
 #[tokio::test]
 async fn sandbox_without_tls_interception_gets_no_java_options() {
     let name: &str = &sandbox_name("network-no-java");
@@ -3151,14 +3239,13 @@ async fn sandbox_without_tls_interception_gets_no_java_options() {
 
     let daemon = TestDaemon::start("network-no-java").await;
     let mut client = daemon.client().await;
-    start_and_wait(&mut client, start_request(name)).await;
-    let (output, _) = run_command(
-        &mut client,
-        name,
-        "sh",
-        &["-c", "ls /etc/ssl/certs/java/firebrick.p12 2>&1; sleep 1"],
-    )
-    .await;
+    // The curl image has OpenSSL 3.2 or newer, so it could build the store.
+    let request = StartSandboxRequest {
+        image: CURL_IMAGE.to_string(),
+        ..start_request(name)
+    };
+    start_and_wait(&mut client, request).await;
+    let mode = java_trust_store_mode(&mut client, name).await;
     let spec = sandbox_spec(name).await;
 
     daemon.stop().await;
@@ -3169,7 +3256,7 @@ async fn sandbox_without_tls_interception_gets_no_java_options() {
         "{:?}",
         spec.env
     );
-    assert!(output.contains("No such file or directory"), "{output}");
+    assert!(mode.contains("No such file or directory"), "{mode}");
 }
 
 #[tokio::test]
