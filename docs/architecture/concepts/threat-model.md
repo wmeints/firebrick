@@ -206,7 +206,7 @@ Grouped by STRIDE category. The status of each threat is one of:
 | Another local user plants a data or log directory in the temp dir                                   | Data and logs never fall back to the temp dir                | Mitigated |
 | A sandbox claims a loopback port before a host service, or receives an OAuth code meant for another | Rate limit, idle limit                                       | Accepted  |
 | The guest floods `fbkd` with log events, clipboard requests, URLs or huge lines and exhausts memory | Bounded records, line limits, connection limits, rate limits | Check     |
-| An interrupted write leaves the user's `~/.ssh/config` empty                                        | Synced temp file renamed over the file (`atomic_file`)       | Mitigated |
+| An interrupted write leaves the user's `~/.ssh/config` empty                                        | Synced temp file renamed over the file (`write_atomic`)      | Mitigated |
 
 ### Supply chain
 

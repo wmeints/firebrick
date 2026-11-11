@@ -212,30 +212,24 @@ async fn add_with_roots(
 
     if !network.enforce {
         return Ok(match roots {
-            Some(roots) => builder.network(|n| n.tls(|t| trust(t.enabled(false), Some(roots)))),
+            Some(roots) => builder.network(|n| n.tls(|t| t.enabled(false).upstream_ca_cert(roots))),
             None => builder,
         });
     }
 
     let policy = policy(network)?;
 
-    // `tls(|t| t)` intercepts TLS on port 443, so HTTPS requests can get the deny response too.
+    // `tls(..)` intercepts TLS on port 443, so HTTPS requests can get the deny response too.
     // Only the text format renders `deny_message`; the default JSON format ignores it.
     Ok(builder.network(|n| {
-        n.policy(policy).tls(|t| trust(t, roots)).http(|h| {
-            h.deny_response(true)
-                .deny_response_format(HttpDenyResponseFormat::Text)
-                .deny_message(DENY_MESSAGE)
-        })
+        n.policy(policy)
+            .tls(|t| roots.into_iter().fold(t, TlsBuilder::upstream_ca_cert))
+            .http(|h| {
+                h.deny_response(true)
+                    .deny_response_format(HttpDenyResponseFormat::Text)
+                    .deny_message(DENY_MESSAGE)
+            })
     }))
-}
-
-/// Adds the roots to the ones TLS interception trusts for upstream servers.
-fn trust(tls: TlsBuilder, roots: Option<&Path>) -> TlsBuilder {
-    match roots {
-        Some(roots) => tls.upstream_ca_cert(roots),
-        None => tls,
-    }
 }
 
 /// Writes the Mozilla roots into the microsandbox home and returns their path. Windows hosts
@@ -247,8 +241,9 @@ async fn upstream_roots() -> Result<Option<PathBuf>, MicrosandboxError> {
         .join(super::upstream_roots::BUNDLE_PATH);
 
     super::upstream_roots::ensure(&path).await.map_err(|err| {
-        MicrosandboxError::InvalidConfig(format!(
-            "failed to write the upstream root certificates to {}: {err}",
+        MicrosandboxError::Custom(format!(
+            "can't write the upstream root certificates to {}: {err}; make sure fbkd can \
+             write to that directory",
             path.display()
         ))
     })?;

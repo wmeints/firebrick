@@ -2,11 +2,34 @@
 //! names at `fbk ssh-proxy`, VS Code's Remote-SSH settings and Zed's remote projects. [`sync`]
 //! rewrites all of them from the current sandboxes.
 
-mod atomic_file;
 mod settings_file;
 mod ssh_config;
 mod vscode;
 mod zed;
+
+/// Creates `link` as a symlink to the file `target`, which may not exist, for the tests of
+/// files that keep a symlink. Returns `false` when Windows refuses, because creating a symlink
+/// takes administrator rights or Developer Mode there, so the test can stop. With
+/// `FIREBRICK_TEST_SYMLINKS` set, as in CI, that fails the test instead.
+#[cfg(test)]
+pub(crate) fn test_symlink(target: &std::path::Path, link: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    let created = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let created = std::os::windows::fs::symlink_file(target, link);
+
+    match created {
+        Ok(()) => true,
+        Err(err) if cfg!(windows) && std::env::var_os("FIREBRICK_TEST_SYMLINKS").is_none() => {
+            eprintln!(
+                "can't create a symlink ({err}), so the test stops; set \
+                 FIREBRICK_TEST_SYMLINKS=1 to fail it"
+            );
+            false
+        }
+        Err(err) => panic!("can't create a symlink: {err}"),
+    }
+}
 
 /// A sandbox that is reachable over SSH, as the host's config files list it.
 #[derive(Debug, Clone, PartialEq, Eq)]
