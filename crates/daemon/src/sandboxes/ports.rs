@@ -5,8 +5,9 @@ use super::SandboxManager;
 use super::error::SandboxError;
 use super::status::{get_sandbox, list_all_sandboxes};
 use crate::forward::{self, ForwardReport};
-use crate::guest::listeners::{self, Listener};
+use crate::guest::listeners::{self, Reading};
 use firebrick_spec::{PortMapping, with_port};
+use firebrick_utils::strip_control;
 use microsandbox::Sandbox;
 use microsandbox::sandbox::{SandboxHandle, SandboxStatus};
 
@@ -102,7 +103,10 @@ impl SandboxManager {
         let listeners = if running {
             read_listeners(&sb).await
         } else {
-            Ok(vec![])
+            Ok(Reading {
+                listeners: vec![],
+                truncated: false,
+            })
         };
 
         Ok(PortsListing {
@@ -156,24 +160,32 @@ pub struct PortsListing {
     /// The forwards stored with the sandbox, sorted by host port.
     pub forwards: Vec<PortMapping>,
     /// The TCP ports listening in the guest, empty when the sandbox doesn't run, or why they
-    /// couldn't be read.
-    pub listeners: Result<Vec<Listener>, String>,
+    /// couldn't be read, without control characters.
+    pub listeners: Result<Reading, String>,
 }
 
-/// Reads the listeners of the running sandbox, or returns why that failed.
-async fn read_listeners(sb: &SandboxHandle) -> Result<Vec<Listener>, String> {
+/// Reads the listeners of the running sandbox, or returns why that failed. Parts of the reason
+/// can come from the guest, so its control characters are removed. Logs a warning when the
+/// reading fails or is truncated.
+async fn read_listeners(sb: &SandboxHandle) -> Result<Reading, String> {
+    let name = sb.name();
     let result = match sb.connect().await {
         Ok(connected) => listeners::read(&connected).await,
         Err(err) => Err(err.into()),
     };
 
-    result.map_err(|err| {
-        tracing::warn!(
-            "failed to read the listening ports of sandbox {}: {err}",
-            sb.name()
-        );
-        err.to_string()
-    })
+    match result {
+        Ok(reading) if reading.truncated => {
+            tracing::warn!("sandbox {name} reported more listening ports than fbkd reads");
+            Ok(reading)
+        }
+        Ok(reading) => Ok(reading),
+        Err(err) => {
+            let reason = strip_control(&err.to_string());
+            tracing::warn!("failed to read the listening ports of sandbox {name}: {reason}");
+            Err(reason)
+        }
+    }
 }
 
 /// A change to the ports stored with a sandbox.

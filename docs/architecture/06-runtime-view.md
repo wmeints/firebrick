@@ -918,6 +918,10 @@ one per listening port that no forward reaches.
   logs a warning and sets `listeners_error`, and fbk lists the forwards with
   status `unknown`, prints `warning: couldn't read the listening ports of
   sandbox <name>: <reason>` to stderr and exits with 0.
+- The guest printed more than 1 MiB or listens on more than 1024 ports: fbkd
+  sets `listeners_truncated`, and fbk lists what it got and prints `warning:
+  sandbox <name> reported more than fbk reads; the list may miss listening ports
+  or their processes` to stderr.
 - Nothing is forwarded or listening: fbk prints `Sandbox <name> has no forwards
   or listening ports.`
 

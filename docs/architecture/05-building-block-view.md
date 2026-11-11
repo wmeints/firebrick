@@ -751,9 +751,12 @@ C4Component
     output is untrusted: `fbkd` reads at most 1 MiB and then kills the script,
     gives it 5 seconds, skips lines that don't parse, keeps at most 1024 ports
     and 64 characters of a process name, and fails when the output has no socket
-    table. `SandboxManager::list_ports` returns the sandbox's stored forwards,
-    sorted by host port, and the listeners when it runs, or the reason they
-    couldn't be read. It doesn't take the sandbox's lock.
+    table. A reading that hit the output or port limit is marked truncated. A
+    failed script's error carries the first 1 KiB of its stderr.
+    `SandboxManager::list_ports` returns the sandbox's stored forwards, sorted
+    by host port, and the listeners when it runs, or the reason they couldn't be
+    read without control characters, and logs a warning for a failed or
+    truncated reading. It doesn't take the sandbox's lock.
 - `host_config` - Keeps the host's own config files that list the sandboxes in
   sync with them. Its one function, `sync`, takes the sandboxes that have an SSH
   host name and rewrites the SSH config, the editors' Remote-SSH settings and

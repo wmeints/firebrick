@@ -9,7 +9,7 @@ use crate::api::{
     StartSandboxResponse, UpgradeSandboxResponse, start_sandbox_response, upgrade_sandbox_response,
 };
 use crate::forward::ForwardFailure;
-use crate::guest::listeners::Listener;
+use crate::guest::listeners::{Listener, Reading};
 use crate::guest::netlog::{ConnectionEntry, DnsEntry, Protocol, Record};
 use crate::sandboxes::provision::git;
 use crate::sandboxes::provision::mise::MiseUpdate;
@@ -261,16 +261,17 @@ pub(super) fn sandbox_upgraded(upgrade: Upgrade) -> UpgradeSandboxResponse {
 
 /// Converts the ports of a sandbox to the response of `ListPorts`.
 pub(super) fn list_ports_response(listing: PortsListing) -> ListPortsResponse {
-    let (listeners, listeners_error) = match listing.listeners {
-        Ok(listeners) => (listeners, None),
-        Err(err) => (vec![], Some(err)),
+    let (reading, listeners_error) = match listing.listeners {
+        Ok(reading) => (reading, None),
+        Err(err) => (Reading::default(), Some(err)),
     };
 
     ListPortsResponse {
         running: listing.running,
         forwards: listing.forwards.into_iter().map(port_forward).collect(),
-        listeners: listeners.into_iter().map(guest_listener).collect(),
+        listeners: reading.listeners.into_iter().map(guest_listener).collect(),
         listeners_error,
+        listeners_truncated: reading.truncated,
     }
 }
 
@@ -713,15 +714,18 @@ mod tests {
             host: 8080,
             guest: 80,
         };
-        let listeners = vec![
-            listener(80, &["0.0.0.0", "::"], Some((12, "nginx"))),
-            listener(22, &["127.0.0.1"], None),
-        ];
+        let reading = Reading {
+            listeners: vec![
+                listener(80, &["0.0.0.0", "::"], Some((12, "nginx"))),
+                listener(22, &["127.0.0.1"], None),
+            ],
+            truncated: false,
+        };
 
         let response = list_ports_response(PortsListing {
             running: true,
             forwards: vec![forward],
-            listeners: Ok(listeners),
+            listeners: Ok(reading),
         });
 
         assert!(response.running);
@@ -736,8 +740,25 @@ mod tests {
                 process: "nginx".to_string(),
             }
         );
-        assert_eq!(response.listeners[1].pid, None);
-        assert_eq!(response.listeners[1].process, "");
+        let unowned = &response.listeners[1];
+        assert_eq!((unowned.pid, unowned.process.as_str()), (None, ""));
+    }
+
+    #[test]
+    fn list_ports_response_says_when_the_listeners_are_truncated() {
+        let reading = Reading {
+            listeners: vec![listener(80, &["0.0.0.0"], None)],
+            truncated: true,
+        };
+
+        let response = list_ports_response(PortsListing {
+            running: true,
+            forwards: vec![],
+            listeners: Ok(reading),
+        });
+
+        assert_eq!(response.listeners.len(), 1);
+        assert!(response.listeners_truncated);
     }
 
     #[test]

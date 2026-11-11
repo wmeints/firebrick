@@ -41,7 +41,9 @@ There are three ways for `fbkd` to learn about the guest's listeners:
   the guest and can change what the script prints. `fbkd` reads at most 1 MiB,
   waits at most 5 seconds, skips lines that don't parse, keeps at most 1024
   ports and 64 characters of a process name, and `fbk` removes control
-  characters from the names before printing them.
+  characters from the names before printing them. When it drops part of the
+  output, it says so in `listeners_truncated`, so `fbk` can warn that the list
+  may be incomplete instead of showing a forwarded port as `not listening`.
 - **Don't fail the listing.** When the script fails, the forwards are still
   returned, with the reason in `listeners_error`.
 

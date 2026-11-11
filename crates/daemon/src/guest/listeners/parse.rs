@@ -2,7 +2,7 @@
 //! and the socket descriptors and names of its processes. The guest writes all of it, so lines
 //! that don't parse are skipped and the result is bounded.
 
-use super::{Listener, Process};
+use super::{Listener, Process, Reading};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -56,8 +56,9 @@ struct Collected {
     current: Option<Process>,
 }
 
-/// Returns the listening TCP ports in the output, sorted by port, at most [`MAX_LISTENERS`].
-pub(super) fn listeners(output: &str) -> Vec<Listener> {
+/// Returns the listening TCP ports in the output, sorted by port, at most [`MAX_LISTENERS`]. The
+/// reading is truncated when the output has more.
+pub(super) fn listeners(output: &str) -> Reading {
     let mut section = Section::None;
     let mut collected = Collected::default();
 
@@ -94,25 +95,25 @@ impl Collected {
             return;
         };
 
-        match self.owners.get(&inode) {
-            Some(known) if known.pid <= owner.pid => {}
-            _ => {
-                self.owners.insert(inode, owner.clone());
-            }
+        let known = self.owners.entry(inode).or_insert_with(|| owner.clone());
+        if owner.pid < known.pid {
+            *known = owner.clone();
         }
     }
 
     /// Groups the sockets by port, with the lowest pid that owns one of them.
-    fn into_listeners(self) -> Vec<Listener> {
+    fn into_listeners(self) -> Reading {
         let mut ports: BTreeMap<u16, (BTreeSet<IpAddr>, Option<&Process>)> = BTreeMap::new();
 
         for socket in &self.sockets {
             let (addresses, process) = ports.entry(socket.port).or_default();
             addresses.insert(socket.address);
-            *process = lower_pid(*process, self.owners.get(&socket.inode));
+            let owner = self.owners.get(&socket.inode);
+            *process = (*process).into_iter().chain(owner).min_by_key(|p| p.pid);
         }
 
-        ports
+        let truncated = ports.len() > MAX_LISTENERS;
+        let listeners = ports
             .into_iter()
             .take(MAX_LISTENERS)
             .map(|(port, (addresses, process))| Listener {
@@ -120,15 +121,12 @@ impl Collected {
                 addresses: addresses.into_iter().collect(),
                 process: process.cloned(),
             })
-            .collect()
-    }
-}
+            .collect();
 
-/// Returns the process with the lower pid.
-fn lower_pid<'a>(a: Option<&'a Process>, b: Option<&'a Process>) -> Option<&'a Process> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(if b.pid < a.pid { b } else { a }),
-        (a, b) => a.or(b),
+        Reading {
+            listeners,
+            truncated,
+        }
     }
 }
 
@@ -257,7 +255,7 @@ mod tests {
         .join("\n");
 
         assert_eq!(
-            listeners(&output),
+            listeners(&output).listeners,
             [
                 listener(3000, &["127.0.0.1"], Some((412, "node"))),
                 listener(5173, &["0.0.0.0", "::"], Some((530, "vite"))),
@@ -276,7 +274,7 @@ mod tests {
         ]
         .join("\n");
 
-        assert_eq!(listeners(&output), []);
+        assert_eq!(listeners(&output).listeners, []);
     }
 
     #[test]
@@ -295,7 +293,7 @@ mod tests {
         .join("\n");
 
         assert_eq!(
-            listeners(&output),
+            listeners(&output).listeners,
             [listener(80, &["0.0.0.0"], Some((12, "master")))]
         );
     }
@@ -304,10 +302,11 @@ mod tests {
     fn skips_malformed_lines_and_keeps_the_valid_ones() {
         let output = [
             "garbage before the first marker".to_string(),
-            row("0100007F:0BB8", "0A", 1),
+            row("0200007F:1F90", "0A", 1),
             TCP_MARKER.to_string(),
             "".to_string(),
-            "   0: zz00007F:0BB8 00000000:0000 0A".to_string(),
+            "   0: 0100007F:0BBB 00000000:0000 0A".to_string(),
+            row("zz00007F:0BBC", "0A", 6),
             "   1: 0100007F:0BB8 00000000:0000 0A 0 0 0 0 0 not-an-inode".to_string(),
             row("0100007F:XYZ", "0A", 2),
             row("0100007F:0BB8", "0A", 3),
@@ -324,7 +323,10 @@ mod tests {
         ]
         .join("\n");
 
-        assert_eq!(listeners(&output), [listener(3000, &["127.0.0.1"], None)]);
+        let reading = listeners(&output);
+
+        assert_eq!(reading.listeners, [listener(3000, &["127.0.0.1"], None)]);
+        assert!(!reading.truncated);
     }
 
     #[test]
@@ -339,8 +341,10 @@ mod tests {
         lines.push(format!("pid 5 {long_name}"));
         lines.push(fd_line(3, 1));
 
-        let found = listeners(&lines.join("\n"));
+        let reading = listeners(&lines.join("\n"));
+        let found = reading.listeners;
 
+        assert!(reading.truncated);
         assert_eq!(found.len(), MAX_LISTENERS);
         assert_eq!(found.last().unwrap().port, 1024);
         assert_eq!(

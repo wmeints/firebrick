@@ -131,7 +131,8 @@ async fn port_listing(
 }
 
 /// Returns the note for a sandbox that doesn't run, or the warning when its listening ports
-/// couldn't be read.
+/// couldn't be read or are incomplete. The reason comes partly from the guest, so its control
+/// characters are removed.
 fn listing_note(name: &str, response: &ListPortsResponse) -> Option<String> {
     if !response.running {
         return Some(format!(
@@ -139,8 +140,18 @@ fn listing_note(name: &str, response: &ListPortsResponse) -> Option<String> {
         ));
     }
 
-    response.listeners_error.as_ref().map(|reason| {
-        format!("warning: couldn't read the listening ports of sandbox {name}: {reason}")
+    if let Some(reason) = &response.listeners_error {
+        let reason = firebrick_utils::strip_control(reason);
+        return Some(format!(
+            "warning: couldn't read the listening ports of sandbox {name}: {reason}"
+        ));
+    }
+
+    response.listeners_truncated.then(|| {
+        format!(
+            "warning: sandbox {name} reported more than fbk reads; the list may miss listening \
+             ports or their processes"
+        )
     })
 }
 
@@ -497,6 +508,7 @@ mod tests {
                 guest_listener(5173, &["0.0.0.0", "::"], Some((530, "vite"))),
             ],
             listeners_error: None,
+            listeners_truncated: false,
         }
     }
 
@@ -598,7 +610,8 @@ mod tests {
             running: true,
             forwards: vec![stored(8080, 80)],
             listeners: vec![],
-            listeners_error: Some("the guest didn't answer within 5 seconds".to_string()),
+            listeners_error: Some("the guest didn't answer within\u{1b}[2J 5 seconds".to_string()),
+            listeners_truncated: false,
         };
 
         let listing = list_dev(ports, OutputFormat::Json).await;
@@ -609,6 +622,25 @@ mod tests {
             Some(
                 "warning: couldn't read the listening ports of sandbox dev: the guest didn't \
                  answer within 5 seconds"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn ls_warns_when_the_listening_ports_are_incomplete() {
+        let ports = ListPortsResponse {
+            listeners_truncated: true,
+            ..running_ports()
+        };
+
+        let listing = list_dev(ports, OutputFormat::Json).await;
+
+        assert_eq!(json(&listing)[0]["status"], "forwarded");
+        assert_eq!(
+            listing.note.as_deref(),
+            Some(
+                "warning: sandbox dev reported more than fbk reads; the list may miss listening \
+                 ports or their processes"
             )
         );
     }

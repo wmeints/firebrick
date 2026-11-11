@@ -427,6 +427,9 @@ message ListPortsResponse {
   repeated GuestListener listeners = 3;
   // Set when the sandbox runs but fbkd couldn't read its listening ports.
   optional string listeners_error = 4;
+  // Set when the guest reported more than fbkd reads, so ports or their processes may be
+  // missing from listeners.
+  bool listeners_truncated = 5;
 }
 
 message GuestListener {

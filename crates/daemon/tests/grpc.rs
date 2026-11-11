@@ -4776,10 +4776,13 @@ async fn lists_the_ports_listening_in_the_guest_and_the_stored_forwards() {
     assert!(listener.pid.is_some_and(|pid| pid > 1), "{listener:?}");
     assert_eq!(listener.addresses, ["127.0.0.1"]);
     assert!(running.running);
+    assert_eq!(running.listeners_error, None);
+    assert!(!running.listeners_truncated);
     assert_eq!(running.forwards, forward_ports(host, GUEST_PORT + 1).ports);
     let unforwarded = u32::from(GUEST_PORT + 1);
     assert!(!running.listeners.iter().any(|l| l.port == unforwarded));
     assert!(!stopped.running);
+    assert_eq!(stopped.listeners_error, None);
     assert_eq!(stopped.forwards, running.forwards);
     assert!(stopped.listeners.is_empty());
     assert_eq!(missing.unwrap_err().code(), Code::NotFound);
