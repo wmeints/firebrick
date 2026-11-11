@@ -20,8 +20,7 @@ pre-commit:
     unit-tests:
       glob: *rust-inputs
       run: cargo test --workspace
-    # The website's end-to-end tests need a browser, so they run in CI and in
-    # the Claude Code stop hook instead.
+    # The website's end-to-end tests need a browser, so they run in CI instead.
     website:
       # mise.toml and mise.lock pin Node and pnpm.
       glob: ["website/**", "mise.toml", "mise.lock"]

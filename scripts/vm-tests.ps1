@@ -54,7 +54,7 @@ try {
 }
 
 # Name the failed binaries last, where a caller that keeps only the end of the
-# output, such as the stop hook, still sees them.
+# output still sees them.
 if ($failed) {
     Write-Output "vm-tests failed in: $($failed -join ', ')"
     exit 1

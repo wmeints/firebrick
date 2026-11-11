@@ -207,15 +207,9 @@ These checks enforce the rules above, so don't try to bypass them:
 - Claude Code hooks in `.claude/settings.json` run `cargo fmt` on Rust files
   (`.claude/hooks/format-rust.sh`), `dprint fmt` on Markdown files
   (`.claude/hooks/format-markdown.sh`) and Prettier on the other website files
-  (`.claude/hooks/format-website.sh`) after each edit. Before a turn ends with
-  uncommitted changes, `.claude/hooks/stop-checks.sh` runs the checks for what
-  changed: for Rust, proto or Cargo changes the format check, clippy and the
-  unit tests, plus the `vm-tests` when the files from step 3 of the definition
-  of done changed; for changes in `website/`, `mise.toml` or `mise.lock` the
-  website's install, format check, lint, type check, unit tests, build and
-  end-to-end tests; `dprint check` for Markdown and `actionlint` for workflows.
-  A failure blocks the turn once; when it still fails on the retry, the hook
-  reports it to the user and lets the turn end instead of looping.
+  (`.claude/hooks/format-website.sh`) after each edit. No hook runs the
+  `vm-tests` or the website's end-to-end tests, so run them by hand when the
+  definition of done requires them.
 - Before each commit, Lefthook runs the checks for the staged files: the format
   checks for Rust and Markdown, `actionlint` for the GitHub workflows, clippy
   and the unit tests for the Rust inputs (`*.rs`, `*.proto`, `Cargo.toml`,
