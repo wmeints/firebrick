@@ -6,6 +6,22 @@ request, and the release workflow copies the section into the GitHub release,
 above the generated list of pull requests. Each section starts with a `##
 vX.Y.Z - YYYY-MM-DD` heading.
 
+## v0.13.1 - 2026-11-12
+
+This release lets Java make HTTPS requests in sandboxes that intercept TLS, and
+updates the dependencies, including microsandbox 0.7.15.
+
+### Fixes
+
+- Java programs in a sandbox with an enforced network policy or a secret can
+  make HTTPS requests instead of failing with `PKIX path building failed`. On
+  every start, `fbkd` builds a trust store from the sandbox's CA bundle and
+  points every JVM at it with `JAVA_TOOL_OPTIONS`, so a JDK you install later
+  with mise works too. `fbk` warns you when the store can't be built. (#269)
+- The dependencies are updated, including microsandbox 0.7.15, and the
+  `firebrick-base` image is built on the latest `ubuntu:26.04`. (#262, #270,
+  #274)
+
 ## v0.13.0 - 2026-11-10
 
 This release gives sandboxes a larger, configurable root disk, cuts the host CPU
