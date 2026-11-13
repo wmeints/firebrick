@@ -135,12 +135,12 @@ the higher level and note the ambiguity in **Review focus**.
 
 ### 4. Write the PR body
 
-Build the body from the diff evidence using the template in `template.md` (read
-it via `skill://submit-pr/template.md`). Do not rename or omit a section, keep
-each section concise and specific (reference concrete files, symbols, and
-behaviors from the diff, never generic filler), and replace every `<...>`
-placeholder with real content — never leave a placeholder or a section blank.
-The template contains:
+Build the body from the diff evidence using the template in `template.md` next
+to this file (`.claude/skills/submit-pr/template.md`). Do not rename or omit a
+section, keep each section concise and specific (reference concrete files,
+symbols, and behaviors from the diff, never generic filler), and replace every
+`<...>` placeholder with real content — never leave a placeholder or a section
+blank. The template contains:
 
 - **Why** — the motivation and the outcome delivered.
 - **Review focus** — what a human reviewer must look at.
@@ -182,9 +182,10 @@ label survives across repos and does not fail the create):
 
 ```bash
 RISK_LABEL="risk:<level>"
+COLOR="<color from the table>"
+DESCRIPTION="<description from the table>"
 if ! gh label list --json name | grep -q "\"$RISK_LABEL\""; then
-  # color: high=red, medium=orange, low=green
-  gh label create "$RISK_LABEL" --color "c0542e" --description "Change introduces security-relevant risk" || true
+  gh label create "$RISK_LABEL" --color "$COLOR" --description "$DESCRIPTION"
 fi
 ```
 
