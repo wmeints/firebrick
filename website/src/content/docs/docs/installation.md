@@ -14,6 +14,7 @@ archive per platform with the `fbk` and `fbkd` binaries:
 | Windows 11 x64        | `x86_64-pc-windows-msvc`    |
 
 The Windows archive is a `.zip`; see
+[Installing with winget](#installing-with-winget) or
 [Windows: run Firebrick natively](#windows-run-firebrick-natively) to install
 it. The steps below install both binaries in `~/.local/bin`, which doesn't need
 root permissions. Keep `fbk` and `fbkd` in the same directory, because the CLI
@@ -39,6 +40,7 @@ Check that your machine meets these requirements before you download anything.
 - **macOS**: Apple Silicon. Intel Macs aren't supported.
 - **Windows**: Windows 11 on x64 with hardware virtualization enabled in the
   firmware and the Windows Hypervisor Platform turned on; see
+  [Installing with winget](#installing-with-winget) or
   [Windows: run Firebrick natively](#windows-run-firebrick-natively). Windows
   support is a preview, like microsandbox's. Firebrick also runs the Linux
   release inside a WSL 2 distribution with nested virtualization; see
@@ -154,6 +156,45 @@ them. Remove the quarantine flag:
 
 ```sh
 xattr -d com.apple.quarantine ~/.local/bin/fbk ~/.local/bin/fbkd
+```
+
+## Installing with winget
+
+The `wmeints.Firebrick` package is waiting for the winget maintainers to accept
+it. Until it's available, `winget install firebrick` finds no package; follow
+[Windows: run Firebrick natively](#windows-run-firebrick-natively) instead.
+
+On Windows 11 x64, install both binaries with
+[winget](https://learn.microsoft.com/windows/package-manager/winget/). There's
+no package for Windows on ARM64. Turn on the Windows Hypervisor Platform first,
+as in step 1 of
+[Windows: run Firebrick natively](#windows-run-firebrick-natively); winget
+doesn't turn it on for you. Then, in PowerShell:
+
+```powershell
+winget install firebrick
+```
+
+winget installs the binaries of the GitHub release and puts `fbk` and `fbkd` on
+your `PATH`. Open a new terminal and continue with
+[Verify the installation](#3-verify-the-installation). A new version reaches
+winget some time after its GitHub release, once the winget maintainers accept
+it.
+
+Windows can't replace or remove a running program, so stop the daemon before you
+upgrade or uninstall. To upgrade, stop the daemon and upgrade the package; the
+next `fbk` command starts the new daemon:
+
+```powershell
+Stop-Process -Name fbkd
+winget upgrade wmeints.Firebrick
+```
+
+To uninstall, stop the daemon and remove the package:
+
+```powershell
+Stop-Process -Name fbkd
+winget uninstall wmeints.Firebrick
 ```
 
 ## Windows: run Firebrick natively
@@ -296,7 +337,8 @@ rm ~/.local/bin/fbk ~/.local/bin/fbkd
 On Windows, stop the daemon with `Stop-Process -Name fbkd` instead, then repeat
 steps 2 and 3 of
 [Windows: run Firebrick natively](#windows-run-firebrick-natively) to upgrade,
-or remove `%LOCALAPPDATA%\Programs\firebrick` to uninstall.
+or remove `%LOCALAPPDATA%\Programs\firebrick` to uninstall. When you installed
+with winget, see [Installing with winget](#installing-with-winget) instead.
 
 ## Installing with Homebrew
 

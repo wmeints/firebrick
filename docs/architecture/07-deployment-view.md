@@ -45,25 +45,47 @@ exists already. Pushing a tag by hand runs `release.yaml` as well.
   so rerunning an older release's failed job doesn't roll the tap back. Only the
   push step gets the token; the tap is checked out without it. See
   [ADR 0063](decisions/0063-publish-a-homebrew-formula-in-a-custom-tap.md).
+- The winget package `wmeints.Firebrick`, with the moniker `firebrick`, in the
+  community repository
+  [`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs), so users
+  on Windows 11 x64 can run `winget install firebrick`. Its manifests, schema
+  1.10.0, point at the Windows `.zip`, pinned to its checksum, as a `zip`
+  installer with two nested `portable` files, `fbk.exe` and `fbkd.exe`, each
+  with a command alias, so both end up on the `PATH`. They list only the x64
+  installer, so winget finds no applicable installer on ARM64.
+  `.github/scripts/winget-manifests.sh <tag> <.zip.sha256 file> <dir>` writes
+  the version, installer and en-US locale manifests into `<dir>`, so they can be
+  validated locally against a published release with `winget validate`. It fails
+  when the `.sha256` file is missing or holds no checksum, or the tag isn't
+  `v<major>.<minor>.<patch>`. The `winget` job runs on `windows-latest`, renders
+  the manifests and opens a pull request on `microsoft/winget-pkgs` with a
+  `wingetcreate` release pinned to its checksum. It submits nothing when
+  `manifests/w/wmeints/Firebrick/<version>` exists on the default branch of
+  `microsoft/winget-pkgs`, so rerunning it after a merged submission succeeds; a
+  rerun while the earlier pull request is still open may open a second one,
+  which is closed by hand. The winget maintainers review and merge each
+  submission, so a version reaches `winget upgrade` some time after the release.
+  See [ADR 0064](decisions/0064-publish-to-winget-from-the-release-workflow.md).
 
 The jobs run in this order: `package` for each target, then `image`, then
-`publish`, then `release`, which creates the GitHub release, then `homebrew`. A
-failed job stops the jobs after it, so the GitHub release only appears once
-crates.io has the version, and the tap only points at a published release. A
-failed `homebrew` job leaves the GitHub release and the crates as they are.
+`publish`, then `release`, which creates the GitHub release, then `homebrew` and
+`winget` side by side. A failed job stops the jobs after it, so the GitHub
+release only appears once crates.io has the version, and the tap and the winget
+manifests only point at a published release. A failed `homebrew` or `winget` job
+leaves the GitHub release, the image and the crates as they are.
 
-The `image`, `publish` and `homebrew` jobs run in the `release` environment,
-which waits for a required reviewer to approve each deployment in the Actions
-UI, under "Review deployments" on the run. `publish` needs `image`, so a release
-takes three approvals: one for `image` once every `package` job succeeds, one
-for `publish` once the image is pushed, and one for `homebrew` once the GitHub
-release exists. A deployment nobody approves within 30 days fails the run.
-Re-run its failed jobs with "Re-run failed jobs" in the Actions UI or `gh run
-rerun <run-id> --failed`: a release from a version bump runs inside the `Tag
-release` run, and a new run of `tag-release.yaml` finds the tag and releases
-nothing. Only a tag pushed by hand has a `Release` run. The `package` and
-`release` jobs only build and create the GitHub release, so they run without
-approval. See
+The `image`, `publish`, `homebrew` and `winget` jobs run in the `release`
+environment, which waits for a required reviewer to approve each deployment in
+the Actions UI, under "Review deployments" on the run. `publish` needs `image`,
+so a release takes four approvals: one for `image` once every `package` job
+succeeds, one for `publish` once the image is pushed, and one each for
+`homebrew` and `winget` once the GitHub release exists. A deployment nobody
+approves within 30 days fails the run. Re-run its failed jobs with "Re-run
+failed jobs" in the Actions UI or `gh run rerun <run-id> --failed`: a release
+from a version bump runs inside the `Tag release` run, and a new run of
+`tag-release.yaml` finds the tag and releases nothing. Only a tag pushed by hand
+has a `Release` run. The `package` and `release` jobs only build and create the
+GitHub release, so they run without approval. See
 [ADR 0045](decisions/0045-approve-publishing-in-a-release-environment.md).
 
 The `publish` job authenticates with crates.io
@@ -89,10 +111,19 @@ itself, so `tag-release.yaml` doesn't pass it. Before the first release with
 this job, create the public `wmeints/homebrew-tap` repository with a `main`
 branch and add the secret to the `release` environment.
 
+The `winget` job submits with the `WINGET_TOKEN` secret of the `release`
+environment: a classic token with `public_repo`, which `wingetcreate` needs to
+fork `microsoft/winget-pkgs` and open the pull request from the fork. Only the
+submit step gets it, and the job's `GITHUB_TOKEN` stays at `contents: read`.
+Before the first release with this job, the maintainer submits the first version
+by hand, rendering the manifests for the latest release and running
+`wingetcreate submit --token <token> <dir>`, and adds the secret to the
+`release` environment.
+
 Tags with a suffix, such as `v0.2.0-rc.1`, publish a pre-release, on GitHub and
-on crates.io. The `homebrew` job skips them, so the tap keeps the latest
-release. `cargo install` skips pre-releases unless asked for one with
-`--version`.
+on crates.io. The `homebrew` and `winget` jobs skip them, so the tap and winget
+keep the latest release. `cargo install` skips pre-releases unless asked for one
+with `--version`.
 
 | Target                      | Runner             |
 | --------------------------- | ------------------ |
@@ -303,6 +334,9 @@ maintainer with admin access applies them in this order:
    repository, and add it to the `release` environment of this repository as the
    `HOMEBREW_TAP_TOKEN` secret. Renew it before it expires; an expired token
    fails the `homebrew` job.
+6. GitHub: create a classic token with the `public_repo` scope and add it to the
+   `release` environment of this repository as the `WINGET_TOKEN` secret. Renew
+   it before it expires; an expired token fails the `winget` job.
 
 The environment allows `main` because a release from `tag-release.yaml` runs on
 `main`, and `v*.*.*` tags because a tag pushed by hand runs on the tag. It
