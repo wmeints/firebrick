@@ -188,12 +188,13 @@ gh run list --workflow tag-release.yaml --branch main --limit 1 \
 gh run watch <run-id> --exit-status
 ```
 
-The run pauses three times for a deployment review in the `release` environment:
+The run pauses four times for a deployment review in the `release` environment:
 for the `image` job once the packages build, for the `publish` job once the
-image is pushed, and for the `homebrew` job once the GitHub release exists. When
-`gh run view <run-id> --json jobs` shows a job `waiting`, tell the user to
-approve it under "Review deployments" on the run, link the run (`gh run view
-<run-id> --json url`), and keep watching. Don't approve it yourself.
+image is pushed, and for the `homebrew` and `winget` jobs once the GitHub
+release exists. When `gh run view <run-id> --json jobs` shows a job `waiting`,
+tell the user to approve it under "Review deployments" on the run, link the run
+(`gh run view <run-id> --json url`), and keep watching. Don't approve it
+yourself.
 
 Check that the run's `headSha` is the merge commit. When the run fails, report
 the failing job (`gh run view <run-id> --log-failed`). The tag exists by then,
@@ -225,6 +226,13 @@ The tap must have the formula for the version:
 ```bash
 gh api repos/wmeints/homebrew-tap/contents/Formula/firebrick.rb \
   -H "Accept: application/vnd.github.raw" | grep -F "releases/download/<next>/"
+```
+
+The `winget` job must have opened a pull request for the version on
+`microsoft/winget-pkgs`; the winget maintainers merge it later:
+
+```bash
+gh pr list -R microsoft/winget-pkgs --state all --search "wmeints.Firebrick <next without v>"
 ```
 
 ## Guardrails

@@ -290,3 +290,73 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "firebrick ${TAG#v}"
           git push "https://x-access-token:$TOKEN@github.com/wmeints/homebrew-tap.git" HEAD:main
+
+  winget:
+    name: Submit winget manifests
+    # Submit only once the GitHub release has the archive the manifests download.
+    needs: release
+    # Pre-releases don't go to winget. The env context isn't available in a job's if.
+    if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
+    # The winget token opens pull requests outside this repository, so submitting waits for approval, like homebrew.
+    # It's a secret of the release environment, which a called workflow's job reads without the caller passing it.
+    environment: release
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: firebrick-x86_64-pc-windows-msvc
+          path: dist
+
+      - name: Render manifests
+        run: .github/scripts/winget-manifests.sh "$TAG" "dist/firebrick-$TAG-x86_64-pc-windows-msvc.zip.sha256" manifests
+
+      # A rerun after microsoft/winget-pkgs has the version submits nothing.
+      - name: Check for a published version
+        id: published
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/w/wmeints/Firebrick/${TAG#v}")
+          case "$status" in
+            200)
+              echo "::notice::microsoft/winget-pkgs has wmeints.Firebrick ${TAG#v} already"
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              ;;
+            404) echo "exists=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::GitHub answered $status for the wmeints.Firebrick manifests"; exit 1 ;;
+          esac
+
+      # A pinned release checked against its checksum, instead of the unversioned aka.ms/wingetcreate/latest link.
+      - name: Download wingetcreate
+        if: steps.published.outputs.exists == 'false'
+        env:
+          # wingetcreate v1.12.13.0
+          URL: https://github.com/microsoft/winget-create/releases/download/v1.12.13.0/wingetcreate.exe
+          SHA256: 24042bd37915805615e6cf969ac57c6439124c3fe85823327f5f3fb24bd9ffea
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/wingetcreate.exe" "$URL"
+          echo "$SHA256  $RUNNER_TEMP/wingetcreate.exe" | sha256sum -c -
+
+      # wingetcreate forks microsoft/winget-pkgs with the token and opens the pull request from the fork.
+      - name: Submit manifests
+        if: steps.published.outputs.exists == 'false'
+        env:
+          # A classic token with public_repo. Only this step gets it.
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          "$RUNNER_TEMP/wingetcreate.exe" submit \
+            --prtitle "New version: wmeints.Firebrick version ${TAG#v}" \
+            --token "$WINGET_TOKEN" \
+            manifests

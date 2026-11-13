@@ -14,6 +14,7 @@ archive per platform with the `fbk` and `fbkd` binaries:
 | Windows 11 x64        | `x86_64-pc-windows-msvc`    |
 
 The Windows archive is a `.zip`; see
+[Installing with winget](#installing-with-winget) or
 [Windows: run Firebrick natively](#windows-run-firebrick-natively) to install
 it. The steps below install both binaries in `~/.local/bin`, which doesn't need
 root permissions. Keep `fbk` and `fbkd` in the same directory, because the CLI
@@ -154,6 +155,38 @@ them. Remove the quarantine flag:
 
 ```sh
 xattr -d com.apple.quarantine ~/.local/bin/fbk ~/.local/bin/fbkd
+```
+
+## Installing with winget
+
+On Windows 11 x64, install both binaries with
+[winget](https://learn.microsoft.com/windows/package-manager/winget/). There's
+no package for Windows on ARM64. Turn on the Windows Hypervisor Platform first,
+as in step 1 of
+[Windows: run Firebrick natively](#windows-run-firebrick-natively); winget
+doesn't turn it on for you. Then, in PowerShell:
+
+```powershell
+winget install firebrick
+```
+
+winget installs the binaries of the GitHub release and puts `fbk` and `fbkd` on
+your `PATH`. Open a new terminal and continue with
+[Verify the installation](#3-verify-the-installation). A new version reaches
+winget some time after its GitHub release, once the winget maintainers accept
+it.
+
+Windows can't replace or remove a running program, so stop the daemon before you
+upgrade or uninstall. The next `fbk` command starts it again:
+
+```powershell
+Stop-Process -Name fbkd
+winget upgrade wmeints.Firebrick
+```
+
+```powershell
+Stop-Process -Name fbkd
+winget uninstall wmeints.Firebrick
 ```
 
 ## Windows: run Firebrick natively
