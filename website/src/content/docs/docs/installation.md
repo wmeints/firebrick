@@ -17,7 +17,9 @@ The Windows archive is a `.zip`; see
 [Windows: run Firebrick natively](#windows-run-firebrick-natively) to install
 it. The steps below install both binaries in `~/.local/bin`, which doesn't need
 root permissions. Keep `fbk` and `fbkd` in the same directory, because the CLI
-starts the daemon from its own directory. To build them with Cargo instead, see
+starts the daemon from its own directory. To install them with Homebrew or build
+them with Cargo instead, see
+[Installing with Homebrew](#installing-with-homebrew) or
 [Installing with Cargo](#installing-with-cargo).
 
 ## System requirements
@@ -295,6 +297,33 @@ On Windows, stop the daemon with `Stop-Process -Name fbkd` instead, then repeat
 steps 2 and 3 of
 [Windows: run Firebrick natively](#windows-run-firebrick-natively) to upgrade,
 or remove `%LOCALAPPDATA%\Programs\firebrick` to uninstall.
+
+## Installing with Homebrew
+
+On macOS (Apple Silicon) and Linux (x86_64 and ARM64), install both binaries
+from the Firebrick tap with [Homebrew](https://brew.sh). There's no formula for
+Windows. Check the [System requirements](#system-requirements) first; they apply
+to the Homebrew install as well.
+
+```sh
+brew install wmeints/tap/firebrick
+fbk --version
+```
+
+Homebrew installs the binaries of the GitHub release, side by side in its `bin`
+directory, as the CLI requires. Continue with
+[Verify the installation](#3-verify-the-installation). Homebrew refuses the
+formula on an Intel Mac, which Firebrick doesn't support.
+
+To upgrade, run `brew upgrade firebrick`; the next `fbk` command that talks to
+the daemon restarts it, as described in
+[Upgrading and uninstalling](#upgrading-and-uninstalling). To uninstall, stop
+the daemon and remove the formula:
+
+```sh
+pkill -TERM -x fbkd
+brew uninstall firebrick
+```
 
 ## Installing with Cargo
 

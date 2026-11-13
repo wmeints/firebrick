@@ -222,3 +222,54 @@ jobs:
           generate_release_notes: true
           # Tags such as v0.2.0-rc.1 publish a pre-release.
           prerelease: ${{ contains(env.TAG, '-') }}
+
+  homebrew:
+    name: Update Homebrew formula
+    # Update the tap only once the GitHub release has the archives the formula downloads.
+    needs: release
+    # Pre-releases don't go to the tap. The env context isn't available in a job's if.
+    if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
+    # The tap token writes outside this repository, so pushing with it waits for approval, like image and publish.
+    # It's a secret of the release environment, which a called workflow's job reads without the caller passing it.
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: wmeints/homebrew-tap
+          ref: main
+          path: homebrew-tap
+          # A fine-grained token with only contents: write on wmeints/homebrew-tap; checkout keeps it for the push.
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: firebrick-*
+          path: dist
+          merge-multiple: true
+
+      - name: Render formula
+        run: |
+          mkdir -p homebrew-tap/Formula
+          .github/scripts/homebrew-formula.sh "$TAG" dist > homebrew-tap/Formula/firebrick.rb
+
+      # A rerun after the tap was updated finds the formula unchanged and pushes nothing.
+      - name: Push formula
+        working-directory: homebrew-tap
+        run: |
+          git add Formula/firebrick.rb
+          if git diff --cached --quiet; then
+            echo "The tap has the formula for $TAG already"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "firebrick ${TAG#v}"
+          git push origin HEAD:main
