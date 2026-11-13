@@ -41,7 +41,9 @@ exists already. Pushing a tag by hand runs `release.yaml` as well.
   or the tag isn't `v<major>.<minor>.<patch>`. The `homebrew` job commits the
   formula to the tap's `main` branch as `firebrick <version>`, and commits
   nothing when the tap has the same formula already, so rerunning the job after
-  a failed push updates the tap. See
+  a failed push updates the tap. It leaves a tap that has a newer version alone,
+  so rerunning an older release's failed job doesn't roll the tap back. Only the
+  push step gets the token; the tap is checked out without it. See
   [ADR 0063](decisions/0063-publish-a-homebrew-formula-in-a-custom-tap.md).
 
 The jobs run in this order: `package` for each target, then `image`, then
@@ -296,6 +298,11 @@ maintainer with admin access applies them in this order:
    pinned to a full-length commit SHA".
 4. Repository → Settings → Rules: set the "Protect main branch" ruleset, which
    blocks deleting and force pushing the default branch, to Active.
+5. GitHub: create the public `wmeints/homebrew-tap` repository with a `main`
+   branch. Create a fine-grained token with only `contents: write` on that
+   repository, and add it to the `release` environment of this repository as the
+   `HOMEBREW_TAP_TOKEN` secret. Renew it before it expires; an expired token
+   fails the `homebrew` job.
 
 The environment allows `main` because a release from `tag-release.yaml` runs on
 `main`, and `v*.*.*` tags because a tag pushed by hand runs on the tag. It
