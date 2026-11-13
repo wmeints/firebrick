@@ -355,7 +355,12 @@ jobs:
         env:
           # A classic token with public_repo. Only this step gets it.
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        # Without a token wingetcreate starts an interactive device login and waits for it to expire.
         run: |
+          if [ -z "$WINGET_TOKEN" ]; then
+            echo "::error::WINGET_TOKEN isn't set in the release environment"
+            exit 1
+          fi
           "$RUNNER_TEMP/wingetcreate.exe" submit \
             --prtitle "New version: wmeints.Firebrick version ${TAG#v}" \
             --token "$WINGET_TOKEN" \

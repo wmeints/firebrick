@@ -40,6 +40,7 @@ Check that your machine meets these requirements before you download anything.
 - **macOS**: Apple Silicon. Intel Macs aren't supported.
 - **Windows**: Windows 11 on x64 with hardware virtualization enabled in the
   firmware and the Windows Hypervisor Platform turned on; see
+  [Installing with winget](#installing-with-winget) or
   [Windows: run Firebrick natively](#windows-run-firebrick-natively). Windows
   support is a preview, like microsandbox's. Firebrick also runs the Linux
   release inside a WSL 2 distribution with nested virtualization; see
@@ -159,6 +160,10 @@ xattr -d com.apple.quarantine ~/.local/bin/fbk ~/.local/bin/fbkd
 
 ## Installing with winget
 
+The `wmeints.Firebrick` package is waiting for the winget maintainers to accept
+it. Until it's available, `winget install firebrick` finds no package; follow
+[Windows: run Firebrick natively](#windows-run-firebrick-natively) instead.
+
 On Windows 11 x64, install both binaries with
 [winget](https://learn.microsoft.com/windows/package-manager/winget/). There's
 no package for Windows on ARM64. Turn on the Windows Hypervisor Platform first,
@@ -177,12 +182,15 @@ winget some time after its GitHub release, once the winget maintainers accept
 it.
 
 Windows can't replace or remove a running program, so stop the daemon before you
-upgrade or uninstall. The next `fbk` command starts it again:
+upgrade or uninstall. To upgrade, stop the daemon and upgrade the package; the
+next `fbk` command starts the new daemon:
 
 ```powershell
 Stop-Process -Name fbkd
 winget upgrade wmeints.Firebrick
 ```
+
+To uninstall, stop the daemon and remove the package:
 
 ```powershell
 Stop-Process -Name fbkd
@@ -329,7 +337,8 @@ rm ~/.local/bin/fbk ~/.local/bin/fbkd
 On Windows, stop the daemon with `Stop-Process -Name fbkd` instead, then repeat
 steps 2 and 3 of
 [Windows: run Firebrick natively](#windows-run-firebrick-natively) to upgrade,
-or remove `%LOCALAPPDATA%\Programs\firebrick` to uninstall.
+or remove `%LOCALAPPDATA%\Programs\firebrick` to uninstall. When you installed
+with winget, see [Installing with winget](#installing-with-winget) instead.
 
 ## Installing with Homebrew
 
