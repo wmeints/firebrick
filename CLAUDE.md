@@ -132,7 +132,7 @@ The website follows the same rules where they apply:
 - Fix a bug by first writing a test that reproduces it.
 - The website's unit tests live in `website/tests/unit/` and render components
   with Astro's container API. Its end-to-end tests live in `website/tests/e2e/`
-  and drive the built site with Playwright under the GitHub Pages base path;
+  and drive the built site with Playwright, served at the root as in production;
   they check that every internal link and asset resolves and that no page
   scrolls horizontally at 375px.
 

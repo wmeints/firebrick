@@ -124,11 +124,8 @@ function expandSkill(command: string): string {
   write one focused HTML file — a diagram, an infographic, or a short slide
   deck, whichever fits the point. Match the product's colors, type, spacing, and
   components; use real labels and data; support desktop and mobile. Then open it
-  for the user:
-
-```
-Bash(open path/to/show-me-{description}.html)
-```
+  for the user with the platform's opener: `xdg-open` on Linux, `open` on macOS,
+  `start` on Windows.
 
 ### guidance
 

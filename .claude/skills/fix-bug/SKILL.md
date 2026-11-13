@@ -46,8 +46,10 @@ without the fix.
 - Add a test that reproduces the bug through the public interface of the
   affected module, next to the existing tests. Follow the test conventions
   already used in the project.
-- Prefer a unit test. Use an integration test only when the bug depends on an
-  external system, such as a database, a network service, or the file system.
+- Test against the real dependency where that is feasible, such as a file in a
+  `tempfile` directory, a real socket, or a VM in a `vm-tests` integration test,
+  rather than a mock. Put the test where the "Testing" section of `CLAUDE.md`
+  says it belongs.
 - Run it and confirm it fails for the reason you found in step 2.
 
 ### 4. Fix the root cause
