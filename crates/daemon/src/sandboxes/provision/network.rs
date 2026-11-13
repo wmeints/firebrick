@@ -541,6 +541,12 @@ mod tests {
             .unwrap()
     }
 
+    /// Returns an absolute path for the upstream roots on any host, because microsandbox makes
+    /// the TLS paths absolute and `/msb/...` is relative to the current drive on Windows.
+    fn roots_path() -> PathBuf {
+        std::env::temp_dir().join("upstream-roots.pem")
+    }
+
     /// Returns the TLS settings of the config, which are the defaults when it has none.
     fn tls_of(config: &SandboxConfig) -> TlsConfig {
         config.spec.network.tls.clone().unwrap_or_default()
@@ -548,9 +554,10 @@ mod tests {
 
     #[tokio::test]
     async fn enforced_network_trusts_the_upstream_roots() {
-        let roots = Path::new("/msb/tls/upstream-roots.pem");
+        let roots = roots_path();
 
-        let config = config_with_roots(&enforced(&["example.com"], &[]), Some(roots)).await;
+        let config =
+            config_with_roots(&enforced(&["example.com"], &[]), Some(roots.as_path())).await;
         let tls = tls_of(&config);
 
         assert!(tls.enabled);
@@ -559,9 +566,9 @@ mod tests {
 
     #[tokio::test]
     async fn network_that_is_not_enforced_records_the_roots_without_interception() {
-        let roots = Path::new("/msb/tls/upstream-roots.pem");
+        let roots = roots_path();
 
-        let config = config_with_roots(&NetworkSpec::default(), Some(roots)).await;
+        let config = config_with_roots(&NetworkSpec::default(), Some(roots.as_path())).await;
         let tls = tls_of(&config);
 
         assert!(!tls.enabled);
@@ -570,10 +577,10 @@ mod tests {
 
     #[tokio::test]
     async fn secrets_intercept_tls_with_the_upstream_roots() {
-        let roots = Path::new("/msb/tls/upstream-roots.pem");
+        let roots = roots_path();
         let secret = Secret::new("GH_TOKEN".to_string(), "abc".to_string(), vec![]).unwrap();
         let builder = Sandbox::builder("fbk-unit-network").image("alpine");
-        let builder = add_with_roots(builder, &NetworkSpec::default(), Some(roots))
+        let builder = add_with_roots(builder, &NetworkSpec::default(), Some(roots.as_path()))
             .await
             .unwrap();
 
