@@ -233,7 +233,7 @@ async fn add_with_roots(
 }
 
 /// Writes the Mozilla roots into the microsandbox home and returns their path. Windows hosts
-/// need them because Windows installs most roots only on demand (ADR 0061).
+/// need them because Windows installs most roots only on demand (ADR 0062).
 #[cfg(windows)]
 async fn upstream_roots() -> Result<Option<PathBuf>, MicrosandboxError> {
     let path = microsandbox::config::config()?

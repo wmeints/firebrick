@@ -1,7 +1,7 @@
 //! The public root certificates that TLS interception trusts for upstream servers on Windows
 //! hosts. microsandbox verifies upstream servers against the roots in the host's store, and
 //! Windows installs most roots only when CryptoAPI first builds a chain to them, so fbkd
-//! writes the Mozilla roots to a PEM file that the proxy trusts as well (ADR 0061).
+//! writes the Mozilla roots to a PEM file that the proxy trusts as well (ADR 0062).
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;

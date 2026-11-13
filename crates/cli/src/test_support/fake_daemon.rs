@@ -21,13 +21,14 @@ use crate::api::sandbox_management_service_server::{
 use crate::api::{
     AttachRequest, AttachResponse, ForwardPortRequest, ForwardPortResponse, GetSandboxRequest,
     GetSandboxResponse, GetVersionRequest, GetVersionResponse, ListNetworkActivityRequest,
-    ListNetworkActivityResponse, ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest,
-    ListSecretsResponse, NetworkActivity, RemovePortRequest, RemovePortResponse,
-    RemoveSandboxRequest, RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse,
-    SandboxUpgraded, SetSecretRequest, SetSecretResponse, ShutdownRequest, ShutdownResponse,
-    SshTunnelRequest, SshTunnelResponse, StartSandboxRequest, StartSandboxResponse,
-    StopSandboxRequest, StopSandboxResponse, UpdateNetworkRequest, UpdateNetworkResponse,
-    UpgradeSandboxRequest, UpgradeSandboxResponse, upgrade_sandbox_response,
+    ListNetworkActivityResponse, ListPortsRequest, ListPortsResponse, ListSandboxesRequest,
+    ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse, NetworkActivity,
+    RemovePortRequest, RemovePortResponse, RemoveSandboxRequest, RemoveSandboxResponse,
+    RemoveSecretRequest, RemoveSecretResponse, SandboxUpgraded, SetSecretRequest,
+    SetSecretResponse, ShutdownRequest, ShutdownResponse, SshTunnelRequest, SshTunnelResponse,
+    StartSandboxRequest, StartSandboxResponse, StopSandboxRequest, StopSandboxResponse,
+    UpdateNetworkRequest, UpdateNetworkResponse, UpgradeSandboxRequest, UpgradeSandboxResponse,
+    upgrade_sandbox_response,
 };
 
 type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
@@ -41,12 +42,14 @@ pub(crate) fn refusal(rpc: &str, sandbox: &str) -> String {
 /// A daemon with one sandbox, `name`, that mounts `workspace_host_path` and has recorded the
 /// network activity `activity`, or has no network log when it's `None`. The sandbox runs
 /// `image`, and `upgrade_image` when it's outdated. It reports `version`, or predates
-/// `GetVersion` and `Shutdown` when that's `None`, and has `open_sessions` sessions open.
+/// `GetVersion` and `Shutdown` when that's `None`, and has `open_sessions` sessions open. It
+/// answers `ListPorts` with `ports`.
 #[derive(Default)]
 struct FakeDaemon {
     name: String,
     workspace_host_path: String,
     activity: Option<Vec<NetworkActivity>>,
+    ports: ListPortsResponse,
     image: String,
     upgrade_image: String,
     version: Option<String>,
@@ -73,6 +76,22 @@ pub(crate) async fn serve_with_activity(
         name: name.to_string(),
         workspace_host_path: workspace_host_path.to_string(),
         activity,
+        ..Default::default()
+    })
+    .await
+}
+
+/// Serves a fake daemon like [`serve`] that answers `ListPorts` for its sandbox with `ports`.
+pub(crate) async fn serve_with_ports(
+    name: &str,
+    workspace_host_path: &str,
+    ports: ListPortsResponse,
+) -> SandboxManagementServiceClient<Channel> {
+    serve_daemon(FakeDaemon {
+        name: name.to_string(),
+        workspace_host_path: workspace_host_path.to_string(),
+        activity: Some(Vec::new()),
+        ports,
         ..Default::default()
     })
     .await
@@ -258,6 +277,17 @@ impl SandboxManagementService for FakeDaemon {
         request: Request<RemovePortRequest>,
     ) -> Result<Response<RemovePortResponse>, Status> {
         refused("remove_port", &request.into_inner().name)
+    }
+
+    async fn list_ports(
+        &self,
+        request: Request<ListPortsRequest>,
+    ) -> Result<Response<ListPortsResponse>, Status> {
+        if request.into_inner().name != self.name {
+            return Err(Status::not_found("couldn't find specified sandbox"));
+        }
+
+        Ok(Response::new(self.ports.clone()))
     }
 
     async fn upgrade_sandbox(

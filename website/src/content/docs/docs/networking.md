@@ -396,6 +396,31 @@ port. For a stopped sandbox, or one that doesn't exist yet, the change applies
 when it starts. When the host port is in use, `fbk port forward` fails with
 `couldn't forward localhost:<port>: <reason>` and changes nothing.
 
+To see which ports to forward, list the forwards next to the TCP ports that
+listen in the running sandbox:
+
+```sh
+fbk port ls
+```
+
+```text
+┌──────┬───────┬─────────────┬────────────┬───────────────┐
+│ HOST │ GUEST │ ADDRESS     │ PROCESS    │ STATUS        │
+├──────┼───────┼─────────────┼────────────┼───────────────┤
+│ 3000 │ 3000  │ 127.0.0.1   │ node (412) │ forwarded     │
+│ -    │ 5173  │ 0.0.0.0, :: │ vite (530) │ listening     │
+│ 8080 │ 8081  │ -           │ -          │ not listening │
+└──────┴───────┴─────────────┴────────────┴───────────────┘
+```
+
+`forwarded` means a forward reaches a port that something listens on,
+`listening` that nothing forwards it yet, and `not listening` that a forward
+reaches a port where nothing listens. The list is read from the sandbox when you
+run the command, so a server you just started shows up right away, without a
+restart. For a stopped sandbox, `fbk port ls` lists the forwards with status
+`stopped`. Add `--format json` for a JSON array. The sandbox reports the ports
+and process names itself, so treat them as a hint, not a guarantee.
+
 When a host port is already in use, the sandbox still starts and `fbk start`
 prints `warning: couldn't forward localhost:<port>: <reason>`. Free the port and
 run `fbk start` again. Ports must be from 1 to 65535, and each host port may

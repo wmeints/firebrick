@@ -13,11 +13,12 @@ use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementS
 use firebrick_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, EnvVars,
     ForwardPortRequest, ForwardPortResponse, GetSandboxRequest, GetSandboxResponse, GitIdentity,
-    ListNetworkActivityRequest, ListSandboxesRequest, ListSecretsRequest, MiseInstallProgress,
-    Mount, NetworkActivity, NetworkActivityKind, NetworkPolicy, PortForward, PortForwards,
-    RemovePortRequest, RemovePortResponse, RemoveSandboxRequest, RemoveSecretRequest,
-    RootDiskNotice, SandboxResources, SandboxStarted, SandboxStatus, SandboxUpgraded,
-    SandboxVolumes, SetSecretRequest, SetSecretResponse, ShutdownRequest, StartSandboxRequest,
+    GuestListener, ListNetworkActivityRequest, ListPortsRequest, ListPortsResponse,
+    ListSandboxesRequest, ListSecretsRequest, MiseInstallProgress, Mount, NetworkActivity,
+    NetworkActivityKind, NetworkPolicy, PortForward, PortForwards, RemovePortRequest,
+    RemovePortResponse, RemoveSandboxRequest, RemoveSecretRequest, RootDiskNotice,
+    SandboxResources, SandboxStarted, SandboxStatus, SandboxUpgraded, SandboxVolumes,
+    SetSecretRequest, SetSecretResponse, ShutdownRequest, StartSandboxRequest,
     StartSandboxResponse, StopSandboxRequest, UpdateNetworkRequest, UpgradeSandboxRequest,
     UpgradeSandboxResponse, attach_request, attach_response, root_disk_notice,
     start_sandbox_response, upgrade_sandbox_response,
@@ -4690,6 +4691,101 @@ async fn forwards_host_port_to_sandbox_and_closes_removed_port() {
     assert!(started.failed_forwards.is_empty());
     assert!(restarted.forwards.is_empty());
     assert!(closed.is_err(), "localhost:{host} should be closed");
+}
+
+/// Lists the ports of the sandbox.
+async fn list_ports(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> Result<ListPortsResponse, Status> {
+    let request = ListPortsRequest {
+        name: name.to_string(),
+    };
+
+    client.list_ports(request).await.map(|r| r.into_inner())
+}
+
+/// Lists the ports of the sandbox until the guest port listens, and returns its listener.
+async fn wait_for_listener(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    port: u16,
+) -> GuestListener {
+    let deadline = Instant::now() + STATUS_TIMEOUT;
+
+    while Instant::now() < deadline {
+        let response = list_ports(client, name)
+            .await
+            .expect("failed to list ports");
+        assert_eq!(response.listeners_error, None);
+
+        if let Some(listener) = response
+            .listeners
+            .into_iter()
+            .find(|l| l.port == u32::from(port))
+        {
+            return listener;
+        }
+
+        sleep(POLL_INTERVAL).await;
+    }
+
+    panic!("port {port} never listened in sandbox {name}");
+}
+
+/// Starts an alpine sandbox that forwards the host port to a guest port nothing listens on,
+/// and runs `nc -l` on `127.0.0.1:`[`GUEST_PORT`] in it. Returns the session, which keeps nc running.
+async fn start_with_listener(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    host: u16,
+) -> (mpsc::Sender<AttachRequest>, Streaming<AttachResponse>) {
+    let request = StartSandboxRequest {
+        // busybox in alpine has `nc`, `cat` and `ls`, but no `ss`.
+        image: "alpine:3.22".to_string(),
+        ports: Some(forward_ports(host, GUEST_PORT + 1)),
+        ..start_request(name)
+    };
+    start_with_ports(client, request).await;
+
+    // nc listens on the guest's loopback until a connection arrives, which nothing makes.
+    let port = GUEST_PORT.to_string();
+    let args = ["-l", "-s", "127.0.0.1", "-p", &port];
+    open_session(client, attach_start(name, "nc", &args, DEFAULT_SIZE)).await
+}
+
+#[tokio::test]
+async fn lists_the_ports_listening_in_the_guest_and_the_stored_forwards() {
+    let name: &str = &sandbox_name("port-ls");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("port-ls").await;
+    let mut client = daemon.client().await;
+    let host = free_port().await;
+    let _session = start_with_listener(&mut client, name, host).await;
+    let listener = wait_for_listener(&mut client, name, GUEST_PORT).await;
+    let running = list_ports(&mut client, name).await.unwrap();
+    stop_sandbox(&mut client, name).await;
+    let stopped = list_ports(&mut client, name).await.unwrap();
+    let missing = list_ports(&mut client, &sandbox_name("port-ls-missing")).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert_eq!(listener.process, "nc");
+    assert!(listener.pid.is_some_and(|pid| pid > 1), "{listener:?}");
+    assert_eq!(listener.addresses, ["127.0.0.1"]);
+    assert!(running.running);
+    assert_eq!(running.listeners_error, None);
+    assert!(!running.listeners_truncated);
+    assert_eq!(running.forwards, forward_ports(host, GUEST_PORT + 1).ports);
+    let unforwarded = u32::from(GUEST_PORT + 1);
+    assert!(!running.listeners.iter().any(|l| l.port == unforwarded));
+    assert!(!stopped.running);
+    assert_eq!(stopped.listeners_error, None);
+    assert_eq!(stopped.forwards, running.forwards);
+    assert!(stopped.listeners.is_empty());
+    assert_eq!(missing.unwrap_err().code(), Code::NotFound);
 }
 
 #[tokio::test]

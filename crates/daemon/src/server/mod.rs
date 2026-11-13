@@ -15,14 +15,14 @@ use crate::api::sandbox_management_service_server::SandboxManagementService;
 use crate::api::{
     AttachRequest, AttachResponse, AttachStart, ForwardPortRequest, ForwardPortResponse,
     GetSandboxRequest, GetSandboxResponse, GetVersionRequest, GetVersionResponse,
-    ListNetworkActivityRequest, ListNetworkActivityResponse, ListSandboxesRequest,
-    ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse, RemovePortRequest,
-    RemovePortResponse, RemoveSandboxRequest, RemoveSandboxResponse, RemoveSecretRequest,
-    RemoveSecretResponse, SetSecretRequest, SetSecretResponse, ShutdownRequest, ShutdownResponse,
-    SshTunnelRequest, SshTunnelResponse, StartSandboxRequest, StartSandboxResponse,
-    StopSandboxRequest, StopSandboxResponse, UpdateNetworkRequest, UpdateNetworkResponse,
-    UpgradeSandboxRequest, UpgradeSandboxResponse, attach_request, ssh_tunnel_request,
-    start_sandbox_response, upgrade_sandbox_response,
+    ListNetworkActivityRequest, ListNetworkActivityResponse, ListPortsRequest, ListPortsResponse,
+    ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse,
+    RemovePortRequest, RemovePortResponse, RemoveSandboxRequest, RemoveSandboxResponse,
+    RemoveSecretRequest, RemoveSecretResponse, SetSecretRequest, SetSecretResponse,
+    ShutdownRequest, ShutdownResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
+    StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, UpdateNetworkRequest,
+    UpdateNetworkResponse, UpgradeSandboxRequest, UpgradeSandboxResponse, attach_request,
+    ssh_tunnel_request, start_sandbox_response, upgrade_sandbox_response,
 };
 use crate::guest::clipboard::{HostClipboard, HostTools};
 use crate::guest::open::{HostOpener, Opener};
@@ -43,10 +43,10 @@ use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
 use convert::{
-    ParsedStart, check_image, check_name, image_pull_progress, map_sandbox_status,
-    network_activity, network_spec, port_number, sandbox_resources, sandbox_started,
-    sandbox_summary, sandbox_upgraded, secret_summary, start_progress_response, start_sandbox_from,
-    start_sandbox_response, upgrade_sandbox_response,
+    ParsedStart, check_image, check_name, image_pull_progress, list_ports_response,
+    map_sandbox_status, network_activity, network_spec, port_number, sandbox_resources,
+    sandbox_started, sandbox_summary, sandbox_upgraded, secret_summary, start_progress_response,
+    start_sandbox_from, start_sandbox_response, upgrade_sandbox_response,
 };
 use shutdown::shutdown_or;
 pub use transport::serve;
@@ -349,6 +349,19 @@ impl SandboxManagementService for FirebrickServer {
         let running = self.sandboxes.remove_port(&request.name, host).await?;
 
         Ok(Response::new(RemovePortResponse { running }))
+    }
+
+    /// Returns the stored forwards of a sandbox and, when it runs, the TCP ports listening in
+    /// its guest.
+    async fn list_ports(
+        &self,
+        request: Request<ListPortsRequest>,
+    ) -> Result<Response<ListPortsResponse>, Status> {
+        let name = request.into_inner().name;
+        check_name(&name)?;
+        let listing = self.sandboxes.list_ports(&name).await?;
+
+        Ok(Response::new(list_ports_response(listing)))
     }
 
     /// Returns the network activity recorded for a sandbox, with whether its current rules
