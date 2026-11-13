@@ -83,11 +83,11 @@ C4Component
   `secret set`, `secret ls`, `secret rm`, `network allow`, `network deny`,
   `network policy enable`, `network policy disable`, `network enable`, `network
   disable`, `network log`, `network presets show`, `network presets apply`,
-  `port forward` and `port rm` commands, and the hidden `ssh-proxy` command. The
-  argument of `port forward` is parsed with `PortMapping`'s parser, and that of
-  `port rm` as a port from 1 to 65535. `validate`, `init`, `network presets
-  show` and `--version`, which prints the package version, run without the
-  daemon. `network presets apply` takes one or more preset names, which clap
+  `port forward`, `port rm` and `port ls` commands, and the hidden `ssh-proxy`
+  command. The argument of `port forward` is parsed with `PortMapping`'s parser,
+  and that of `port rm` as a port from 1 to 65535. `validate`, `init`, `network
+  presets show` and `--version`, which prints the package version, run without
+  the daemon. `network presets apply` takes one or more preset names, which clap
   checks against `presets::names`, and becomes a `network` allow change with the
   rules of those presets. `start`, `run` and every `network` subcommand that
   changes the network settings take `--yes`, which approves changed mounts and
@@ -188,7 +188,12 @@ C4Component
   writes the file. It reports an invalid spec like `validate`, a
   `FAILED_PRECONDITION` as `couldn't forward localhost:<port>: <reason>` and a
   `NOT_FOUND` as `port <port> isn't forwarded for sandbox <name>`. See
-  [Forwarding a port](06-runtime-view.md#forwarding-a-port).
+  [Forwarding a port](06-runtime-view.md#forwarding-a-port). `list` resolves the
+  sandbox like `fbk network log`, without touching the file, sends `ListPorts`
+  and merges the answer into one row per forward and one per listening port no
+  forward reaches, sorted by guest port, as a table or with `--format json`. It
+  removes control characters from the guest's process names. See
+  [Listing ports](06-runtime-view.md#listing-ports).
 - `secret` - Sends a secret to the daemon with `SetSecret`. With `--from-stdin`,
   it reads the value from stdin and removes one trailing line ending. With
   `--scope sandbox`, `secret set` and `secret rm` send the name of the working
@@ -252,7 +257,7 @@ C4Component
         Component(main, "main", "Rust", "Entrypoint")
         Component(server, "server", "Tonic server", "Control API adapter, attach sessions, SSH tunnels")
         Component(sandboxes, "sandboxes", "Rust", "Sandbox management and provisioning")
-        Component(guest, "guest", "Rust", "URL relays, network logs, host clipboard")
+        Component(guest, "guest", "Rust", "URL relays, network logs, host clipboard, listening ports")
         Component(forward, "forward", "russh", "Port forwards")
         Component(hostconfig, "host_config", "jsonc-parser", "SSH config and editor settings")
         Component(ssh, "ssh", "russh", "SSH keys and host names")
@@ -278,13 +283,13 @@ C4Component
     Rel(server, microsandbox, "Runs processes with a TTY, serves SSH")
     Rel(sandboxes, secrets, "Loads, stores and applies secrets")
     Rel(sandboxes, forward, "Reconciles port forwards")
-    Rel(sandboxes, guest, "Adds vsock routes, starts URL relays")
+    Rel(sandboxes, guest, "Adds vsock routes, starts URL relays, reads listening ports")
     Rel(sandboxes, hostconfig, "Syncs SSH config and editor settings")
     Rel(sandboxes, ssh, "Picks host names")
     Rel(sandboxes, microsandbox, "Manages sandboxes, sets env, git identity and egress rules")
     Rel(forward, microsandbox, "Opens direct-tcpip channels")
     Rel(guest, forward, "Opens OAuth callback forwards")
-    Rel(guest, microsandbox, "Runs the URL relay as an exec stream")
+    Rel(guest, microsandbox, "Runs the URL relay and the listener script as exec streams")
     Rel(guest, browser, "Opens URLs")
     Rel(guest, hostclip, "Reads and writes the clipboard")
     Rel(guest, utils, "Finds socket and record directories")
@@ -558,7 +563,8 @@ C4Component
   fails `ensure`.
 - `guest` - The channels a sandbox uses to make `fbkd` act on the host. Each
   sandbox gets its own endpoint per channel, and `rate_limit` keeps a loop in
-  the guest from flooding the user.
+  the guest from flooding the user. `listeners` reads the guest's listening
+  ports on request.
   - `open` - Opens http and https URLs from a sandbox in the browser on the host
     (see
     [ADR 0026](decisions/0026-relay-urls-to-the-host-through-an-exec-stream.md)
@@ -732,6 +738,25 @@ C4Component
     `remove` stops a sandbox's listener and deletes its socket, `close` stops
     them all, and dropping the registry aborts them. `Connections` runs a task
     per accepted connection and closes the ones beyond 4 per sandbox.
+  - `listeners` - Reads the TCP ports listening in a running sandbox for
+    `ListPorts`
+    ([ADR 0061](decisions/0061-read-the-listening-ports-of-a-sandbox-on-demand.md)).
+    `listeners::read` runs a `sh -c` script with `exec_stream_with` as root that
+    prints `/proc/net/tcp`, `/proc/net/tcp6` and, per process, a `pid <pid>
+    <name>` line and the `ls -l` output of its `fd` directory, using only `cat`
+    and `ls`. `fbkd` parses all of it: it keeps the sockets in the LISTEN state
+    (`0A`) on a nonzero port, decodes their little-endian hex addresses, joins
+    their inodes to the `socket:[<inode>]` descriptors and groups them by port,
+    with the lowest pid that holds one of them. The agent has root, so the
+    output is untrusted: `fbkd` reads at most 1 MiB and then kills the script,
+    gives it 5 seconds, skips lines that don't parse, keeps at most 1024 ports
+    and 64 characters of a process name, and fails when the output has no socket
+    table. A reading that hit the output or port limit is marked truncated. A
+    failed script's error carries the first 1 KiB of its stderr.
+    `SandboxManager::list_ports` returns the sandbox's stored forwards, sorted
+    by host port, and the listeners when it runs, or the reason they couldn't be
+    read without control characters, and logs a warning for a failed or
+    truncated reading. It doesn't take the sandbox's lock.
 - `host_config` - Keeps the host's own config files that list the sandboxes in
   sync with them. Its one function, `sync`, takes the sandboxes that have an SSH
   host name and rewrites the SSH config, the editors' Remote-SSH settings and

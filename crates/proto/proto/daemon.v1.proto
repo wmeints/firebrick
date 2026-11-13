@@ -19,6 +19,9 @@ service SandboxManagementService {
   rpc UpdateNetwork(UpdateNetworkRequest) returns (UpdateNetworkResponse);
   rpc ForwardPort(ForwardPortRequest) returns (ForwardPortResponse);
   rpc RemovePort(RemovePortRequest) returns (RemovePortResponse);
+  // Returns the stored forwards of a sandbox and, when it runs, the TCP ports listening in its
+  // guest at that moment. Fails with NOT_FOUND when the sandbox doesn't exist.
+  rpc ListPorts(ListPortsRequest) returns (ListPortsResponse);
   // Returns the network activity fbkd recorded for a sandbox. Fails with FAILED_PRECONDITION
   // when the sandbox has no network log route, because it was created before network logging.
   rpc ListNetworkActivity(ListNetworkActivityRequest) returns (ListNetworkActivityResponse);
@@ -407,6 +410,38 @@ message RemovePortRequest {
 message RemovePortResponse {
   // Whether the sandbox runs, so the forward was closed now.
   bool running = 1;
+}
+
+message ListPortsRequest {
+  // Name of the sandbox.
+  string name = 1;
+}
+
+message ListPortsResponse {
+  // Whether the sandbox runs. When it doesn't, listeners is empty.
+  bool running = 1;
+  // The forwards stored with the sandbox, sorted by host port.
+  repeated PortForward forwards = 2;
+  // The TCP ports listening in the guest, sorted by port. The guest reports them, so they're
+  // untrusted.
+  repeated GuestListener listeners = 3;
+  // Set when the sandbox runs but fbkd couldn't read its listening ports.
+  optional string listeners_error = 4;
+  // Set when the guest reported more than fbkd reads, so ports or their processes may be
+  // missing from listeners.
+  bool listeners_truncated = 5;
+}
+
+message GuestListener {
+  // Port the guest listens on, from 1 to 65535.
+  uint32 port = 1;
+  // The local addresses the port listens on, e.g. `127.0.0.1` or `::`, sorted.
+  repeated string addresses = 2;
+  // Guest pid of the process that owns the socket, the lowest when several share it. Unset when
+  // fbkd couldn't find the owner.
+  optional uint32 pid = 3;
+  // Name of that process as the guest kernel reports it. Empty when pid is unset.
+  string process = 4;
 }
 
 message ListNetworkActivityRequest {

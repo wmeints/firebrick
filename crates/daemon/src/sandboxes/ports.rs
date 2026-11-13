@@ -5,7 +5,9 @@ use super::SandboxManager;
 use super::error::SandboxError;
 use super::status::{get_sandbox, list_all_sandboxes};
 use crate::forward::{self, ForwardReport};
+use crate::guest::listeners::{self, Reading};
 use firebrick_spec::{PortMapping, with_port};
+use firebrick_utils::strip_control;
 use microsandbox::Sandbox;
 use microsandbox::sandbox::{SandboxHandle, SandboxStatus};
 
@@ -90,6 +92,29 @@ impl SandboxManager {
 
         self.change_ports(&sb, &change).await
     }
+    /// Returns the ports stored with the sandbox and, when it runs, the TCP ports listening in
+    /// its guest. Fails with `NotFound` when the sandbox doesn't exist. Doesn't take the
+    /// sandbox's lock, so it answers while the sandbox starts.
+    pub async fn list_ports(&self, name: &str) -> Result<PortsListing, SandboxError> {
+        let sb = get_sandbox(name).await?;
+        let mut forwards = stored_ports(&sb);
+        forwards.sort_by_key(|port| port.host);
+        let running = sb.status_snapshot() == SandboxStatus::Running;
+        let listeners = if running {
+            read_listeners(&sb).await
+        } else {
+            Ok(Reading {
+                listeners: vec![],
+                truncated: false,
+            })
+        };
+
+        Ok(PortsListing {
+            running,
+            forwards,
+            listeners,
+        })
+    }
     /// Makes the open forwards of a running sandbox match the changed ports, then stores them
     /// with the sandbox. Returns whether the sandbox runs. When a new forward can't be opened or
     /// the ports can't be stored, reopens the stored forwards and fails.
@@ -124,6 +149,42 @@ impl SandboxManager {
         self.forwards.apply(name, &change.stored).await;
 
         Err(SandboxError::failed_precondition(failure.reason.clone()))
+    }
+}
+
+/// The ports of a sandbox, as [`SandboxManager::list_ports`] returns them.
+#[derive(Debug)]
+pub struct PortsListing {
+    /// Whether the sandbox runs.
+    pub running: bool,
+    /// The forwards stored with the sandbox, sorted by host port.
+    pub forwards: Vec<PortMapping>,
+    /// The TCP ports listening in the guest, empty when the sandbox doesn't run, or why they
+    /// couldn't be read, without control characters.
+    pub listeners: Result<Reading, String>,
+}
+
+/// Reads the listeners of the running sandbox, or returns why that failed. Parts of the reason
+/// can come from the guest, so its control characters are removed. Logs a warning when the
+/// reading fails or is truncated.
+async fn read_listeners(sb: &SandboxHandle) -> Result<Reading, String> {
+    let name = sb.name();
+    let result = match sb.connect().await {
+        Ok(connected) => listeners::read(&connected).await,
+        Err(err) => Err(err.into()),
+    };
+
+    match result {
+        Ok(reading) if reading.truncated => {
+            tracing::warn!("sandbox {name} reported more listening ports than fbkd reads");
+            Ok(reading)
+        }
+        Ok(reading) => Ok(reading),
+        Err(err) => {
+            let reason = strip_control(&err.to_string());
+            tracing::warn!("failed to read the listening ports of sandbox {name}: {reason}");
+            Err(reason)
+        }
     }
 }
 

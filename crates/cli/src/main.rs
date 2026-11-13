@@ -77,7 +77,8 @@ enum Commands {
     /// sandbox's network activity
     #[command(subcommand)]
     Network(NetworkCommands),
-    /// Forward host ports to the working directory's sandbox and record them in .firebrick.yml
+    /// Forward host ports to the working directory's sandbox and record them in .firebrick.yml,
+    /// or list the ports listening in it
     #[command(subcommand)]
     Port(PortCommands),
     /// Tunnel an SSH connection to a sandbox over stdin/stdout (used by the generated SSH config)
@@ -193,6 +194,12 @@ enum PortCommands {
         /// Host port of the forward, e.g. 8080
         #[arg(value_parser = clap::value_parser!(u16).range(1..))]
         port: u16,
+    },
+    /// List the forwards and the TCP ports listening in the sandbox
+    Ls {
+        /// Output format
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
     },
 }
 
@@ -338,7 +345,7 @@ async fn run_with_daemon(command: Commands, working_dir: PathBuf) -> Result<()> 
     }
 }
 
-/// Changes a port forward of the working directory's sandbox.
+/// Changes or lists the port forwards of the working directory's sandbox.
 async fn run_port_command(
     command: PortCommands,
     working_dir: &Path,
@@ -347,6 +354,7 @@ async fn run_port_command(
     match command {
         PortCommands::Forward { port } => port::forward(port, working_dir, client_instance).await,
         PortCommands::Rm { port } => port::remove(port, working_dir, client_instance).await,
+        PortCommands::Ls { format } => port::list(working_dir, client_instance, format).await,
     }
 }
 
@@ -658,6 +666,24 @@ mod tests {
             assert!(parse_port(&["forward", arg]).is_err(), "{arg}");
         }
         assert!(parse_port(&["forward"]).is_err());
+    }
+
+    #[test]
+    fn port_ls_takes_an_output_format() {
+        assert!(matches!(
+            parse_port(&["ls"]).unwrap(),
+            PortCommands::Ls {
+                format: OutputFormat::Table
+            }
+        ));
+        assert!(matches!(
+            parse_port(&["ls", "--format", "json"]).unwrap(),
+            PortCommands::Ls {
+                format: OutputFormat::Json
+            }
+        ));
+        assert!(parse_port(&["ls", "--format", "yaml"]).is_err());
+        assert!(parse_port(&["ls", "dev"]).is_err());
     }
 
     #[test]

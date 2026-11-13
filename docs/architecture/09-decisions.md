@@ -60,3 +60,4 @@
 - [ADR 0058 - Use microsandbox outbound proxies](decisions/0058-use-microsandbox-outbound-proxies.md)
 - [ADR 0059 - Size the root disk and grow it on start](decisions/0059-size-the-root-disk-and-grow-it-on-start.md)
 - [ADR 0060 - Turn off microsandbox metrics sampling](decisions/0060-turn-off-microsandbox-metrics-sampling.md)
+- [ADR 0061 - Read the listening ports of a sandbox on demand](decisions/0061-read-the-listening-ports-of-a-sandbox-on-demand.md)
