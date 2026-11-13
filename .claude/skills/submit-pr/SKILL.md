@@ -1,6 +1,6 @@
 ---
 name: submit-pr
-description: "Create a pull request for the current feature branch on GitHub. Use when the user wants to open, submit, or push a PR for the current branch. Drafts a PR body with Why / Review Focus / Risks sections, classifies the change into a risk level, and applies the matching risk:high, risk:medium, or risk:low label."
+description: "Create a pull request for the current feature branch on GitHub. Use when the user wants to open, submit, or push a PR for the current branch. Drafts a PR body with Why / Review Focus / Risks sections, classifies the change into a risk level, applies the matching risk:high, risk:medium, or risk:low label, and enables auto-merge for risk:low PRs."
 ---
 
 # Submit PR
@@ -8,7 +8,8 @@ description: "Create a pull request for the current feature branch on GitHub. Us
 Create a pull request for the current feature branch. The body always carries
 three sections — **Why**, **Review focus**, **Risks** — and the PR is tagged
 with exactly one risk label: `risk:high`, `risk:medium`, or `risk:low`, chosen
-from what the change actually does.
+from what the change actually does. A `risk:low` PR is marked for automatic
+merge, so it merges once its checks pass.
 
 ## Tooling
 
@@ -230,17 +231,32 @@ rm -f "$BODY"
   PR.
 - After creation, `gh pr create` prints the PR URL.
 
-### 7. Verify and report
+### 7. Enable auto-merge for a low-risk PR
+
+When the PR carries `risk:low`, mark it for automatic merge with a merge commit,
+as the other PRs are merged:
+
+```bash
+gh pr merge <number> --auto --merge
+```
+
+Skip this step for `risk:medium` and `risk:high`: those wait for a human review.
+
+If the command fails, for example because the repository doesn't allow
+auto-merge, don't merge the PR by hand: report the error and leave the PR open.
+
+### 8. Verify and report
 
 Confirm the PR was created with the intended label:
 
 ```bash
-gh pr view <number> --json number,url,labels,headRefName,baseRefName
+gh pr view <number> --json number,url,labels,headRefName,baseRefName,autoMergeRequest
 ```
 
 - Verify the `risk:*` label is present and matches the chosen level.
+- Verify `autoMergeRequest` is set for a `risk:low` PR and empty otherwise.
 - Report the PR URL, the base/head, the chosen risk level and its justification,
-  and a one-line summary of each section.
+  whether auto-merge is enabled, and a one-line summary of each section.
 
 ## Guardrails
 
@@ -254,6 +270,8 @@ gh pr view <number> --json number,url,labels,headRefName,baseRefName
 - **Never fabricate.** Ground every section and the risk classification in the
   actual diff. If the diff is empty, stop and ask — do not open a PR with no
   changes.
+- **Auto-merge only `risk:low`.** Never enable auto-merge for a `risk:medium` or
+  `risk:high` PR, and never downgrade a risk level to get auto-merge.
 - **Do not silently skip the label.** If label creation or application fails,
   create the PR anyway, then report the failure and ask the user to add the
   label manually.
