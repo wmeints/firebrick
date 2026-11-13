@@ -360,7 +360,7 @@ mod tests {
         let (root, settings) = vscode_root();
         let target = root.path().join("dotfiles-settings.json");
         fs::write(&target, "{}\n").unwrap();
-        if !crate::host_config::atomic_file::test_symlink(&target, &settings) {
+        if !crate::host_config::test_symlink(&target, &settings) {
             return;
         }
 
@@ -418,7 +418,7 @@ mod tests {
     fn leaves_dangling_settings_symlink_alone() {
         let (root, settings) = vscode_root();
         let target = root.path().join("dotfiles/settings.json");
-        if !crate::host_config::atomic_file::test_symlink(&target, &settings) {
+        if !crate::host_config::test_symlink(&target, &settings) {
             return;
         }
 

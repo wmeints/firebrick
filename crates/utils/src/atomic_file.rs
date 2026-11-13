@@ -1,7 +1,4 @@
 //! Replacing a file atomically, so readers see either its old or its new content.
-//!
-//! Shared by the modules that edit the user's own config files, such as the editors' settings
-//! and `~/.ssh/config`.
 
 use std::fs;
 use std::io::{self, ErrorKind, Write};
@@ -13,8 +10,10 @@ use std::path::Path;
 /// leaves the old content in place. A symlinked file (dotfiles) stays a symlink, because the
 /// rename replaces the file it points to. An existing file keeps its permissions; a new one is
 /// created with `new_mode`, minus the umask, or on Windows with the access list it inherits
-/// from its directory.
-pub(crate) fn write(path: &Path, content: &str, new_mode: u32) -> io::Result<()> {
+/// from its directory. Writes of the same file share the temporary file
+/// `.<name>.firebrick-tmp`, so the caller serializes them. When the write fails and the
+/// temporary file can't be removed, the error names it.
+pub fn write_atomic(path: &Path, content: &str, new_mode: u32) -> io::Result<()> {
     let target = match fs::canonicalize(path) {
         Ok(target) => target,
         Err(err) if err.kind() == ErrorKind::NotFound => path.to_path_buf(),
@@ -23,15 +22,26 @@ pub(crate) fn write(path: &Path, content: &str, new_mode: u32) -> io::Result<()>
     let file_name = target.file_name().unwrap_or_default().to_string_lossy();
     let temp = target.with_file_name(format!(".{file_name}.firebrick-tmp"));
 
-    let result = write_new(&temp, content, new_mode)
+    write_new(&temp, content, new_mode)
         .and_then(|()| keep_permissions(&target, &temp))
-        .and_then(|()| fs::rename(&temp, &target));
+        .and_then(|()| fs::rename(&temp, &target))
+        .map_err(|err| remove_temp(&temp, err))
+}
 
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
+/// Removes the temporary file of a failed write and returns the write's error, naming the
+/// temporary file when it is left behind.
+fn remove_temp(temp: &Path, err: io::Error) -> io::Error {
+    match fs::remove_file(temp) {
+        Ok(()) => err,
+        Err(cleanup) if cleanup.kind() == ErrorKind::NotFound => err,
+        Err(cleanup) => io::Error::new(
+            err.kind(),
+            format!(
+                "{err}; the temporary file {} is left behind: {cleanup}",
+                temp.display()
+            ),
+        ),
     }
-
-    result
 }
 
 /// Writes `content` to `path`, creating it with `mode` on Unix when it doesn't exist.
@@ -58,30 +68,6 @@ fn keep_permissions(target: &Path, temp: &Path) -> io::Result<()> {
     }
 }
 
-/// Creates `link` as a symlink to the file `target`, which may not exist, for the tests of
-/// files that keep a symlink. Returns `false` when Windows refuses, because creating a symlink
-/// takes administrator rights or Developer Mode there, so the test can stop. With
-/// `FIREBRICK_TEST_SYMLINKS` set, as in CI, that fails the test instead.
-#[cfg(test)]
-pub(crate) fn test_symlink(target: &Path, link: &Path) -> bool {
-    #[cfg(unix)]
-    let created = std::os::unix::fs::symlink(target, link);
-    #[cfg(windows)]
-    let created = std::os::windows::fs::symlink_file(target, link);
-
-    match created {
-        Ok(()) => true,
-        Err(err) if cfg!(windows) && std::env::var_os("FIREBRICK_TEST_SYMLINKS").is_none() => {
-            eprintln!(
-                "can't create a symlink ({err}), so the test stops; set \
-                 FIREBRICK_TEST_SYMLINKS=1 to fail it"
-            );
-            false
-        }
-        Err(err) => panic!("can't create a symlink: {err}"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,25 +78,21 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config");
 
-        write(&path, "new\n", 0o600).unwrap();
+        write_atomic(&path, "new\n", 0o600).unwrap();
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
-    fn replaces_target_of_symlink() {
+    fn failed_write_leaves_the_file_and_no_temp_file() {
         let dir = TempDir::new().unwrap();
-        let target = dir.path().join("target");
-        let link = dir.path().join("link");
-        fs::write(&target, "old\n").unwrap();
-        if !test_symlink(&target, &link) {
-            return;
-        }
+        let path = dir.path().join("config");
+        fs::create_dir(&path).unwrap();
 
-        write(&link, "new\n", 0o600).unwrap();
+        assert!(write_atomic(&path, "new\n", 0o600).is_err());
 
-        assert!(link.is_symlink());
-        assert_eq!(fs::read_to_string(&target).unwrap(), "new\n");
+        assert!(path.is_dir());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }

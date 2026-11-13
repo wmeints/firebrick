@@ -1,6 +1,7 @@
-//! File locations, local endpoints, naming rules and text helpers shared by the Firebrick CLI
-//! and daemon.
+//! File locations, local endpoints, naming rules, atomic and private file writes and text
+//! helpers shared by the Firebrick CLI and daemon.
 
+mod atomic_file;
 pub mod ipc;
 mod paths;
 mod private_fs;
@@ -9,6 +10,7 @@ mod text;
 #[cfg(windows)]
 mod win32;
 
+pub use atomic_file::write_atomic;
 pub use paths::{
     HOME_VAR, NO_CONFIG_DIR, NO_DATA_DIR, NO_LOG_DIR, approvals_path, clipboard_socket_dir,
     daemon_lock_path, log_dir, missing_dir, msb_home, netlog_socket_dir, network_log_dir,

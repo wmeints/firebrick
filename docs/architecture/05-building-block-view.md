@@ -528,6 +528,12 @@ C4Component
     host and `fbk network allow <host>`; the default JSON format ignores the
     message
     ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
+    On Windows hosts, it first has `upstream_roots` write the Mozilla roots to
+    `tls/upstream-roots.pem` in the microsandbox home and adds the file to the
+    roots that TLS interception trusts for upstream servers, with interception
+    off when the policy isn't enforced, because Windows installs most roots only
+    on demand
+    ([ADR 0062](decisions/0062-trust-the-mozilla-roots-upstream-on-windows-hosts.md)).
 - `forward` - Forwards host loopback ports to a sandbox's loopback
   ([ADR 0019](decisions/0019-forward-ports-through-the-ssh-servers-direct-tcpip.md)).
   Its submodules hold the loopback listeners that both kinds of forwards share
@@ -766,9 +772,10 @@ C4Component
   - `ssh_config` - Writes the generated SSH config that `~/.ssh/config`
     includes, with a host block per sandbox that tunnels through `fbk ssh-proxy`
     with the keys of `ssh`. It prepends the `Include` line to `~/.ssh/config`
-    through `atomic_file`, so a failed write leaves the config as it was and a
-    symlinked config stays a symlink; a symlink to a missing file is left
-    unchanged. An existing config keeps its mode and a new one gets `0600`.
+    through `firebrick_utils::write_atomic`, so a failed write leaves the config
+    as it was and a symlinked config stays a symlink; a symlink to a missing
+    file is left unchanged. An existing config keeps its mode and a new one gets
+    `0600`.
   - `vscode` - Keeps `remote.SSH.remotePlatform` in the user `settings.json` of
     VS Code, VS Code Insiders, Cursor and VSCodium in sync with the sandbox host
     names, so Remote-SSH doesn't ask for the platform. Every host maps to
@@ -786,7 +793,7 @@ C4Component
     temporary file that is renamed onto the file a symlink points to, so a
     symlinked settings file stays a symlink. The reading, writing and parse
     options live in `settings_file`, which `zed` shares; the atomic write itself
-    lives in `atomic_file`, which `ssh_config` shares.
+    is `firebrick_utils::write_atomic`, which `ssh_config` shares.
   - `zed` - Keeps the `ssh_connections` array in Zed's user `settings.json` in
     sync with the sandboxes, so they show up in Zed's Remote Projects. Each
     sandbox with a host name gets an entry with `host`, the sandbox name as
@@ -899,20 +906,22 @@ C4Component
   files mode `0700` and `0600`, or on Windows a protected access list for the
   user, `LocalSystem` and the administrators, and `keep_stdio_from_children`
   stops the daemon `fbk` starts from inheriting its stdio handles on Windows.
-  Its `win32` module holds the Win32 calls behind these and the pipes, the only
-  `unsafe` code in the workspace besides `fbkd`'s `set_var`. `netlog_socket_dir`
-  and `clipboard_socket_dir` return the directories of the sockets behind the
-  vsock routes, which never fall back to the temp directory. The log, SSH and
-  secrets paths are `None` when neither variable is an absolute path, never the
-  temp dir, and `missing_dir` returns the error the daemon would exit with.
-  `ipc` also holds the rule that only the same user and root may be on the other
-  end of the daemon socket on Unix. `sanitize_label` turns a directory's leaf
-  into a lowercase DNS label (or `sandbox` when nothing is left), so the SSH
-  host names and the name `fbk init` writes match, and `strip_control` removes
-  terminal control characters from guest output before the daemon puts it in an
-  error message or a log line. The crate root re-exports these from private
-  modules: `paths`, `private_fs`, `process` for the daemon lock and stdio
-  handles, and `text`.
+  `write_atomic` replaces a file through a synced temporary file next to it, so
+  readers see the old or the new content; callers serialize writes of the same
+  file. Its `win32` module holds the Win32 calls behind these and the pipes, the
+  only `unsafe` code in the workspace besides `fbkd`'s `set_var`.
+  `netlog_socket_dir` and `clipboard_socket_dir` return the directories of the
+  sockets behind the vsock routes, which never fall back to the temp directory.
+  The log, SSH and secrets paths are `None` when neither variable is an absolute
+  path, never the temp dir, and `missing_dir` returns the error the daemon would
+  exit with. `ipc` also holds the rule that only the same user and root may be
+  on the other end of the daemon socket on Unix. `sanitize_label` turns a
+  directory's leaf into a lowercase DNS label (or `sandbox` when nothing is
+  left), so the SSH host names and the name `fbk init` writes match, and
+  `strip_control` removes terminal control characters from guest output before
+  the daemon puts it in an error message or a log line. The crate root
+  re-exports these from private modules: `atomic_file`, `paths`, `private_fs`,
+  `process` for the daemon lock and stdio handles, and `text`.
 
 The image, init, mise setting, resources, network rules, mounts and clipboard
 setting apply when a sandbox is created. Changing them in `.firebrick.yml`

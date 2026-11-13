@@ -1,7 +1,6 @@
 //! The generated SSH config that points the sandboxes' host names at `fbk ssh-proxy`, and the
 //! `Include` of it in the user's `~/.ssh/config`.
 
-use super::atomic_file;
 use crate::ssh::{CLIENT_KEY_FILE, KNOWN_HOSTS_FILE, ssh_dir};
 use anyhow::{Context, Result, bail};
 use std::fs;
@@ -18,7 +17,7 @@ pub(super) fn sync_config(hostnames: &[&str]) -> Result<()> {
     let config_path = dir.join(CONFIG_FILE);
 
     let config = render_config(hostnames, &dir, &cli_binary());
-    atomic_file::write(&config_path, &config, 0o600)
+    firebrick_utils::write_atomic(&config_path, &config, 0o600)
         .with_context(|| format!("failed to write {}", config_path.display()))?;
 
     let home_var = firebrick_utils::HOME_VAR;
@@ -80,7 +79,7 @@ fn ensure_include(user_config: &Path, include: &Path) -> Result<()> {
         return Ok(());
     }
 
-    atomic_file::write(user_config, &format!("{include_line}\n\n{existing}"), 0o600)
+    firebrick_utils::write_atomic(user_config, &format!("{include_line}\n\n{existing}"), 0o600)
         .with_context(|| format!("failed to update {}", user_config.display()))
 }
 
@@ -207,7 +206,7 @@ mod tests {
         fs::create_dir_all(dotfiles.parent().unwrap()).unwrap();
         fs::create_dir_all(user_config.parent().unwrap()).unwrap();
         fs::write(&dotfiles, "Host github.com\n").unwrap();
-        if !atomic_file::test_symlink(&dotfiles, &user_config) {
+        if !crate::host_config::test_symlink(&dotfiles, &user_config) {
             return;
         }
 
@@ -227,7 +226,7 @@ mod tests {
 
         fs::create_dir_all(user_config.parent().unwrap()).unwrap();
         let missing = dir.path().join("missing");
-        if !atomic_file::test_symlink(&missing, &user_config) {
+        if !crate::host_config::test_symlink(&missing, &user_config) {
             return;
         }
 

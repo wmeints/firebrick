@@ -295,6 +295,12 @@ blocked the connection to <host>: ...`, as long as the policy has no domain deny
 rule; see [Risks and technical debt](11-risks-and-technical-debt.md) for the
 limits. Without enforcement the sandbox gets microsandbox's default policy
 ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
+The proxy verifies upstream servers against the host's roots; on a Windows host
+the daemon also writes the Mozilla roots to `tls/upstream-roots.pem` in the
+microsandbox home and adds them, because Windows installs most roots only the
+first time CryptoAPI needs them. A failure to write the file fails the create
+with an error that names the path
+([ADR 0062](decisions/0062-trust-the-mozilla-roots-upstream-on-windows-hosts.md)).
 With enforcement on, `mise install` only reaches the hosts the rules allow.
 
 With `enabled: false`, the daemon still validates the rules but creates the

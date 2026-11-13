@@ -3,7 +3,6 @@
 //! Shared by the editor modules that keep sandbox hosts in an editor's user settings. Edits go
 //! through `jsonc-parser`'s CST, so comments and formatting stay as the user wrote them.
 
-use super::atomic_file;
 use jsonc_parser::ParseOptions;
 use jsonc_parser::cst::CstObject;
 use std::fs;
@@ -94,7 +93,7 @@ pub(crate) fn key_count(object: &CstObject, key: &str) -> usize {
 /// symlinked settings file (dotfiles) stays a symlink.
 pub(crate) fn write(path: &Path, content: &str) -> io::Result<()> {
     // 0o666 minus the umask is the mode `fs::write` creates a file with.
-    atomic_file::write(path, content, 0o666)
+    firebrick_utils::write_atomic(path, content, 0o666)
 }
 
 #[cfg(test)]
