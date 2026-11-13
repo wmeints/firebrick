@@ -188,12 +188,12 @@ gh run list --workflow tag-release.yaml --branch main --limit 1 \
 gh run watch <run-id> --exit-status
 ```
 
-The run pauses twice for a deployment review in the `release` environment: for
-the `image` job once the packages build, and for the `publish` job once the
-image is pushed. When `gh run view <run-id> --json jobs` shows a job `waiting`,
-tell the user to approve it under "Review deployments" on the run, link the run
-(`gh run view <run-id> --json url`), and keep watching. Don't approve it
-yourself.
+The run pauses three times for a deployment review in the `release` environment:
+for the `image` job once the packages build, for the `publish` job once the
+image is pushed, and for the `homebrew` job once the GitHub release exists. When
+`gh run view <run-id> --json jobs` shows a job `waiting`, tell the user to
+approve it under "Review deployments" on the run, link the run (`gh run view
+<run-id> --json url`), and keep watching. Don't approve it yourself.
 
 Check that the run's `headSha` is the merge commit. When the run fails, report
 the failing job (`gh run view <run-id> --log-failed`). The tag exists by then,
@@ -218,6 +218,13 @@ for crate in firebrick-proto firebrick-spec firebrick-utils firebrick-cli firebr
   curl -fsS -o /dev/null -A "firebrick-release" \
     "https://crates.io/api/v1/crates/$crate/${next#v}" && echo "$crate ok"
 done
+```
+
+The tap must have the formula for the version:
+
+```bash
+gh api repos/wmeints/homebrew-tap/contents/Formula/firebrick.rb \
+  -H "Accept: application/vnd.github.raw" | grep -F "releases/download/<next>/"
 ```
 
 ## Guardrails

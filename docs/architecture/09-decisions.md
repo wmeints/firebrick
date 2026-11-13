@@ -62,3 +62,4 @@
 - [ADR 0060 - Turn off microsandbox metrics sampling](decisions/0060-turn-off-microsandbox-metrics-sampling.md)
 - [ADR 0061 - Read the listening ports of a sandbox on demand](decisions/0061-read-the-listening-ports-of-a-sandbox-on-demand.md)
 - [ADR 0062 - Trust the Mozilla roots upstream on Windows hosts](decisions/0062-trust-the-mozilla-roots-upstream-on-windows-hosts.md)
+- [ADR 0063 - Publish a Homebrew formula in a custom tap](decisions/0063-publish-a-homebrew-formula-in-a-custom-tap.md)

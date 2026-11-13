@@ -29,23 +29,41 @@ exists already. Pushing a tag by hand runs `release.yaml` as well.
   then `firebrick-cli` and `firebrick-daemon`. It skips the crates whose version
   is on crates.io already, so rerunning the job after a partial publish
   publishes only the rest.
+- The Homebrew formula `Formula/firebrick.rb` in
+  [`wmeints/homebrew-tap`](https://github.com/wmeints/homebrew-tap), so users on
+  macOS (Apple Silicon) and Linux can run `brew install wmeints/tap/firebrick`.
+  The formula downloads the release archive for the machine, pinned to its
+  checksum, and installs `fbk` and `fbkd` into the same `bin` directory. On an
+  Intel Mac Homebrew refuses it, because it depends on `arch: :arm64` on macOS.
+  `.github/scripts/homebrew-formula.sh <tag> <dir>` renders the formula from the
+  `.sha256` files of the three targets and prints it, so it can be checked
+  locally against a published release. It fails when a `.sha256` file is missing
+  or the tag isn't `v<major>.<minor>.<patch>`. The `homebrew` job commits the
+  formula to the tap's `main` branch as `firebrick <version>`, and commits
+  nothing when the tap has the same formula already, so rerunning the job after
+  a failed push updates the tap. It leaves a tap that has a newer version alone,
+  so rerunning an older release's failed job doesn't roll the tap back. Only the
+  push step gets the token; the tap is checked out without it. See
+  [ADR 0063](decisions/0063-publish-a-homebrew-formula-in-a-custom-tap.md).
 
 The jobs run in this order: `package` for each target, then `image`, then
-`publish`, then `release`, which creates the GitHub release. A failed job stops
-the jobs after it, so the GitHub release only appears once crates.io has the
-version.
+`publish`, then `release`, which creates the GitHub release, then `homebrew`. A
+failed job stops the jobs after it, so the GitHub release only appears once
+crates.io has the version, and the tap only points at a published release. A
+failed `homebrew` job leaves the GitHub release and the crates as they are.
 
-The `image` and `publish` jobs run in the `release` environment, which waits for
-a required reviewer to approve each deployment in the Actions UI, under "Review
-deployments" on the run. `publish` needs `image`, so a release takes two
-approvals: one for `image` once every `package` job succeeds, and one for
-`publish` once the image is pushed. A deployment nobody approves within 30 days
-fails the run. Re-run its failed jobs with "Re-run failed jobs" in the Actions
-UI or `gh run rerun <run-id> --failed`: a release from a version bump runs
-inside the `Tag release` run, and a new run of `tag-release.yaml` finds the tag
-and releases nothing. Only a tag pushed by hand has a `Release` run. The
-`package` and `release` jobs only build and create the GitHub release, so they
-run without approval. See
+The `image`, `publish` and `homebrew` jobs run in the `release` environment,
+which waits for a required reviewer to approve each deployment in the Actions
+UI, under "Review deployments" on the run. `publish` needs `image`, so a release
+takes three approvals: one for `image` once every `package` job succeeds, one
+for `publish` once the image is pushed, and one for `homebrew` once the GitHub
+release exists. A deployment nobody approves within 30 days fails the run.
+Re-run its failed jobs with "Re-run failed jobs" in the Actions UI or `gh run
+rerun <run-id> --failed`: a release from a version bump runs inside the `Tag
+release` run, and a new run of `tag-release.yaml` finds the tag and releases
+nothing. Only a tag pushed by hand has a `Release` run. The `package` and
+`release` jobs only build and create the GitHub release, so they run without
+approval. See
 [ADR 0045](decisions/0045-approve-publishing-in-a-release-environment.md).
 
 The `publish` job authenticates with crates.io
@@ -63,8 +81,17 @@ the `release` environment, so crates.io only accepts a token minted by a job in
 that environment, after a reviewer approved it. A token from any other job fails
 to authenticate and publishes nothing.
 
+The `homebrew` job pushes to the tap with the `HOMEBREW_TAP_TOKEN` secret of the
+`release` environment: a fine-grained token with only `contents: write` on
+`wmeints/homebrew-tap`. The workflow's own `GITHUB_TOKEN` stays at `contents:
+read` in that job. A called workflow's job reads the secrets of its environment
+itself, so `tag-release.yaml` doesn't pass it. Before the first release with
+this job, create the public `wmeints/homebrew-tap` repository with a `main`
+branch and add the secret to the `release` environment.
+
 Tags with a suffix, such as `v0.2.0-rc.1`, publish a pre-release, on GitHub and
-on crates.io. `cargo install` skips pre-releases unless asked for one with
+on crates.io. The `homebrew` job skips them, so the tap keeps the latest
+release. `cargo install` skips pre-releases unless asked for one with
 `--version`.
 
 | Target                      | Runner             |
@@ -271,6 +298,11 @@ maintainer with admin access applies them in this order:
    pinned to a full-length commit SHA".
 4. Repository → Settings → Rules: set the "Protect main branch" ruleset, which
    blocks deleting and force pushing the default branch, to Active.
+5. GitHub: create the public `wmeints/homebrew-tap` repository with a `main`
+   branch. Create a fine-grained token with only `contents: write` on that
+   repository, and add it to the `release` environment of this repository as the
+   `HOMEBREW_TAP_TOKEN` secret. Renew it before it expires; an expired token
+   fails the `homebrew` job.
 
 The environment allows `main` because a release from `tag-release.yaml` runs on
 `main`, and `v*.*.*` tags because a tag pushed by hand runs on the tag. It
