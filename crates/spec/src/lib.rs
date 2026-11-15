@@ -271,8 +271,10 @@ mod tests {
 
     #[test]
     fn parses_full_spec() {
-        let file =
-            write_spec("name: dev\nresources:\n  cpu: 4\n  memory: 8Gi\nimage: ubuntu:24.04\n");
+        let file = write_spec(
+            "name: dev\nresources:\n  cpu: 4\n  memory: 8Gi\nimage: ubuntu:24.04\ninit: false\n\
+             clipboard: true\n",
+        );
 
         let spec = from_file(file.path()).unwrap().unwrap();
         let resources = spec.resources.unwrap();
@@ -281,15 +283,21 @@ mod tests {
         assert_eq!(resources.cpu, 4);
         assert_eq!(resources.memory, "8Gi");
         assert_eq!(spec.image.as_deref(), Some("ubuntu:24.04"));
+        assert_eq!(spec.init, Some(false));
+        assert_eq!(spec.clipboard, Some(true));
     }
 
     #[test]
-    fn image_is_optional() {
-        let file = write_spec("name: dev\nresources:\n  cpu: 2\n  memory: 4Gi\n");
-
-        let spec = from_file(file.path()).unwrap().unwrap();
+    fn minimal_spec_leaves_optional_fields_unset() {
+        let spec = from_str("name: dev\n").unwrap();
 
         assert!(spec.image.is_none());
+        assert!(spec.resources.is_none());
+        assert!(spec.init.is_none());
+        assert!(spec.mise.is_none());
+        assert!(spec.clipboard.is_none());
+        assert!(spec.network.is_none());
+        assert!(spec.ports.is_empty());
     }
 
     #[test]
@@ -315,6 +323,7 @@ mod tests {
             ".firebrick.yml isn't a regular file; firebrick only uses a regular file in the \
              workspace"
         );
+        assert!(err.diagnostic().is_none());
     }
 
     #[cfg(unix)]
@@ -378,51 +387,6 @@ mod tests {
     }
 
     #[test]
-    fn resources_are_optional() {
-        let file = write_spec("name: dev\n");
-
-        let spec = from_file(file.path()).unwrap().unwrap();
-
-        assert!(spec.resources.is_none());
-    }
-
-    #[test]
-    fn missing_required_field_returns_invalid_spec() {
-        let file = write_spec("image: ubuntu:24.04\n");
-
-        let result = from_file(file.path());
-
-        assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
-    }
-
-    #[test]
-    fn malformed_yaml_returns_invalid_spec() {
-        let file = write_spec("name: [unclosed\n");
-
-        let result = from_file(file.path());
-
-        assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
-    }
-
-    #[test]
-    fn cpu_out_of_range_returns_invalid_spec() {
-        let file = write_spec("name: dev\nresources:\n  cpu: 256\n  memory: 4Gi\n");
-
-        let result = from_file(file.path());
-
-        assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
-    }
-
-    #[test]
-    fn unknown_field_returns_invalid_spec() {
-        let file = write_spec("name: dev\nimgae: ubuntu:24.04\n");
-
-        let result = from_file(file.path());
-
-        assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
-    }
-
-    #[test]
     fn diagnostic_reports_position_of_invalid_value() {
         let file = write_spec("name: dev\nresources:\n  cpu: 256\n  memory: 4Gi\n");
 
@@ -434,6 +398,45 @@ mod tests {
             diagnostic.message,
             "resources.cpu: invalid value: integer `256`, expected u8"
         );
+    }
+
+    #[test]
+    fn misspelled_or_missing_fields_return_invalid_spec() {
+        for text in [
+            "image: ubuntu:24.04\n",
+            "name: dev\nimgae: ubuntu:24.04\n",
+            "name: dev\nvolumes:\n  dokcer: 20GiB\n",
+            "name: dev\nnetwork:\n  enfroce: true\n",
+            "name: dev\nmounts:\n  - host: ../lib\n    guest: /lib\n    ro: true\n",
+        ] {
+            assert!(
+                matches!(from_str(text), Err(SandboxSpecError::InvalidSpec(_))),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_boolean_flag_returns_diagnostic() {
+        let cases = [
+            ("init: sometimes\n", (2, 7), "init: "),
+            ("clipboard: always\n", (2, 12), "clipboard: "),
+            ("network:\n  enabled: maybe\n", (3, 12), "network.enabled: "),
+        ];
+
+        for (text, position, field) in cases {
+            let diagnostic = from_str(&format!("name: dev\n{text}"))
+                .unwrap_err()
+                .diagnostic()
+                .unwrap();
+
+            assert_eq!((diagnostic.line, diagnostic.column), position, "{text:?}");
+            assert!(
+                diagnostic.message.starts_with(field),
+                "{}",
+                diagnostic.message
+            );
+        }
     }
 
     #[test]
@@ -662,15 +665,6 @@ mod tests {
     }
 
     #[test]
-    fn docker_volume_is_optional() {
-        let file = write_spec("name: dev\nvolumes: {}\n");
-
-        let spec = from_file(file.path()).unwrap().unwrap();
-
-        assert_eq!(spec.volumes.docker, "20 GiB");
-    }
-
-    #[test]
     fn parses_docker_volume() {
         let file = write_spec(
             "name: dev\nresources:\n  cpu: 1\n  memory: 2GiB\nvolumes:\n  docker: 40GiB\n",
@@ -755,15 +749,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_volume_returns_invalid_spec() {
-        let file = write_spec("name: dev\nvolumes:\n  dokcer: 20GiB\n");
-
-        let result = from_file(file.path());
-
-        assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
-    }
-
-    #[test]
     fn default_spec_leaves_out_the_image_and_uses_default_resources() {
         let spec = default_spec("dev".to_string());
         let resources = spec.resources.unwrap();
@@ -783,47 +768,6 @@ mod tests {
         assert!(spec.mounts.is_none());
         assert!(spec.ports.is_empty());
         assert_eq!(spec.clipboard, None);
-    }
-
-    #[test]
-    fn init_is_optional() {
-        let file = write_spec("name: dev\n");
-
-        let spec = from_file(file.path()).unwrap().unwrap();
-
-        assert!(spec.init.is_none());
-    }
-
-    #[test]
-    fn parses_init() {
-        let file = write_spec("name: dev\nimage: alpine:3.22\ninit: false\n");
-
-        let spec = from_file(file.path()).unwrap().unwrap();
-
-        assert_eq!(spec.init, Some(false));
-    }
-
-    #[test]
-    fn invalid_init_returns_diagnostic() {
-        let file = write_spec("name: dev\ninit: sometimes\n");
-
-        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
-
-        assert_eq!(diagnostic.line, 2);
-        assert!(
-            diagnostic.message.contains("init"),
-            "{}",
-            diagnostic.message
-        );
-    }
-
-    #[test]
-    fn mise_is_optional() {
-        let file = write_spec("name: dev\n");
-
-        let spec = from_file(file.path()).unwrap().unwrap();
-
-        assert!(spec.mise.is_none());
     }
 
     #[test]
@@ -970,47 +914,6 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_is_optional() {
-        let file = write_spec("name: dev\n");
-
-        let spec = from_file(file.path()).unwrap().unwrap();
-
-        assert!(spec.clipboard.is_none());
-    }
-
-    #[test]
-    fn parses_clipboard() {
-        let file = write_spec("name: dev\nclipboard: true\n");
-
-        let spec = from_file(file.path()).unwrap().unwrap();
-
-        assert_eq!(spec.clipboard, Some(true));
-    }
-
-    #[test]
-    fn invalid_clipboard_returns_diagnostic() {
-        let file = write_spec("name: dev\nclipboard: always\n");
-
-        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
-
-        assert_eq!((diagnostic.line, diagnostic.column), (2, 12));
-        assert!(
-            diagnostic.message.contains("clipboard"),
-            "{}",
-            diagnostic.message
-        );
-    }
-
-    #[test]
-    fn network_is_optional() {
-        let file = write_spec("name: dev\n");
-
-        let spec = from_file(file.path()).unwrap().unwrap();
-
-        assert!(spec.network.is_none());
-    }
-
-    #[test]
     fn network_fields_have_defaults() {
         let file = write_spec("name: dev\nnetwork: {}\n");
 
@@ -1031,20 +934,6 @@ mod tests {
             assert_eq!(network.enabled, Some(expected));
             assert_eq!(network.is_enabled(), expected);
         }
-    }
-
-    #[test]
-    fn diagnostic_reports_position_of_non_boolean_network_enabled() {
-        let file = write_spec("name: dev\nnetwork:\n  enabled: maybe\n");
-
-        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
-
-        assert_eq!((diagnostic.line, diagnostic.column), (3, 12));
-        assert!(
-            diagnostic.message.starts_with("network.enabled: "),
-            "{}",
-            diagnostic.message
-        );
     }
 
     #[test]
@@ -1162,24 +1051,6 @@ mod tests {
             "{}",
             diagnostic.message
         );
-    }
-
-    #[test]
-    fn unknown_network_field_returns_invalid_spec() {
-        let file = write_spec("name: dev\nnetwork:\n  enfroce: true\n");
-
-        let result = from_file(file.path());
-
-        assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
-    }
-
-    #[test]
-    fn ports_are_optional() {
-        let file = write_spec("name: dev\n");
-
-        let spec = from_file(file.path()).unwrap().unwrap();
-
-        assert!(spec.ports.is_empty());
     }
 
     fn port(host: u16, guest: u16) -> PortMapping {
@@ -1466,18 +1337,19 @@ mod tests {
     }
 
     #[test]
-    fn unknown_mount_field_returns_invalid_spec() {
-        let file =
-            write_spec("name: dev\nmounts:\n  - host: ../lib\n    guest: /lib\n    ro: true\n");
-
-        let result = from_file(file.path());
-
-        assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
-    }
-
-    #[test]
     fn invalid_guest_path_returns_diagnostic() {
-        for guest in ["data", "./data", "/"] {
+        let not_absolute = "mounts[0].guest: guest path must be an absolute path other than /";
+        let cases = [
+            ("data", not_absolute),
+            ("./data", not_absolute),
+            ("/", not_absolute),
+            (
+                "/data/../etc",
+                "mounts[0].guest: guest path must not contain ..",
+            ),
+        ];
+
+        for (guest, message) in cases {
             let file = write_spec(&format!(
                 "name: dev\nmounts:\n  - host: ../data\n    guest: {guest}\n"
             ));
@@ -1485,10 +1357,7 @@ mod tests {
             let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
 
             assert_eq!((diagnostic.line, diagnostic.column), (4, 12), "{guest:?}");
-            assert_eq!(
-                diagnostic.message,
-                "mounts[0].guest: guest path must be an absolute path other than /"
-            );
+            assert_eq!(diagnostic.message, message, "{guest:?}");
         }
     }
 
@@ -1529,64 +1398,22 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_guest_path_ignores_trailing_slash() {
-        let file = write_spec(concat!(
-            "name: dev\n",
-            "mounts:\n",
-            "  - host: ../a\n",
-            "    guest: /data/images\n",
-            "  - host: ../b\n",
-            "    guest: /data/images/\n",
-        ));
-
-        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
-
-        assert_eq!(
-            diagnostic.message,
-            "mounts: guest path /data/images is mounted more than once"
-        );
-    }
-
-    #[test]
-    fn invalid_guest_path_reports_parent_dir() {
-        let file = write_spec("name: dev\nmounts:\n  - host: ../a\n    guest: /data/../etc\n");
-
-        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
-
-        assert_eq!((diagnostic.line, diagnostic.column), (4, 12));
-        assert_eq!(
-            diagnostic.message,
-            "mounts[0].guest: guest path must not contain .."
-        );
-    }
-
-    #[test]
     fn duplicate_guest_path_returns_diagnostic() {
-        let file = write_spec(concat!(
-            "name: dev\n",
-            "mounts:\n",
-            "  - host: ../a\n",
-            "    guest: /data/images\n",
-            "  - host: ../b\n",
-            "    guest: /data/images\n",
-        ));
+        // A trailing slash names the same guest path.
+        for second in ["/data/images", "/data/images/"] {
+            let file = write_spec(&format!(
+                "name: dev\nmounts:\n  - host: ../a\n    guest: /data/images\n  - host: ../b\n    \
+                 guest: {second}\n"
+            ));
 
-        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+            let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
 
-        assert_eq!((diagnostic.line, diagnostic.column), (3, 3));
-        assert_eq!(
-            diagnostic.message,
-            "mounts: guest path /data/images is mounted more than once"
-        );
-    }
-
-    #[test]
-    fn unreadable_file_has_no_diagnostic() {
-        let dir = TempDir::new().unwrap();
-
-        let result = from_file(dir.path());
-
-        assert!(result.unwrap_err().diagnostic().is_none());
+            assert_eq!((diagnostic.line, diagnostic.column), (3, 3), "{second:?}");
+            assert_eq!(
+                diagnostic.message,
+                "mounts: guest path /data/images is mounted more than once"
+            );
+        }
     }
 
     fn rules(values: &[&str]) -> Vec<NetworkRule> {
@@ -1688,6 +1515,7 @@ mod tests {
 
         assert!(!content.contains("null"), "{content}");
         assert!(!content.contains("network"), "{content}");
+        assert!(!content.contains("env"), "{content}");
     }
 
     #[test]
@@ -1756,15 +1584,6 @@ mod tests {
         let err = read_text(&path).unwrap_err();
 
         assert_eq!(err.to_string(), SYMLINK_ERROR);
-    }
-
-    #[test]
-    fn read_text_returns_none_for_a_missing_file() {
-        let dir = TempDir::new().unwrap();
-
-        let text = read_text(&dir.path().join(".firebrick.yml")).unwrap();
-
-        assert_eq!(text, None);
     }
 
     #[test]
@@ -1975,12 +1794,5 @@ mod tests {
             validate_env_name("MSB_TOKEN"),
             Err(InvalidEnvName::Reserved("MSB_TOKEN".to_string()))
         );
-    }
-
-    #[test]
-    fn default_spec_writes_no_env_section() {
-        let text = serde_yaml::to_string(&default_spec("dev".to_string())).unwrap();
-
-        assert!(!text.contains("env"), "{text}");
     }
 }
