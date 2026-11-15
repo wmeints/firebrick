@@ -569,7 +569,7 @@ pub async fn run(socket_path: &Path, secrets: SecretStore) -> Result<(), ServerE
 mod tests {
     use super::*;
     use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
-    use crate::api::{NetworkPolicy, PortForward, SecretSummary};
+    use crate::api::{NetworkPolicy, PortForward};
     use crate::secrets::Secret;
     use firebrick_utils::ipc;
     use hyper_util::rt::TokioIo;
@@ -583,20 +583,6 @@ mod tests {
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("firebrick-test-{}-{}", std::process::id(), name))
-    }
-
-    /// Returns a store at `path` with a secret for `example.com` under each name.
-    fn store_with_secrets(path: &Path, names: &[&str]) -> SecretStore {
-        let store = SecretStore::new(path);
-        let secrets = names
-            .iter()
-            .map(|name| Secret::new(name.to_string(), "value".into(), vec!["example.com".into()]));
-
-        for secret in secrets {
-            store.set(secret.unwrap()).unwrap();
-        }
-
-        store
     }
 
     /// Serves on the socket until `stop` fires.
@@ -883,56 +869,62 @@ mod tests {
         assert!(!path.exists());
     }
 
-    #[tokio::test]
-    async fn list_secrets_returns_names_and_hosts_sorted() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_with_secrets(&dir.path().join("secrets.yml"), &["B_TOKEN", "A_TOKEN"]);
-        let server = FirebrickServer::new(
+    /// Returns a server with a store at `path` that has a secret for `example.com` per name and
+    /// scope.
+    fn server_with_secrets(path: &Path, entries: &[(&str, Option<&str>)]) -> FirebrickServer {
+        let store = SecretStore::new(path);
+
+        for (name, sandbox) in entries {
+            let secret = Secret::new(name.to_string(), "value".into(), vec!["example.com".into()]);
+            store
+                .set(secret.unwrap().in_scope(sandbox.map(str::to_string)))
+                .unwrap();
+        }
+
+        FirebrickServer::new(
             store,
             Arc::new(HostOpener),
             Arc::new(HostTools::new(None, None)),
-        );
-
-        let secrets = server
-            .list_secrets(Request::new(ListSecretsRequest {}))
-            .await
-            .unwrap()
-            .into_inner()
-            .secrets;
-
-        let expected: Vec<SecretSummary> = ["A_TOKEN", "B_TOKEN"]
-            .map(|name| SecretSummary {
-                name: name.to_string(),
-                allowed_hosts: vec!["example.com".to_string()],
-                sandbox: None,
-            })
-            .into();
-        assert_eq!(secrets, expected);
+        )
     }
 
+    /// Secrets by name and scope, out of order.
+    const UNSORTED_SECRETS: [(&str, Option<&str>); 5] = [
+        ("B", Some("a")),
+        ("B", None),
+        ("A", Some("z")),
+        ("A", None),
+        ("A", Some("b")),
+    ];
+
     #[tokio::test]
-    async fn list_secrets_returns_the_scope() {
+    async fn list_secrets_sorts_by_name_then_scope_with_global_first() {
         let dir = tempfile::tempdir().unwrap();
-        let store = store_with_secrets(&dir.path().join("secrets.yml"), &["A"]);
-        let secret = Secret::new("A".into(), "value".into(), vec!["example.com".into()]).unwrap();
-        store.set(secret.in_scope(Some("dev".into()))).unwrap();
-        let server = FirebrickServer::new(
-            store,
-            Arc::new(HostOpener),
-            Arc::new(HostTools::new(None, None)),
-        );
+        let server = server_with_secrets(&dir.path().join("secrets.yml"), &UNSORTED_SECRETS);
 
-        let scopes: Vec<Option<String>> = server
+        let response = server
             .list_secrets(Request::new(ListSecretsRequest {}))
-            .await
-            .unwrap()
-            .into_inner()
-            .secrets
-            .into_iter()
-            .map(|secret| secret.sandbox)
-            .collect();
+            .await;
 
-        assert_eq!(scopes, [None, Some("dev".to_string())]);
+        let secrets = response.unwrap().into_inner().secrets;
+        let listed: Vec<_> = secrets
+            .iter()
+            .map(|s| (s.name.as_str(), s.sandbox.as_deref()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("A", None),
+                ("A", Some("b")),
+                ("A", Some("z")),
+                ("B", None),
+                ("B", Some("a"))
+            ]
+        );
+        assert!(
+            secrets.iter().all(|s| s.allowed_hosts == ["example.com"]),
+            "{secrets:?}"
+        );
     }
 
     #[tokio::test]

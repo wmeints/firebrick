@@ -545,25 +545,17 @@ mod tests {
     }
 
     #[test]
-    fn new_sandbox_records_the_default_image_by_name() {
-        assert_eq!(
-            new_image_label(""),
-            Some(firebrick_spec::DEFAULT_IMAGE.to_string())
-        );
-    }
+    fn new_sandbox_records_the_requested_image_or_the_default_by_name() {
+        let default = firebrick_spec::DEFAULT_IMAGE;
 
-    #[test]
-    fn new_sandbox_records_the_requested_image() {
-        assert_eq!(
-            new_image_label("alpine:3.22"),
-            Some("alpine:3.22".to_string())
-        );
-    }
-
-    #[test]
-    fn sandbox_image_falls_back_to_default() {
-        assert_eq!(sandbox_image("alpine:3.22"), "alpine:3.22");
-        assert_eq!(sandbox_image(""), firebrick_spec::DEFAULT_IMAGE);
+        for (image, expected) in [("alpine:3.22", "alpine:3.22"), ("", default)] {
+            assert_eq!(sandbox_image(image), expected, "{image:?}");
+            assert_eq!(
+                new_image_label(image).as_deref(),
+                Some(expected),
+                "{image:?}"
+            );
+        }
     }
 
     #[test]
@@ -607,54 +599,42 @@ mod tests {
     }
 
     #[test]
-    fn check_mounts_rejects_the_workspace_guest_path() {
-        let mounts = [mount(&host("/home/user/lib"), "/workspaces/project")];
+    fn check_mounts_rejects_the_workspace_guest_path_in_any_form() {
+        for guest in ["/workspaces/project", "/workspaces/project/."] {
+            let mounts = [mount(&host("/home/user/lib"), guest)];
 
-        assert_eq!(
-            check_mounts(&mounts, "/workspaces/project"),
-            Err(SandboxError::InvalidArgument(
-                "mount /workspaces/project conflicts with the workspace mount".into()
-            ))
-        );
+            assert_eq!(
+                check_mounts(&mounts, "/workspaces/project"),
+                Err(SandboxError::InvalidArgument(
+                    "mount /workspaces/project conflicts with the workspace mount".into()
+                )),
+                "{guest}"
+            );
+        }
     }
 
     #[test]
-    fn check_mounts_rejects_the_workspace_guest_path_in_another_form() {
-        let mounts = [mount(&host("/home/user/lib"), "/workspaces/project/.")];
+    fn check_mounts_rejects_the_docker_data_and_dotfiles_paths() {
+        let cases = [
+            (
+                "/var/lib/docker/",
+                "mount /var/lib/docker conflicts with the Docker data volume",
+            ),
+            (
+                "/opt/firebrick/dotfiles/",
+                "mount /opt/firebrick/dotfiles conflicts with the mise dotfiles mount",
+            ),
+        ];
 
-        assert_eq!(
-            check_mounts(&mounts, "/workspaces/project"),
-            Err(SandboxError::InvalidArgument(
-                "mount /workspaces/project conflicts with the workspace mount".into()
-            ))
-        );
-    }
+        for (guest, message) in cases {
+            let mounts = [mount(&host("/home/user/lib"), guest)];
 
-    #[test]
-    fn check_mounts_rejects_the_docker_data_path() {
-        let mounts = [mount(&host("/home/user/docker"), "/var/lib/docker/")];
-
-        assert_eq!(
-            check_mounts(&mounts, "/workspaces/project"),
-            Err(SandboxError::InvalidArgument(
-                "mount /var/lib/docker conflicts with the Docker data volume".into()
-            ))
-        );
-    }
-
-    #[test]
-    fn check_mounts_rejects_the_dotfiles_path() {
-        let mounts = [mount(
-            &host("/home/user/dotfiles"),
-            "/opt/firebrick/dotfiles/",
-        )];
-
-        assert_eq!(
-            check_mounts(&mounts, "/workspaces/project"),
-            Err(SandboxError::InvalidArgument(
-                "mount /opt/firebrick/dotfiles conflicts with the mise dotfiles mount".into()
-            ))
-        );
+            assert_eq!(
+                check_mounts(&mounts, "/workspaces/project"),
+                Err(SandboxError::InvalidArgument(message.into())),
+                "{guest}"
+            );
+        }
     }
 
     #[test]

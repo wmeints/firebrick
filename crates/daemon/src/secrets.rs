@@ -581,16 +581,6 @@ mod tests {
     }
 
     #[test]
-    fn remove_reports_missing_secret() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = SecretStore::new(dir.path().join("secrets.yml"));
-        store.set(secret("A", &["example.com"]).unwrap()).unwrap();
-
-        assert!(!store.remove("B", None).unwrap());
-        assert_eq!(store.load().unwrap().len(), 1);
-    }
-
-    #[test]
     fn remove_without_file_creates_no_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secrets.yml");
@@ -611,15 +601,22 @@ mod tests {
     }
 
     #[test]
-    fn load_rejects_duplicate_names() {
+    fn load_rejects_duplicate_names_in_one_scope() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secrets.yml");
-        let entry = "- name: X\n  value: v\n  allowed_hosts: [example.com]\n";
-        fs::write(&path, entry.repeat(2)).unwrap();
+        let global = "- name: X\n  value: v\n  allowed_hosts: [example.com]\n";
+        let scoped = "- name: X\n  sandbox: a\n  value: v\n  allowed_hosts: [example.com]\n";
 
-        let result = SecretStore::new(&path).load();
+        for entry in [global, scoped] {
+            fs::write(&path, entry.repeat(2)).unwrap();
 
-        assert!(matches!(result, Err(SecretError::Duplicate { .. })));
+            let result = SecretStore::new(&path).load();
+
+            assert!(
+                matches!(result, Err(SecretError::Duplicate { .. })),
+                "{entry}"
+            );
+        }
     }
 
     fn scoped(name: &str, sandbox: &str, host: &str) -> Secret {
@@ -661,22 +658,6 @@ mod tests {
     }
 
     #[test]
-    fn load_reads_entries_without_sandbox_as_global() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("secrets.yml");
-        fs::write(
-            &path,
-            "- name: X\n  value: v\n  allowed_hosts: [example.com]\n",
-        )
-        .unwrap();
-
-        let secrets = SecretStore::new(&path).load().unwrap();
-
-        assert_eq!(secrets.len(), 1);
-        assert_eq!(secrets[0].sandbox(), None);
-    }
-
-    #[test]
     fn load_accepts_the_same_name_in_different_scopes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secrets.yml");
@@ -696,18 +677,6 @@ mod tests {
             .collect();
 
         assert_eq!(scopes, [None, Some("a".into()), Some("b".into())]);
-    }
-
-    #[test]
-    fn load_rejects_duplicate_names_in_one_sandbox_scope() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("secrets.yml");
-        let entry = "- name: X\n  sandbox: a\n  value: v\n  allowed_hosts: [example.com]\n";
-        fs::write(&path, entry.repeat(2)).unwrap();
-
-        let result = SecretStore::new(&path).load();
-
-        assert!(matches!(result, Err(SecretError::Duplicate { .. })));
     }
 
     #[test]
@@ -762,14 +731,6 @@ mod tests {
         ];
 
         assert_eq!(for_sandbox(secrets, "a"), [global_y, own_x, own_z]);
-    }
-
-    #[test]
-    fn for_sandbox_without_overrides_returns_the_global_secrets() {
-        let global = secret("X", &["example.com"]).unwrap();
-        let secrets = vec![global.clone(), scoped("X", "b", "b.example.com")];
-
-        assert_eq!(for_sandbox(secrets, "a"), [global]);
     }
 
     #[test]

@@ -168,36 +168,27 @@ mod tests {
     }
 
     #[test]
-    fn hostname_uses_workspace_leaf() {
-        assert_eq!(
-            pick_hostname("/home/user/project", &taken(&[])),
-            "project.fbk"
-        );
-    }
-
-    #[test]
-    fn hostname_is_sanitized() {
-        assert_eq!(
-            pick_hostname("/home/user/My_Project.v2--", &taken(&[])),
-            "my-project-v2.fbk"
-        );
-        assert_eq!(pick_hostname("/home/user/__", &taken(&[])), "sandbox.fbk");
-        assert_eq!(pick_hostname("/", &taken(&[])), "sandbox.fbk");
-    }
-
-    #[test]
-    fn hostname_gets_numbered_when_taken() {
-        assert_eq!(
-            pick_hostname("/a/project", &taken(&["project.fbk"])),
-            "project-2.fbk"
-        );
-        assert_eq!(
-            pick_hostname(
+    fn hostname_is_the_sanitized_workspace_leaf_numbered_when_taken() {
+        let cases: [(&str, &[&str], &str); 6] = [
+            ("/home/user/project", &[], "project.fbk"),
+            ("/home/user/My_Project.v2--", &[], "my-project-v2.fbk"),
+            ("/home/user/__", &[], "sandbox.fbk"),
+            ("/", &[], "sandbox.fbk"),
+            ("/a/project", &["project.fbk"], "project-2.fbk"),
+            (
                 "/a/project",
-                &taken(&["project.fbk", "project-2.fbk", "other.fbk"])
+                &["project.fbk", "project-2.fbk", "other.fbk"],
+                "project-3.fbk",
             ),
-            "project-3.fbk"
-        );
+        ];
+
+        for (workspace, names, expected) in cases {
+            assert_eq!(
+                pick_hostname(workspace, &taken(names)),
+                expected,
+                "{workspace}"
+            );
+        }
     }
 
     #[test]

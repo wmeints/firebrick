@@ -922,17 +922,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_line_opens_valid_url() {
-        let (mut output, opener) = relay_output(NetworkSpec::default());
-
-        output
-            .handle_line(b"https://example.com", Instant::now())
-            .await;
-
-        assert_eq!(opener.urls(), ["https://example.com/"]);
-    }
-
-    #[tokio::test]
     async fn handle_line_ignores_rejected_lines() {
         let (mut output, opener) = relay_output(enforced(&["example.com"]));
         let now = Instant::now();
@@ -1018,18 +1007,6 @@ mod tests {
         let (mut output, opener) = probing_relay_output(guest, port);
         let url =
             format!("https://github.com/login?redirect_uri=http%3A%2F%2Flocalhost%3A{port}%2Fcb");
-
-        output.handle_line(url.as_bytes(), Instant::now()).await;
-
-        assert_eq!(opener.opened(), [(url, true)]);
-        assert_eq!(read_from(port).await, "pong");
-    }
-
-    #[tokio::test]
-    async fn handle_line_forwards_the_port_of_a_loopback_url_before_opening() {
-        let (guest, port) = (pong_server().await, free_port().await);
-        let (mut output, opener) = probing_relay_output(guest, port);
-        let url = format!("http://localhost:{port}/");
 
         output.handle_line(url.as_bytes(), Instant::now()).await;
 

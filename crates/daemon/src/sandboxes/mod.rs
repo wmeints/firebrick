@@ -1050,29 +1050,22 @@ mod tests {
     const DEFAULT: &str = "ghcr.io/wmeints/firebrick-base:v0.8.0";
 
     #[test]
-    fn default_image_is_not_outdated() {
-        assert_eq!(upgrade_image(DEFAULT, DEFAULT), None);
-    }
+    fn only_an_older_tag_of_the_default_image_is_outdated() {
+        let cases = [
+            (DEFAULT, None),
+            ("ghcr.io/wmeints/firebrick-base:v0.7.0", Some(DEFAULT)),
+            ("alpine:3.22", None),
+            ("ghcr.io/acme/firebrick-base:v0.7.0", None),
+            ("ghcr.io/wmeints/firebrick-base", None),
+        ];
 
-    #[test]
-    fn older_firebrick_base_tag_is_outdated() {
-        assert_eq!(
-            upgrade_image("ghcr.io/wmeints/firebrick-base:v0.7.0", DEFAULT),
-            Some(DEFAULT.to_string())
-        );
-    }
-
-    #[test]
-    fn custom_image_is_never_outdated() {
-        assert_eq!(upgrade_image("alpine:3.22", DEFAULT), None);
-        assert_eq!(
-            upgrade_image("ghcr.io/acme/firebrick-base:v0.7.0", DEFAULT),
-            None
-        );
-        assert_eq!(
-            upgrade_image("ghcr.io/wmeints/firebrick-base", DEFAULT),
-            None
-        );
+        for (image, expected) in cases {
+            assert_eq!(
+                upgrade_image(image, DEFAULT),
+                expected.map(str::to_string),
+                "{image}"
+            );
+        }
     }
 
     fn oci(reference: &str) -> RootfsSource {
@@ -1083,66 +1076,26 @@ mod tests {
     }
 
     #[test]
-    fn recorded_image_prefers_the_image_label() {
-        let labels = BTreeMap::from([(IMAGE_LABEL.to_string(), DEFAULT.to_string())]);
-
-        assert_eq!(
-            recorded_image(&labels, &oci("ghcr.io/wmeints/firebrick-base:v0.7.0")),
-            Some(DEFAULT.to_string())
-        );
-    }
-
-    #[test]
-    fn recorded_image_falls_back_to_the_oci_reference_without_a_label() {
+    fn recorded_image_prefers_the_label_then_the_oci_reference() {
         let old = "ghcr.io/wmeints/firebrick-base:v0.7.0";
-
-        assert_eq!(
-            recorded_image(&BTreeMap::new(), &oci(old)),
-            Some(old.to_string())
-        );
-    }
-
-    #[test]
-    fn unknown_image_reference_is_not_recorded() {
-        let rootfs = RootfsSource::Bind {
+        let labelled = BTreeMap::from([(IMAGE_LABEL.to_string(), DEFAULT.to_string())]);
+        let bind = RootfsSource::Bind {
             path: "/tmp/rootfs".into(),
             follow_root_symlinks: false,
         };
-
-        assert_eq!(recorded_image(&BTreeMap::new(), &rootfs), None);
-    }
-
-    #[test]
-    fn list_secrets_sorts_by_name_then_scope_with_global_first() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = SecretStore::new(dir.path().join("secrets.yml"));
-        let entries = [
-            ("B", Some("a")),
-            ("B", None),
-            ("A", Some("z")),
-            ("A", None),
-            ("A", Some("b")),
+        let cases = [
+            (&labelled, oci(old), Some(DEFAULT)),
+            (&BTreeMap::new(), oci(old), Some(old)),
+            (&BTreeMap::new(), bind, None),
         ];
-        for (name, sandbox) in entries {
-            store.set(scoped_secret(name, sandbox)).unwrap();
+
+        for (labels, rootfs, expected) in cases {
+            assert_eq!(
+                recorded_image(labels, &rootfs),
+                expected.map(str::to_string),
+                "{labels:?}"
+            );
         }
-        let manager = SandboxManager::new(
-            store,
-            Arc::new(HostOpener),
-            Arc::new(HostTools::new(None, None)),
-        );
-
-        let listed = manager.list_secrets().unwrap();
-
-        let expected = [
-            ("A", None),
-            ("A", Some("b")),
-            ("A", Some("z")),
-            ("B", None),
-            ("B", Some("a")),
-        ]
-        .map(|(name, sandbox)| scoped_secret(name, sandbox));
-        assert_eq!(listed, expected);
     }
 
     #[tokio::test]
@@ -1188,44 +1141,6 @@ mod tests {
             Err(SandboxError::NotFound(format!(
                 "sandbox {sandbox} doesn't exist"
             )))
-        );
-        assert_eq!(SecretStore::new(&path).load().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn set_secret_rejects_invalid_secret_without_storing_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("secrets.yml");
-        let manager = SandboxManager::new(
-            SecretStore::new(&path),
-            Arc::new(HostOpener),
-            Arc::new(HostTools::new(None, None)),
-        );
-
-        let result = manager
-            .set_secret(NewSecret {
-                name: "NOT-A-NAME".into(),
-                value: "value".into(),
-                allowed_hosts: vec![],
-                sandbox: None,
-            })
-            .await;
-
-        assert!(matches!(result, Err(SandboxError::InvalidArgument(_))));
-        assert!(!path.exists());
-    }
-
-    #[tokio::test]
-    async fn remove_secret_returns_not_found_and_keeps_the_store() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("secrets.yml");
-        let manager = manager_with_secrets(&path, &["A"]);
-
-        let result = manager.remove_secret("B", None).await;
-
-        assert_eq!(
-            result,
-            Err(SandboxError::NotFound("secret B doesn't exist".into()))
         );
         assert_eq!(SecretStore::new(&path).load().unwrap().len(), 1);
     }

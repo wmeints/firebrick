@@ -114,30 +114,28 @@ mod tests {
     }
 
     #[test]
-    fn stored_returns_only_the_variables_from_the_spec() {
-        let spec = spec_with(
-            &[(NAMES_LABEL, "NODE_ENV,PORT")],
-            &[("PATH", "/usr/bin"), ("NODE_ENV", "dev"), ("PORT", "3000")],
-        );
+    fn stored_returns_only_the_variables_the_label_names() {
+        let env = [("PATH", "/usr/bin"), ("NODE_ENV", "dev"), ("PORT", "3000")];
+        let cases = [
+            (
+                Some("NODE_ENV,PORT"),
+                vec![("NODE_ENV", "dev"), ("PORT", "3000")],
+            ),
+            (Some("GONE,PORT"), vec![("PORT", "3000")]),
+            (Some(""), vec![]),
+            (None, vec![]),
+        ];
 
-        assert_eq!(
-            stored(&spec),
-            vars(&[("NODE_ENV", "dev"), ("PORT", "3000")])
-        );
-    }
+        for (names, expected) in cases {
+            let labels: Vec<_> = names
+                .map(|names| (NAMES_LABEL, names))
+                .into_iter()
+                .collect();
 
-    #[test]
-    fn stored_is_empty_without_the_label() {
-        let spec = spec_with(&[], &[("PATH", "/usr/bin")]);
+            let stored = stored(&spec_with(&labels, &env));
 
-        assert!(stored(&spec).is_empty());
-    }
-
-    #[test]
-    fn stored_leaves_out_a_name_without_a_value() {
-        let spec = spec_with(&[(NAMES_LABEL, "GONE,PORT")], &[("PORT", "3000")]);
-
-        assert_eq!(stored(&spec), vars(&[("PORT", "3000")]));
+            assert_eq!(stored, vars(&expected), "{names:?}");
+        }
     }
 
     #[test]
@@ -150,13 +148,6 @@ mod tests {
         assert!(names_variable(&spec, "API_KEY"));
         assert!(!names_variable(&spec, "PATH"));
         assert!(!names_variable(&spec_with(&[(NAMES_LABEL, "")], &[]), ""));
-    }
-
-    #[test]
-    fn stored_is_empty_for_an_empty_label() {
-        let spec = spec_with(&[(NAMES_LABEL, "")], &[("PATH", "/usr/bin")]);
-
-        assert!(stored(&spec).is_empty());
     }
 
     #[tokio::test]

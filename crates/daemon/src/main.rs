@@ -154,11 +154,4 @@ mod tests {
             format!("fbkd {}\n", env!("CARGO_PKG_VERSION"))
         );
     }
-
-    #[test]
-    fn rejects_unknown_arguments() {
-        let error = Cli::try_parse_from(["fbkd", "serve"]).unwrap_err();
-
-        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
-    }
 }

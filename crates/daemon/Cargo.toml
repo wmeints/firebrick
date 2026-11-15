@@ -75,6 +75,8 @@ base64 = "0.22.1"
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 tower = "0.5.3"
 tempfile = "3.27.0"
+# Paused time, so tests of timeouts don't wait for them.
+tokio = { version = "1.53.2", features = ["test-util"] }
 # Canonical temp paths without the `\\?\` prefix on Windows, which microsandbox refuses in
 # mounts (ADR 0051).
 dunce = "1.0.5"
