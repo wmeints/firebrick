@@ -21,7 +21,6 @@ license = "MIT"
 repository = "https://github.com/wmeints/firebrick"
 
 [workspace.lints.clippy]
-too_many_lines = "warn"           # pedantic, so off by default
 excessive_nesting = "warn"        # restriction, so off by default
 too_many_arguments = "warn"       # on by default; listed for clarity
 fn_params_excessive_bools = "warn"
