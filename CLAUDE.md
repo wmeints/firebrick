@@ -167,6 +167,10 @@ A change is done when:
   findings: fix the real problems, mark false positives with a `foxguard:
   ignore[<rule>]` comment below a comment giving the reason, and ask about the
   ones in doubt.
+- Use the `prune-tests` skill to reduce the overhead of the tests: it proposes
+  tests to delete, merge, move or fix, applies the ones the user approves, and
+  checks with `cargo-mutants` that the pruned suite still catches the same
+  mutants.
 - Use the `sandbox-reference` skill before relying on how the `microsandbox`
   crate behaves. It shows where to find the source of the locked version and
   lists the behavior and limits we already know.
