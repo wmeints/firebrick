@@ -110,14 +110,6 @@ fn tools(dir: &Path) -> HostTools {
     HostTools::new(Some(Desktop::Windows), Some(dir.as_os_str().into()))
 }
 
-/// Returns the cause of an unavailable clipboard, or panics with the result.
-fn cause<T: std::fmt::Debug>(result: Result<T, HostError>) -> Cause {
-    match result {
-        Err(HostError::Unavailable(cause, _)) => cause,
-        other => panic!("expected an unavailable clipboard, got {other:?}"),
-    }
-}
-
 /// What the real list script prints for a clipboard with text and an image.
 const TEXT_AND_PNG: &[u8] = b"text/plain\r\nimage/png\r\n";
 
