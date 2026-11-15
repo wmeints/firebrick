@@ -461,6 +461,8 @@ mod tests {
         wait_for_destinations(&logs, "sb", 1).await;
 
         logs.remove("sb").await;
+        // A flush that would bring the record back runs on the paused clock too.
+        tokio::time::pause();
         tokio::time::sleep(FLUSH_INTERVAL * 2).await;
 
         assert!(!ipc::exists(&logs.socket_path("sb").unwrap()).await);

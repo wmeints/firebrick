@@ -436,33 +436,25 @@ mod tests {
     }
 
     #[test]
-    fn bar_stays_finished_when_the_pull_completes() {
-        let (mut view, term) = terminal_view();
+    fn bar_ends_at_the_total_when_the_pull_completes_or_the_sandbox_starts() {
+        let endings: [fn(&mut PullProgressView<Vec<u8>>); 2] = [
+            |view| view.update(&completed(400, Some(400))),
+            PullProgressView::finish,
+        ];
 
-        view.update(&progress(100, Some(400)));
-        view.update(&completed(400, Some(400)));
-        drop(view);
+        for end in endings {
+            let (mut view, term) = terminal_view();
 
-        let contents = term.contents();
-        assert!(
-            contents.ends_with("400.00 MiB / 400.00 MiB (100%)"),
-            "{contents}"
-        );
-    }
+            view.update(&progress(100, Some(400)));
+            end(&mut view);
+            drop(view);
 
-    #[test]
-    fn bar_ends_at_the_total_when_the_sandbox_starts_without_a_last_message() {
-        let (mut view, term) = terminal_view();
-
-        view.update(&progress(100, Some(400)));
-        view.finish();
-        drop(view);
-
-        let contents = term.contents();
-        assert!(
-            contents.ends_with("400.00 MiB / 400.00 MiB (100%)"),
-            "{contents}"
-        );
+            let contents = term.contents();
+            assert!(
+                contents.ends_with("400.00 MiB / 400.00 MiB (100%)"),
+                "{contents}"
+            );
+        }
     }
 
     #[test]
@@ -487,31 +479,26 @@ mod tests {
 
     #[test]
     fn lines_show_the_start_and_end_of_the_pull_only() {
-        let messages = [
-            progress(100, Some(400)),
-            progress(200, Some(400)),
-            completed(400, Some(400)),
-            // Messages after the last one are ignored.
-            progress(400, Some(400)),
+        let pulled = format!("Pulling image {IMAGE}...\nPulled image {IMAGE}\n");
+        let cases = [
+            (
+                vec![
+                    progress(100, Some(400)),
+                    progress(200, Some(400)),
+                    completed(400, Some(400)),
+                    // Messages after the last one are ignored.
+                    progress(400, Some(400)),
+                ],
+                pulled.as_str(),
+            ),
+            // The sandbox starts before the pull completed.
+            (vec![progress(100, None)], pulled.as_str()),
+            (vec![], ""),
         ];
 
-        assert_eq!(
-            lines(&messages, true),
-            format!("Pulling image {IMAGE}...\nPulled image {IMAGE}\n")
-        );
-    }
-
-    #[test]
-    fn lines_end_the_pull_when_the_sandbox_starts_before_it_completed() {
-        assert_eq!(
-            lines(&[progress(100, None)], true),
-            format!("Pulling image {IMAGE}...\nPulled image {IMAGE}\n")
-        );
-    }
-
-    #[test]
-    fn lines_show_nothing_without_progress() {
-        assert_eq!(lines(&[], true), "");
+        for (messages, expected) in cases {
+            assert_eq!(lines(&messages, true), expected, "{messages:?}");
+        }
     }
 
     fn mise_line(line: &str) -> MiseInstallProgress {
@@ -533,20 +520,6 @@ mod tests {
             warning: warning.to_string(),
             ..MiseInstallProgress::default()
         }
-    }
-
-    #[test]
-    fn mise_lines_show_a_warning_on_a_line_of_its_own() {
-        let messages = [
-            mise_line(""),
-            mise_warning("couldn't apply the dotfiles: boom"),
-            mise_completed(),
-        ];
-
-        assert_eq!(
-            mise_lines(&messages, true),
-            "Installing mise tools...\nwarning: couldn't apply the dotfiles: boom\nInstalled mise tools\n"
-        );
     }
 
     #[test]
@@ -666,32 +639,36 @@ mod tests {
     }
 
     #[test]
-    fn mise_lines_show_the_start_and_end_of_the_install_only() {
-        let messages = [
-            mise_line(""),
-            mise_line("mise node@22.11.0 install"),
-            mise_completed(),
-            // Messages after the last one are ignored.
-            mise_line("late"),
+    fn mise_lines_show_the_start_and_end_of_the_install_and_its_warnings_only() {
+        let installed = "Installing mise tools...\nInstalled mise tools\n";
+        let cases = [
+            (
+                vec![
+                    mise_line(""),
+                    mise_line("mise node@22.11.0 install"),
+                    mise_completed(),
+                    // Messages after the last one are ignored.
+                    mise_line("late"),
+                ],
+                installed,
+            ),
+            (
+                vec![
+                    mise_line(""),
+                    mise_warning("couldn't apply the dotfiles: boom"),
+                    mise_completed(),
+                ],
+                "Installing mise tools...\nwarning: couldn't apply the dotfiles: boom\n\
+                 Installed mise tools\n",
+            ),
+            // The sandbox starts before the install completed.
+            (vec![mise_line("")], installed),
+            (vec![], ""),
         ];
 
-        assert_eq!(
-            mise_lines(&messages, true),
-            "Installing mise tools...\nInstalled mise tools\n"
-        );
-    }
-
-    #[test]
-    fn mise_lines_end_the_install_when_the_sandbox_starts_before_it_completed() {
-        assert_eq!(
-            mise_lines(&[mise_line("")], true),
-            "Installing mise tools...\nInstalled mise tools\n"
-        );
-    }
-
-    #[test]
-    fn mise_lines_show_nothing_without_progress() {
-        assert_eq!(mise_lines(&[], true), "");
+        for (messages, expected) in cases {
+            assert_eq!(mise_lines(&messages, true), expected, "{messages:?}");
+        }
     }
 
     #[test]

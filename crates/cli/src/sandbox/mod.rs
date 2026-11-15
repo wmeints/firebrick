@@ -127,22 +127,17 @@ mod tests {
     }
 
     #[test]
-    fn failed_precondition_on_remove_explains_force() {
-        let error = describe_remove_status(
+    fn remove_status_explains_force_and_names_a_missing_sandbox() {
+        let running = describe_remove_status(
             "dev",
             tonic::Status::failed_precondition("sandbox dev is running"),
         );
+        let missing = describe_remove_status("dev", tonic::Status::not_found("couldn't find it"));
 
         assert_eq!(
-            error.to_string(),
+            running.to_string(),
             "sandbox dev is running. Stop it with `fbk stop`, or remove it with `fbk rm --force`."
         );
-    }
-
-    #[test]
-    fn not_found_on_remove_names_missing_sandbox() {
-        let error = describe_remove_status("dev", tonic::Status::not_found("couldn't find it"));
-
-        assert_eq!(error.to_string(), "sandbox dev doesn't exist");
+        assert_eq!(missing.to_string(), "sandbox dev doesn't exist");
     }
 }

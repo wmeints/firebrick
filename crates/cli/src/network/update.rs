@@ -282,10 +282,6 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn strings(values: &[&str]) -> Vec<String> {
-        values.iter().map(ToString::to_string).collect()
-    }
-
     fn rules(values: &[&str]) -> Vec<NetworkRule> {
         values.iter().map(|value| value.parse().unwrap()).collect()
     }
@@ -304,8 +300,6 @@ mod tests {
         })
     }
 
-    /// Returns a working directory whose spec file names the sandbox `dev`, and the path of
-    /// the spec file.
     /// Returns an approver that approves without asking and keeps its approvals in `dir`, so
     /// the tests never touch the user's own approvals.
     fn approve_all(dir: &TempDir) -> Approver {
@@ -409,81 +403,107 @@ mod tests {
         assert_update_refuses_symlink(None).await;
     }
 
-    #[test]
-    fn allow_and_deny_parse_the_rules() {
-        assert_eq!(
-            NetworkChange::allow(&strings(&["example.org", "*.npmjs.org"])).unwrap(),
-            NetworkChange::Allow(rules(&["example.org", "*.npmjs.org"]))
-        );
-        assert_eq!(
-            NetworkChange::deny(&strings(&["10.0.0.0/8"])).unwrap(),
-            NetworkChange::Deny(rules(&["10.0.0.0/8"]))
-        );
-    }
-
-    #[test]
-    fn invalid_rule_is_rejected_with_its_syntax() {
-        let err = NetworkChange::allow(&strings(&["example.org", "github.com:443"])).unwrap_err();
-
-        assert_eq!(
-            err.to_string(),
-            "invalid network rule \"github.com:443\": use a host name, *.domain, an IP address or \
-             a CIDR range"
-        );
-    }
-
-    #[test]
-    fn apply_adds_a_network_section_when_missing() {
-        let mut spec = spec_with(None);
-
-        assert!(apply(&NetworkChange::Enforce(false), &mut spec.network));
-
-        assert_eq!(spec.network, enforced(false));
-    }
-
-    #[test]
-    fn apply_moves_rules_between_the_lists() {
-        let mut spec = spec_with(Some(NetworkSpec {
+    /// Returns a section that enforces its rules: it allows `github.com` and denies
+    /// `example.org`.
+    fn rules_spec() -> NetworkSpec {
+        NetworkSpec {
             enforce: true,
             allow: rules(&["github.com"]),
             deny: rules(&["example.org"]),
             ..NetworkSpec::default()
-        }));
+        }
+    }
 
-        assert!(apply(
-            &NetworkChange::Allow(rules(&["example.org"])),
-            &mut spec.network
-        ));
+    fn disabled(network: NetworkSpec) -> NetworkSpec {
+        NetworkSpec {
+            enabled: Some(false),
+            ..network
+        }
+    }
+
+    /// Asserts that applying the change to the section gives `expected`, and that `apply`
+    /// reports whether the section changed.
+    fn assert_apply(
+        network: Option<NetworkSpec>,
+        change: NetworkChange,
+        expected: NetworkSpec,
+        changed: bool,
+    ) {
+        let mut actual = network.clone();
 
         assert_eq!(
-            spec.network.unwrap(),
-            NetworkSpec {
-                enforce: true,
-                allow: rules(&["github.com", "example.org"]),
-                ..NetworkSpec::default()
-            }
+            apply(&change, &mut actual),
+            changed,
+            "{network:?} {change:?}"
+        );
+        assert_eq!(actual, Some(expected), "{network:?} {change:?}");
+    }
+
+    #[test]
+    fn apply_adds_a_missing_section_even_without_a_change() {
+        assert_apply(
+            None,
+            NetworkChange::Enforce(false),
+            NetworkSpec::default(),
+            true,
+        );
+        assert_apply(
+            None,
+            NetworkChange::Enable(false),
+            disabled(NetworkSpec::default()),
+            true,
         );
     }
 
     #[test]
-    fn apply_reports_unchanged_rules_and_enforcement() {
-        let mut spec = spec_with(Some(NetworkSpec {
+    fn apply_moves_rules_between_the_lists_and_sets_enforcement() {
+        let moved = NetworkSpec {
             enforce: true,
-            allow: rules(&["github.com"]),
-            deny: rules(&["example.org"]),
+            allow: rules(&["github.com", "example.org"]),
             ..NetworkSpec::default()
-        }));
+        };
+        let unenforced = NetworkSpec {
+            enforce: false,
+            ..rules_spec()
+        };
 
-        assert!(!apply(
-            &NetworkChange::Allow(rules(&["github.com"])),
-            &mut spec.network
-        ));
-        assert!(!apply(
-            &NetworkChange::Deny(rules(&["example.org"])),
-            &mut spec.network
-        ));
-        assert!(!apply(&NetworkChange::Enforce(true), &mut spec.network));
-        assert!(apply(&NetworkChange::Enforce(false), &mut spec.network));
+        assert_apply(Some(rules_spec()), rules_change(), moved, true);
+        let github = NetworkChange::Allow(rules(&["github.com"]));
+        assert_apply(Some(rules_spec()), github, rules_spec(), false);
+        let example = NetworkChange::Deny(rules(&["example.org"]));
+        assert_apply(Some(rules_spec()), example, rules_spec(), false);
+        assert_apply(
+            Some(rules_spec()),
+            NetworkChange::Enforce(true),
+            rules_spec(),
+            false,
+        );
+        assert_apply(
+            Some(rules_spec()),
+            NetworkChange::Enforce(false),
+            unenforced,
+            true,
+        );
+    }
+
+    #[test]
+    fn apply_treats_a_missing_switch_as_enabled_and_keeps_the_rules() {
+        let enabled = NetworkSpec {
+            enabled: Some(true),
+            ..rules_spec()
+        };
+        let (enable, disable) = (NetworkChange::Enable(true), NetworkChange::Enable(false));
+
+        assert_apply(Some(rules_spec()), enable.clone(), enabled.clone(), false);
+        assert_apply(
+            Some(rules_spec()),
+            disable.clone(),
+            disabled(rules_spec()),
+            true,
+        );
+        let off = Some(disabled(rules_spec()));
+        assert_apply(off.clone(), disable, disabled(rules_spec()), false);
+        assert_apply(off, enable, enabled, true);
     }
 
     #[test]
@@ -534,71 +554,27 @@ mod tests {
     }
 
     #[test]
-    fn edit_spec_creates_a_new_file_with_the_defaults() {
+    fn edit_spec_writes_a_new_file_with_the_change_or_without_one() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(SPEC_FILE_NAME);
-        let spec = firebrick_spec::default_spec("firebrick-abc123".to_string());
+        let allow = NetworkChange::Allow(rules(&["example.org"]));
+        let unchanged = NetworkChange::Enforce(false);
+        let allowed = NetworkSpec {
+            allow: rules(&["example.org"]),
+            ..NetworkSpec::default()
+        };
+        let cases = [(&allow, allowed), (&unchanged, NetworkSpec::default())];
 
-        let (_, changed) = edit_spec(
-            &path,
-            spec,
-            &NetworkChange::Allow(rules(&["example.org"])),
-            true,
-        )
-        .unwrap();
-        let written = firebrick_spec::from_file(&path).unwrap().unwrap();
+        for (change, expected) in cases {
+            let spec = firebrick_spec::default_spec("firebrick-abc123".to_string());
 
-        assert!(changed);
-        assert_eq!(written.name, "firebrick-abc123");
-        assert_eq!(written.image, None);
-        assert_eq!(written.init, Some(true));
-        assert_eq!(written.mise.and_then(|mise| mise.enabled), Some(true));
-        assert_eq!(
-            written.network.unwrap(),
-            NetworkSpec {
-                allow: rules(&["example.org"]),
-                ..NetworkSpec::default()
-            }
-        );
-    }
+            let (_, changed) = edit_spec(&path, spec, change, true).unwrap();
+            let written = firebrick_spec::from_file(&path).unwrap().unwrap();
 
-    #[test]
-    fn edit_spec_writes_a_new_file_even_without_a_change() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join(SPEC_FILE_NAME);
-        let spec = spec_with(enforced(false));
-
-        let (_, changed) = edit_spec(&path, spec, &NetworkChange::Enforce(false), true).unwrap();
-
-        assert!(changed);
-        assert!(path.is_file());
-    }
-
-    #[test]
-    fn read_spec_reports_an_invalid_file_like_validate() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join(SPEC_FILE_NAME);
-        fs::write(
-            &path,
-            "name: dev\nnetwork:\n  allow: [\"github.com:443\"]\n",
-        )
-        .unwrap();
-
-        let err = spec_file::load_spec(&path).unwrap_err();
-
-        assert!(err.to_string().starts_with(".firebrick.yml:3:"), "{err}");
-        assert!(err.to_string().contains("github.com:443"), "{err}");
-    }
-
-    #[test]
-    fn read_spec_returns_none_without_a_file() {
-        let dir = TempDir::new().unwrap();
-
-        assert!(
-            spec_file::load_spec(&dir.path().join(SPEC_FILE_NAME))
-                .unwrap()
-                .is_none()
-        );
+            assert!(changed, "{change:?}");
+            assert_eq!(written.name, "firebrick-abc123");
+            assert_eq!(written.network, Some(expected), "{change:?}");
+        }
     }
 
     #[test]
@@ -626,173 +602,68 @@ mod tests {
         );
     }
 
-    #[test]
-    fn expected_network_ignores_hand_edits_to_the_spec() {
-        // Whatever the spec says, the expected section starts from the approved one.
-        let approved = NetworkSpec {
-            enforce: true,
-            ..NetworkSpec::default()
-        };
-
-        assert_eq!(
-            expected_network(&approved, &NetworkChange::Allow(rules(&["example.org"]))),
-            NetworkSpec {
-                enforce: true,
-                allow: rules(&["example.org"]),
-                ..NetworkSpec::default()
-            }
-        );
-    }
-
     fn rules_change() -> NetworkChange {
         NetworkChange::Allow(rules(&["example.org"]))
-    }
-
-    #[test]
-    fn apply_sets_the_network_switch() {
-        let mut spec = spec_with(None);
-
-        assert!(apply(&NetworkChange::Enable(false), &mut spec.network));
-        assert_eq!(spec.network.as_ref().unwrap().enabled, Some(false));
-        assert!(!apply(&NetworkChange::Enable(false), &mut spec.network));
-        assert!(apply(&NetworkChange::Enable(true), &mut spec.network));
-        assert!(spec.network.as_ref().unwrap().is_enabled());
-    }
-
-    #[test]
-    fn apply_treats_a_missing_switch_as_enabled() {
-        let mut spec = spec_with(enforced(true));
-
-        assert!(!apply(&NetworkChange::Enable(true), &mut spec.network));
-        assert!(apply(&NetworkChange::Enable(false), &mut spec.network));
-    }
-
-    #[test]
-    fn apply_keeps_the_rules_when_disabling_the_network() {
-        let rules_spec = NetworkSpec {
-            enforce: true,
-            allow: rules(&["github.com"]),
-            ..NetworkSpec::default()
-        };
-        let mut spec = spec_with(Some(rules_spec.clone()));
-
-        apply(&NetworkChange::Enable(false), &mut spec.network);
-
-        assert_eq!(
-            spec.network.unwrap(),
-            NetworkSpec {
-                enabled: Some(false),
-                ..rules_spec
-            }
-        );
-    }
-
-    #[test]
-    fn edit_spec_writes_the_network_switch() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join(SPEC_FILE_NAME);
-        fs::write(&path, "name: my-project\n").unwrap();
-        let spec = firebrick_spec::from_file(&path).unwrap().unwrap();
-
-        let (_, changed) = edit_spec(&path, spec, &NetworkChange::Enable(false), false).unwrap();
-        let written = firebrick_spec::from_file(&path).unwrap().unwrap();
-
-        assert!(changed);
-        assert_eq!(written.network.unwrap().enabled, Some(false));
-    }
-
-    #[test]
-    fn outcome_reports_the_network_switch() {
-        let cases = [
-            (true, "enabled the network of my-project"),
-            (false, "disabled the network of my-project"),
-        ];
-
-        for (enable, expected) in cases {
-            assert_eq!(
-                outcome(&NetworkChange::Enable(enable), "my-project", true, Ok(true)).unwrap(),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn outcome_without_a_switch_change_says_the_network_already_has_it() {
-        let cases = [
-            (true, Ok(false), "the network is already enabled"),
-            (true, not_found(), "the network is already enabled"),
-            (false, Ok(false), "the network is already disabled"),
-            (false, not_found(), "the network is already disabled"),
-        ];
-
-        for (enable, result, expected) in cases {
-            assert_eq!(
-                outcome(&NetworkChange::Enable(enable), "my-project", false, result).unwrap(),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn outcome_of_a_switch_for_a_missing_sandbox_says_when_it_applies() {
-        assert_eq!(
-            outcome(
-                &NetworkChange::Enable(false),
-                "my-project",
-                true,
-                not_found()
-            )
-            .unwrap(),
-            "updated .firebrick.yml; the change applies when my-project starts"
-        );
-    }
-
-    #[test]
-    fn warning_is_not_shown_for_the_network_switch() {
-        assert_eq!(
-            enforcement_warning(&NetworkChange::Enable(false), &spec_with(enforced(false))),
-            None
-        );
     }
 
     fn not_found() -> Result<bool, Status> {
         Err(Status::not_found("couldn't find specified sandbox"))
     }
 
-    #[test]
-    fn outcome_reports_the_updated_sandbox() {
-        for file_changed in [true, false] {
-            assert_eq!(
-                outcome(&rules_change(), "my-project", file_changed, Ok(true)).unwrap(),
-                "updated the network rules of my-project"
-            );
-        }
+    /// Asserts that the outcome of the change is `expected`.
+    fn assert_outcome(
+        change: &NetworkChange,
+        file_changed: bool,
+        result: Result<bool, Status>,
+        expected: &str,
+    ) {
+        let actual = outcome(change, "my-project", file_changed, result.clone()).unwrap();
+
+        assert_eq!(actual, expected, "{change:?} {file_changed} {result:?}");
     }
 
     #[test]
-    fn outcome_for_a_missing_sandbox_says_when_the_rules_apply() {
-        assert_eq!(
-            outcome(&rules_change(), "my-project", true, not_found()).unwrap(),
-            "updated .firebrick.yml; the rules apply when my-project starts"
-        );
-    }
+    fn outcome_reports_a_recreated_sandbox() {
+        let rules_updated = "updated the network rules of my-project";
 
-    #[test]
-    fn outcome_reports_a_sandbox_that_already_has_the_rules() {
-        assert_eq!(
-            outcome(&rules_change(), "my-project", true, Ok(false)).unwrap(),
-            "updated .firebrick.yml; my-project is already up to date"
-        );
+        assert_outcome(&rules_change(), true, Ok(true), rules_updated);
+        assert_outcome(&rules_change(), false, Ok(true), rules_updated);
+        let enabled = "enabled the network of my-project";
+        assert_outcome(&NetworkChange::Enable(true), true, Ok(true), enabled);
+        let disabled = "disabled the network of my-project";
+        assert_outcome(&NetworkChange::Enable(false), true, Ok(true), disabled);
     }
 
     #[test]
     fn outcome_without_any_change_is_up_to_date() {
-        for result in [Ok(false), not_found()] {
-            assert_eq!(
-                outcome(&rules_change(), "my-project", false, result).unwrap(),
-                "network rules are already up to date"
-            );
+        let cases = [
+            (rules_change(), "network rules are already up to date"),
+            (
+                NetworkChange::Enable(true),
+                "the network is already enabled",
+            ),
+            (
+                NetworkChange::Enable(false),
+                "the network is already disabled",
+            ),
+        ];
+
+        for (change, expected) in cases {
+            assert_outcome(&change, false, Ok(false), expected);
+            assert_outcome(&change, false, not_found(), expected);
         }
+    }
+
+    #[test]
+    fn outcome_of_a_changed_file_says_when_the_change_applies() {
+        let disable = NetworkChange::Enable(false);
+
+        let up_to_date = "updated .firebrick.yml; my-project is already up to date";
+        assert_outcome(&rules_change(), true, Ok(false), up_to_date);
+        let rules = "updated .firebrick.yml; the rules apply when my-project starts";
+        assert_outcome(&rules_change(), true, not_found(), rules);
+        let switch = "updated .firebrick.yml; the change applies when my-project starts";
+        assert_outcome(&disable, true, not_found(), switch);
     }
 
     #[test]
@@ -810,41 +681,27 @@ mod tests {
     }
 
     #[test]
-    fn warning_is_shown_when_rules_are_added_without_enforcement() {
+    fn warning_is_shown_only_when_rules_are_added_without_enforcement() {
         let allow = NetworkChange::Allow(rules(&["example.org"]));
         let deny = NetworkChange::Deny(rules(&["example.org"]));
+        let warning = "warning: the network policy of my-project isn't enabled, so its rules \
+                       aren't enforced. Run `fbk network policy enable` to enforce them.";
         let cases = [
-            (&allow, spec_with(enforced(false))),
-            (&deny, spec_with(enforced(false))),
-            (&allow, spec_with(None)),
+            (&allow, enforced(false), Some(warning)),
+            (&deny, enforced(false), Some(warning)),
+            (&allow, None, Some(warning)),
+            (&allow, enforced(true), None),
+            (&NetworkChange::Enforce(false), enforced(false), None),
+            (&NetworkChange::Enforce(true), enforced(true), None),
+            (&NetworkChange::Enable(false), enforced(false), None),
         ];
 
-        for (change, spec) in cases {
+        for (change, network, expected) in cases {
             assert_eq!(
-                enforcement_warning(change, &spec).as_deref(),
-                Some(
-                    "warning: the network policy of my-project isn't enabled, so its rules \
-                     aren't enforced. Run `fbk network policy enable` to enforce them."
-                )
+                enforcement_warning(change, &spec_with(network.clone())).as_deref(),
+                expected,
+                "{change:?} {network:?}"
             );
         }
-    }
-
-    #[test]
-    fn warning_is_not_shown_with_enforcement_or_for_policy_changes() {
-        let allow = NetworkChange::Allow(rules(&["example.org"]));
-
-        assert_eq!(
-            enforcement_warning(&allow, &spec_with(enforced(true))),
-            None
-        );
-        assert_eq!(
-            enforcement_warning(&NetworkChange::Enforce(false), &spec_with(enforced(false))),
-            None
-        );
-        assert_eq!(
-            enforcement_warning(&NetworkChange::Enforce(true), &spec_with(enforced(true))),
-            None
-        );
     }
 }

@@ -655,18 +655,4 @@ mod tests {
             )
         );
     }
-
-    // `HostTools` runs real processes, so `tests/host_tools.rs` tests it in a process of its
-    // own: spawning processes here races with the tests in `forward`, which expect the port of
-    // a closed listener to be free at once, while a forked child may still hold it.
-    #[tokio::test]
-    async fn read_at_most_stops_at_the_limit() {
-        let output = [0; 100];
-
-        let read = read_at_most(Some(&output[..]), 11).await.unwrap();
-        let none = read_at_most(None::<&[u8]>, 11).await.unwrap();
-
-        assert_eq!(read.len(), 11);
-        assert!(none.is_empty());
-    }
 }

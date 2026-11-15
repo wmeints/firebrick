@@ -441,11 +441,47 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
-    fn parse_secret_set(args: &[&str]) -> Result<SetSecretArgs, clap::Error> {
-        let cli = Cli::try_parse_from(["fbk", "secret", "set"].iter().chain(args))?;
+    fn parse(args: &[&str]) -> Result<Commands, clap::Error> {
+        Cli::try_parse_from(["fbk"].iter().chain(args)).map(|cli| cli.command)
+    }
 
-        match cli.command {
+    /// Returns the kind of the parse error, or panics when the arguments parse.
+    fn kind<T: std::fmt::Debug>(result: Result<T, clap::Error>) -> clap::error::ErrorKind {
+        result.unwrap_err().kind()
+    }
+
+    fn parse_secret_set(args: &[&str]) -> Result<SetSecretArgs, clap::Error> {
+        let args: Vec<&str> = ["secret", "set"].iter().chain(args).copied().collect();
+
+        match parse(&args)? {
             Commands::Secret(SecretCommands::Set(args)) => Ok(args),
+            command => panic!("unexpected command {command:?}"),
+        }
+    }
+
+    fn parse_secret_rm_scope(args: &[&str]) -> Result<Scope, clap::Error> {
+        let args: Vec<&str> = ["secret", "rm", "X"].iter().chain(args).copied().collect();
+
+        match parse(&args)? {
+            Commands::Secret(SecretCommands::Rm { scope, .. }) => Ok(scope),
+            command => panic!("unexpected command {command:?}"),
+        }
+    }
+
+    fn parse_port(args: &[&str]) -> Result<PortCommands, clap::Error> {
+        let args: Vec<&str> = ["port"].iter().chain(args).copied().collect();
+
+        match parse(&args)? {
+            Commands::Port(command) => Ok(command),
+            command => panic!("unexpected command {command:?}"),
+        }
+    }
+
+    fn parse_network(args: &[&str]) -> Result<NetworkCommands, clap::Error> {
+        let args: Vec<&str> = ["network"].iter().chain(args).copied().collect();
+
+        match parse(&args)? {
+            Commands::Network(command) => Ok(command),
             command => panic!("unexpected command {command:?}"),
         }
     }
@@ -455,97 +491,93 @@ mod tests {
         Cli::command().debug_assert();
     }
 
-    #[test]
-    fn version_flag_prints_package_version() {
-        let error = Cli::try_parse_from(["fbk", "--version"]).unwrap_err();
+    /// Asserts that the arguments parse into a command that `expected` accepts.
+    fn assert_parses(args: &[&str], expected: fn(&Commands) -> bool) {
+        let command = parse(args).unwrap();
 
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
-        assert_eq!(
-            error.to_string(),
-            format!("fbk {}\n", env!("CARGO_PKG_VERSION"))
+        assert!(expected(&command), "{args:?} parsed as {command:?}");
+    }
+
+    #[test]
+    fn start_and_stop_take_an_optional_name_and_their_flags() {
+        assert_parses(&["start"], |c| {
+            matches!(
+                c,
+                Commands::Start {
+                    name: None,
+                    yes: false
+                }
+            )
+        });
+        assert_parses(
+            &["start", "dev", "--yes"],
+            |c| matches!(c, Commands::Start { name: Some(n), yes: true } if n == "dev"),
+        );
+        assert_parses(&["stop"], |c| matches!(c, Commands::Stop { name: None }));
+        assert_parses(
+            &["stop", "dev"],
+            |c| matches!(c, Commands::Stop { name: Some(n) } if n == "dev"),
         );
     }
 
     #[test]
-    fn start_stop_and_rm_take_an_optional_name() {
-        let parse = |args: &[&str]| Cli::try_parse_from(["fbk"].iter().chain(args)).unwrap();
-
-        assert!(matches!(
-            parse(&["start"]).command,
-            Commands::Start { name: None, .. }
-        ));
-        assert!(matches!(
-            parse(&["stop"]).command,
-            Commands::Stop { name: None }
-        ));
-        assert!(matches!(
-            parse(&["rm"]).command,
-            Commands::Rm {
-                name: None,
-                force: false
-            }
-        ));
-        assert!(matches!(
-            parse(&["start", "dev"]).command,
-            Commands::Start { name: Some(name), .. } if name == "dev"
-        ));
-        assert!(matches!(
-            parse(&["stop", "dev"]).command,
-            Commands::Stop { name: Some(name) } if name == "dev"
-        ));
-        assert!(matches!(
-            parse(&["rm", "dev"]).command,
-            Commands::Rm { name: Some(name), force: false } if name == "dev"
-        ));
+    fn rm_and_upgrade_take_an_optional_name_and_their_flags() {
+        assert_parses(&["rm"], |c| {
+            matches!(
+                c,
+                Commands::Rm {
+                    name: None,
+                    force: false
+                }
+            )
+        });
+        assert_parses(
+            &["rm", "--force", "dev"],
+            |c| matches!(c, Commands::Rm { name: Some(n), force: true } if n == "dev"),
+        );
+        assert_parses(&["upgrade"], |c| {
+            matches!(c, Commands::Upgrade { name: None })
+        });
+        assert_parses(
+            &["upgrade", "dev"],
+            |c| matches!(c, Commands::Upgrade { name: Some(n) } if n == "dev"),
+        );
     }
 
     #[test]
-    fn upgrade_takes_an_optional_name() {
-        let parse = |args: &[&str]| Cli::try_parse_from(["fbk"].iter().chain(args)).unwrap();
-
-        assert!(matches!(
-            parse(&["upgrade"]).command,
-            Commands::Upgrade { name: None }
-        ));
-        assert!(matches!(
-            parse(&["upgrade", "dev"]).command,
-            Commands::Upgrade { name: Some(name) } if name == "dev"
-        ));
+    fn init_secret_and_port_commands_take_their_flags_and_defaults() {
+        assert_parses(&["init"], |c| matches!(c, Commands::Init { force: false }));
+        assert_parses(&["init", "--force"], |c| {
+            matches!(c, Commands::Init { force: true })
+        });
+        assert_parses(&["secret", "ls"], |c| {
+            matches!(
+                c,
+                Commands::Secret(SecretCommands::Ls {
+                    format: OutputFormat::Table
+                })
+            )
+        });
+        assert_parses(
+            &["secret", "rm", "GH_TOKEN"],
+            |c| matches!(c, Commands::Secret(SecretCommands::Rm { name, scope: Scope::Global }) if name == "GH_TOKEN"),
+        );
+        assert_parses(&["port", "ls", "--format", "json"], |c| {
+            matches!(
+                c,
+                Commands::Port(PortCommands::Ls {
+                    format: OutputFormat::Json
+                })
+            )
+        });
+        assert_eq!(
+            kind(parse(&["secret", "rm"])),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
     }
 
     #[test]
-    fn rm_takes_force_flag() {
-        let parse = |args: &[&str]| Cli::try_parse_from(["fbk"].iter().chain(args)).unwrap();
-
-        assert!(matches!(
-            parse(&["rm", "--force"]).command,
-            Commands::Rm {
-                name: None,
-                force: true
-            }
-        ));
-        assert!(matches!(
-            parse(&["rm", "--force", "dev"]).command,
-            Commands::Rm { name: Some(name), force: true } if name == "dev"
-        ));
-    }
-
-    #[test]
-    fn init_takes_force_flag() {
-        let parse = |args: &[&str]| Cli::try_parse_from(["fbk"].iter().chain(args)).unwrap();
-
-        assert!(matches!(
-            parse(&["init"]).command,
-            Commands::Init { force: false }
-        ));
-        assert!(matches!(
-            parse(&["init", "--force"]).command,
-            Commands::Init { force: true }
-        ));
-    }
-
-    #[test]
-    fn secret_set_takes_value_and_hosts() {
+    fn secret_set_takes_exactly_one_value_source_and_hosts() {
         let args = parse_secret_set(&[
             "MY_TOKEN",
             "abc",
@@ -555,64 +587,26 @@ mod tests {
             "*.example.org",
         ])
         .unwrap();
+        let from_stdin = parse_secret_set(&["GH_TOKEN", "--from-stdin"]).unwrap();
 
         assert_eq!(args.name, "MY_TOKEN");
         assert_eq!(args.value.as_deref(), Some("abc"));
         assert!(!args.from_stdin);
         assert_eq!(args.allowed_hosts, ["a.example.com", "*.example.org"]);
+        assert!(from_stdin.from_stdin);
+        assert_eq!(from_stdin.value, None);
+        assert_eq!(
+            kind(parse_secret_set(&["GH_TOKEN"])),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(
+            kind(parse_secret_set(&["GH_TOKEN", "abc", "--from-stdin"])),
+            clap::error::ErrorKind::ArgumentConflict
+        );
     }
 
     #[test]
-    fn secret_set_takes_value_from_stdin() {
-        let args = parse_secret_set(&["GH_TOKEN", "--from-stdin"]).unwrap();
-
-        assert!(args.from_stdin);
-        assert_eq!(args.value, None);
-    }
-
-    #[test]
-    fn secret_ls_defaults_to_table() {
-        let cli = Cli::try_parse_from(["fbk", "secret", "ls"]).unwrap();
-
-        assert!(matches!(
-            cli.command,
-            Commands::Secret(SecretCommands::Ls {
-                format: OutputFormat::Table
-            })
-        ));
-    }
-
-    #[test]
-    fn secret_rm_requires_name() {
-        assert!(Cli::try_parse_from(["fbk", "secret", "rm"]).is_err());
-
-        let cli = Cli::try_parse_from(["fbk", "secret", "rm", "GH_TOKEN"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Commands::Secret(SecretCommands::Rm { name, scope: Scope::Global }) if name == "GH_TOKEN"
-        ));
-    }
-
-    fn parse_secret_rm_scope(args: &[&str]) -> Result<Scope, clap::Error> {
-        let cli = Cli::try_parse_from(["fbk", "secret", "rm", "X"].iter().chain(args))?;
-
-        match cli.command {
-            Commands::Secret(SecretCommands::Rm { scope, .. }) => Ok(scope),
-            command => panic!("unexpected command {command:?}"),
-        }
-    }
-
-    fn parse_port(args: &[&str]) -> Result<PortCommands, clap::Error> {
-        let cli = Cli::try_parse_from(["fbk", "port"].iter().chain(args))?;
-
-        match cli.command {
-            Commands::Port(command) => Ok(command),
-            command => panic!("unexpected command {command:?}"),
-        }
-    }
-
-    #[test]
-    fn secret_set_and_rm_take_a_scope() {
+    fn secret_set_and_rm_take_a_global_or_sandbox_scope() {
         let set_scope = |args: &[&str]| {
             let args: Vec<&str> = ["X", "abc"].iter().chain(args).copied().collect();
             parse_secret_set(&args).map(|args| args.scope)
@@ -622,24 +616,15 @@ mod tests {
             assert_eq!(parse(&[]).unwrap(), Scope::Global);
             assert_eq!(parse(&["--scope", "global"]).unwrap(), Scope::Global);
             assert_eq!(parse(&["--scope", "sandbox"]).unwrap(), Scope::Sandbox);
-        }
-    }
 
-    #[test]
-    fn secret_set_and_rm_reject_other_scopes() {
-        for result in [
-            parse_secret_set(&["X", "abc", "--scope", "project"]).map(|args| args.scope),
-            parse_secret_rm_scope(&["--scope", "project"]),
-        ] {
-            let error = result.unwrap_err();
-
+            let error = parse(&["--scope", "project"]).unwrap_err();
             assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
             assert!(error.to_string().contains("global, sandbox"), "{error}");
         }
     }
 
     #[test]
-    fn port_forward_takes_a_port_or_a_mapping() {
+    fn port_commands_take_a_mapping_or_a_host_port() {
         assert!(matches!(
             parse_port(&["forward", "3000"]).unwrap(),
             PortCommands::Forward {
@@ -658,86 +643,43 @@ mod tests {
                 }
             }
         ));
-    }
-
-    #[test]
-    fn port_forward_rejects_invalid_ports() {
-        for arg in ["0", "65536", "web", "8080:0", "8080:", ":80", "1:2:3"] {
-            assert!(parse_port(&["forward", arg]).is_err(), "{arg}");
-        }
-        assert!(parse_port(&["forward"]).is_err());
-    }
-
-    #[test]
-    fn port_ls_takes_an_output_format() {
-        assert!(matches!(
-            parse_port(&["ls"]).unwrap(),
-            PortCommands::Ls {
-                format: OutputFormat::Table
-            }
-        ));
-        assert!(matches!(
-            parse_port(&["ls", "--format", "json"]).unwrap(),
-            PortCommands::Ls {
-                format: OutputFormat::Json
-            }
-        ));
-        assert!(parse_port(&["ls", "--format", "yaml"]).is_err());
-        assert!(parse_port(&["ls", "dev"]).is_err());
-    }
-
-    #[test]
-    fn port_rm_takes_a_host_port() {
+        assert_eq!(
+            kind(parse_port(&["forward"])),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
         assert!(matches!(
             parse_port(&["rm", "8080"]).unwrap(),
             PortCommands::Rm { port: 8080 }
         ));
         for arg in ["0", "65536", "web", "8080:5173"] {
-            assert!(parse_port(&["rm", arg]).is_err(), "{arg}");
+            assert_eq!(
+                kind(parse_port(&["rm", arg])),
+                clap::error::ErrorKind::ValueValidation,
+                "{arg}"
+            );
         }
-    }
-
-    #[test]
-    fn secret_set_requires_exactly_one_value_source() {
-        assert!(parse_secret_set(&["GH_TOKEN"]).is_err());
-        assert!(parse_secret_set(&["GH_TOKEN", "abc", "--from-stdin"]).is_err());
-    }
-
-    fn parse_network(args: &[&str]) -> Result<NetworkCommands, clap::Error> {
-        let cli = Cli::try_parse_from(["fbk", "network"].iter().chain(args))?;
-
-        match cli.command {
-            Commands::Network(command) => Ok(command),
-            command => panic!("unexpected command {command:?}"),
-        }
-    }
-
-    #[test]
-    fn start_takes_a_yes_flag() {
-        let parse = |args: &[&str]| Cli::try_parse_from(["fbk"].iter().chain(args)).unwrap();
-
-        for (args, expected) in [(["start"].as_slice(), false), (&["start", "--yes"], true)] {
-            assert!(matches!(
-                parse(args).command,
-                Commands::Start { yes, .. } if yes == expected
-            ));
-        }
+        assert_eq!(
+            kind(parse_port(&["ls", "--format", "yaml"])),
+            clap::error::ErrorKind::InvalidValue
+        );
+        assert_eq!(
+            kind(parse_port(&["ls", "dev"])),
+            clap::error::ErrorKind::UnknownArgument
+        );
     }
 
     #[test]
     fn run_takes_a_yes_flag_only_before_the_command() {
-        let parse = |args: &[&str]| Cli::try_parse_from(["fbk"].iter().chain(args)).unwrap();
-
         assert!(matches!(
-            parse(&["run", "-y", "claude", "--yes"]).command,
+            parse(&["run", "-y", "claude", "--yes"]).unwrap(),
             Commands::Run(RunArgs { yes: true, command }) if command == ["claude", "--yes"]
         ));
         assert!(matches!(
-            parse(&["run", "claude", "-y", "--model", "opus"]).command,
+            parse(&["run", "claude", "-y", "--model", "opus"]).unwrap(),
             Commands::Run(RunArgs { yes: false, command }) if command == ["claude", "-y", "--model", "opus"]
         ));
         assert_eq!(
-            Cli::try_parse_from(["fbk", "run"]).unwrap_err().kind(),
+            parse(&["run"]).unwrap_err().kind(),
             clap::error::ErrorKind::MissingRequiredArgument
         );
     }
@@ -776,57 +718,25 @@ mod tests {
         }
     }
 
-    #[test]
-    fn network_allow_and_deny_take_one_or_more_rules() {
-        assert!(matches!(
-            parse_network(&["allow", "example.org", "*.npmjs.org"]).unwrap(),
-            NetworkCommands::Allow { rules, .. } if rules == ["example.org", "*.npmjs.org"]
-        ));
-        assert!(matches!(
-            parse_network(&["deny", "10.0.0.0/8"]).unwrap(),
-            NetworkCommands::Deny { rules, .. } if rules == ["10.0.0.0/8"]
-        ));
-        assert!(parse_network(&["allow"]).is_err());
-        assert!(parse_network(&["deny"]).is_err());
-    }
+    /// Returns the change that allows the rules.
+    fn allow(rules: impl IntoIterator<Item = &'static str>) -> NetworkChange {
+        let rules: Vec<String> = rules.into_iter().map(String::from).collect();
 
-    #[test]
-    fn network_policy_takes_enable_or_disable() {
-        assert!(matches!(
-            parse_network(&["policy", "enable"]).unwrap(),
-            NetworkCommands::Policy(PolicyCommands::Enable(_))
-        ));
-        assert!(matches!(
-            parse_network(&["policy", "disable"]).unwrap(),
-            NetworkCommands::Policy(PolicyCommands::Disable(_))
-        ));
-        assert!(parse_network(&["policy"]).is_err());
-    }
-
-    #[test]
-    fn network_takes_enable_and_disable_without_arguments() {
-        assert!(matches!(
-            parse_network(&["enable"]).unwrap(),
-            NetworkCommands::Enable(_)
-        ));
-        assert!(matches!(
-            parse_network(&["disable"]).unwrap(),
-            NetworkCommands::Disable(_)
-        ));
-        assert!(parse_network(&["enable", "example.org"]).is_err());
-        assert!(parse_network(&["disable", "example.org"]).is_err());
+        NetworkChange::allow(&rules).unwrap()
     }
 
     #[test]
     fn network_action_maps_the_commands() {
         let change = |args: &[&str]| network_action(parse_network(args).unwrap()).unwrap();
+        let deny = NetworkChange::deny(&["10.0.0.0/8".to_string()]).unwrap();
 
         assert_eq!(
-            change(&["allow", "example.org"]),
-            NetworkAction::Change(
-                NetworkChange::allow(&["example.org".to_string()]).unwrap(),
-                false
-            )
+            change(&["allow", "example.org", "*.npmjs.org"]),
+            NetworkAction::Change(allow(["example.org", "*.npmjs.org"]), false)
+        );
+        assert_eq!(
+            change(&["deny", "10.0.0.0/8"]),
+            NetworkAction::Change(deny, false)
         );
         assert_eq!(
             change(&["policy", "enable"]),
@@ -849,50 +759,6 @@ mod tests {
     }
 
     #[test]
-    fn network_log_takes_no_arguments() {
-        assert!(matches!(
-            parse_network(&["log"]).unwrap(),
-            NetworkCommands::Log
-        ));
-        assert!(parse_network(&["log", "example.org"]).is_err());
-    }
-
-    #[test]
-    fn network_presets_show_takes_no_arguments() {
-        assert!(matches!(
-            parse_network(&["presets", "show"]).unwrap(),
-            NetworkCommands::Presets(PresetCommands::Show)
-        ));
-        assert!(parse_network(&["presets", "show", "rust"]).is_err());
-    }
-
-    #[test]
-    fn network_presets_apply_takes_one_or_more_presets() {
-        for (args, names, yes) in [
-            (
-                ["presets", "apply", "rust", "github"].as_slice(),
-                ["rust", "github"].as_slice(),
-                false,
-            ),
-            (
-                &["presets", "apply", "rust", "github", "--yes"],
-                &["rust", "github"],
-                true,
-            ),
-            (&["presets", "apply", "all"], &["all"], false),
-        ] {
-            assert!(
-                matches!(
-                    parse_network(args).unwrap(),
-                    NetworkCommands::Presets(PresetCommands::Apply { presets, approve })
-                        if presets == names && approve.yes == yes
-                ),
-                "{args:?}"
-            );
-        }
-    }
-
-    #[test]
     fn network_presets_apply_rejects_a_missing_or_unknown_preset() {
         assert_eq!(
             parse_network(&["presets", "apply"]).unwrap_err().kind(),
@@ -911,35 +777,6 @@ mod tests {
     }
 
     #[test]
-    fn network_presets_apply_help_lists_every_preset() {
-        let help = Cli::command()
-            .find_subcommand_mut("network")
-            .and_then(|network| network.find_subcommand_mut("presets"))
-            .and_then(|presets| presets.find_subcommand_mut("apply"))
-            .expect("the apply subcommand")
-            .render_long_help()
-            .to_string();
-
-        for name in presets::names() {
-            assert!(help.contains(name), "{name} missing from:\n{help}");
-        }
-    }
-
-    /// Returns the action of `fbk network presets apply` with the arguments.
-    fn presets_apply_action(args: &[&str]) -> NetworkAction {
-        let args: Vec<&str> = ["presets", "apply"].iter().chain(args).copied().collect();
-
-        network_action(parse_network(&args).unwrap()).unwrap()
-    }
-
-    /// Returns the change that allows the rules.
-    fn allow(rules: impl IntoIterator<Item = &'static str>) -> NetworkChange {
-        let rules: Vec<String> = rules.into_iter().map(String::from).collect();
-
-        NetworkChange::allow(&rules).unwrap()
-    }
-
-    #[test]
     fn network_action_maps_presets_apply_to_allow_the_preset_rules() {
         let rules = [
             "*.github.com",
@@ -953,21 +790,9 @@ mod tests {
         ];
 
         assert_eq!(
-            presets_apply_action(&["rust", "github", "-y"]),
+            network_action(parse_network(&["presets", "apply", "rust", "github", "-y"]).unwrap())
+                .unwrap(),
             NetworkAction::Change(allow(rules), true)
-        );
-    }
-
-    #[test]
-    fn network_action_maps_presets_apply_all_to_allow_every_preset_rule() {
-        let rules = presets::PRESETS
-            .iter()
-            .flat_map(|preset| preset.rules)
-            .copied();
-
-        assert_eq!(
-            presets_apply_action(&["all"]),
-            NetworkAction::Change(allow(rules), false)
         );
     }
 

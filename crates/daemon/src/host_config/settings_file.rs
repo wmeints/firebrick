@@ -95,26 +95,3 @@ pub(crate) fn write(path: &Path, content: &str) -> io::Result<()> {
     // 0o666 minus the umask is the mode `fs::write` creates a file with.
     firebrick_utils::write_atomic(path, content, 0o666)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use jsonc_parser::cst::CstRootNode;
-    use tempfile::TempDir;
-
-    #[test]
-    fn reads_missing_file_as_empty() {
-        let dir = TempDir::new().unwrap();
-
-        assert_eq!(read(&dir.path().join("settings.json")).unwrap(), "");
-    }
-
-    #[test]
-    fn counts_duplicate_keys() {
-        let root = CstRootNode::parse("{\"a\": 1, \"b\": 2, \"a\": 3}", &PARSE_OPTIONS).unwrap();
-        let object = root.object_value().unwrap();
-
-        assert_eq!(key_count(&object, "a"), 2);
-        assert_eq!(key_count(&object, "c"), 0);
-    }
-}

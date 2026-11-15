@@ -58,74 +58,43 @@ mod tests {
     }
 
     #[test]
-    fn label_uses_leaf_directory() {
-        assert_eq!(label("/home/user/project"), "project");
-    }
-
-    #[test]
-    fn label_is_lowercase_with_runs_replaced_by_one_dash() {
-        assert_eq!(label("/home/user/My.App"), "my-app");
-        assert_eq!(label("/home/user/My_Project.v2--"), "my-project-v2");
-    }
-
-    #[test]
-    fn label_drops_leading_and_trailing_dashes() {
-        assert_eq!(label("/home/user/my project_"), "my-project");
-        assert_eq!(label("/home/user/.config"), "config");
-    }
-
-    #[test]
-    fn empty_label_falls_back_to_sandbox() {
-        assert_eq!(label("/home/user/__"), "sandbox");
-        assert_eq!(label("/"), "sandbox");
-        assert_eq!(label(""), "sandbox");
-    }
-
-    #[test]
-    fn strip_control_keeps_plain_multi_line_text() {
-        let text = "error: no such version\n\tat mise.toml line 2\n";
-
-        assert_eq!(strip_control(text), text);
-    }
-
-    #[test]
-    fn strip_control_removes_c0_controls() {
-        assert_eq!(strip_control("a\rb\x00c\x08"), "abc");
-    }
-
-    #[test]
-    fn strip_control_removes_del() {
-        assert_eq!(strip_control("a\x7fb"), "ab");
-    }
-
-    #[test]
-    fn strip_control_removes_csi_sequences() {
-        assert_eq!(strip_control("\x1b[1;32mok\x1b[0m"), "ok");
-        assert_eq!(strip_control("a\x1b[?25lb"), "ab");
-    }
-
-    #[test]
-    fn strip_control_removes_osc_sequences() {
-        assert_eq!(strip_control("a\x1b]52;c;eA==\x07b"), "ab");
-        assert_eq!(strip_control("a\x1b]0;title\x1b\\b"), "ab");
-    }
-
-    #[test]
-    fn strip_control_removes_two_character_escapes() {
-        assert_eq!(strip_control("a\x1bcb\x1b7\x1b(Bc"), "abc");
-    }
-
-    #[test]
-    fn strip_control_removes_c1_sequences() {
-        assert_eq!(
-            strip_control("a\u{9b}31mb\u{9d}52;c;eA==\u{9c}c\u{85}d"),
-            "abcd"
-        );
-    }
-
-    #[test]
-    fn strip_control_drops_unterminated_sequences_up_to_the_end() {
+    fn label_is_the_leaf_in_lowercase_with_runs_of_other_characters_as_one_dash() {
         let cases = [
+            ("/home/user/project", "project"),
+            ("/home/user/My.App", "my-app"),
+            ("/home/user/My_Project.v2--", "my-project-v2"),
+            ("/home/user/my project_", "my-project"),
+            ("/home/user/.config", "config"),
+            ("/home/user/__", "sandbox"),
+            ("/", "sandbox"),
+            ("", "sandbox"),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(label(path), expected, "{path:?}");
+        }
+    }
+
+    #[test]
+    fn strip_control_removes_escape_sequences_and_controls_and_keeps_the_text() {
+        let cases = [
+            (
+                "error: no such version\n\tat mise.toml line 2\n",
+                "error: no such version\n\tat mise.toml line 2\n",
+            ),
+            // C0 controls and DEL.
+            ("a\rb\x00c\x08", "abc"),
+            ("a\x7fb", "ab"),
+            // CSI sequences.
+            ("\x1b[1;32mok\x1b[0m", "ok"),
+            ("a\x1b[?25lb", "ab"),
+            // OSC sequences, ended by BEL or ST.
+            ("a\x1b]52;c;eA==\x07b", "ab"),
+            ("a\x1b]0;title\x1b\\b", "ab"),
+            // Two-character escapes.
+            ("a\x1bcb\x1b7\x1b(Bc", "abc"),
+            // C1 forms of CSI, OSC and ST, and other C1 controls.
+            ("a\u{9b}31mb\u{9d}52;c;eA==\u{9c}c\u{85}d", "abcd"),
+            // Unterminated sequences are dropped up to the end.
             ("a\x1b]52;c;eA==", "a"),
             ("a\x1b]x\nb", "a"),
             ("a\x1b[31", "a"),

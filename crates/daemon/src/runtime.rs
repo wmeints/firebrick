@@ -112,25 +112,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn installs_embedded_runtime_when_absent() {
-        let home = tempfile::tempdir().unwrap();
-
-        let runtime = ensure(&config_in(&home)).await.unwrap();
-
-        assert_eq!(runtime.origin, RuntimeOrigin::Installed);
-        assert!(runtime.msb_path.starts_with(home.path()));
-        assert!(runtime.msb_path.is_file());
-        assert!(runtime.libkrunfw_path.is_file());
-    }
-
-    #[tokio::test]
-    async fn reuses_installed_runtime() {
+    async fn installs_embedded_runtime_when_absent_and_reuses_it() {
         let home = tempfile::tempdir().unwrap();
         let config = config_in(&home);
-        let installed = ensure(&config).await.unwrap();
 
+        let installed = ensure(&config).await.unwrap();
         let runtime = ensure(&config).await.unwrap();
 
+        assert_eq!(installed.origin, RuntimeOrigin::Installed);
+        assert!(installed.msb_path.starts_with(home.path()));
+        assert!(installed.libkrunfw_path.is_file());
         assert_eq!(runtime.origin, RuntimeOrigin::Home);
         assert_eq!(runtime.msb_path, installed.msb_path);
         assert_eq!(modified(&runtime.msb_path), modified(&installed.msb_path));

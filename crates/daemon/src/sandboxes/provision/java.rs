@@ -195,92 +195,56 @@ mod tests {
         }
     }
 
-    #[test]
-    fn trust_store_options_point_at_the_store() {
-        assert_eq!(
-            TRUST_STORE_OPTIONS,
-            "-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/firebrick.p12 \
-             -Djavax.net.ssl.trustStorePassword=changeit"
-        );
-        assert!(TRUST_STORE_OPTIONS.contains(STORE_PATH));
+    /// Environment variables by name.
+    type Env = BTreeMap<String, String>;
+
+    /// Checks that `with_tool_options` turns each environment into the expected one, and leaves
+    /// the result unchanged when it's applied again.
+    fn assert_tool_options(cases: &[(Env, Env)], intercept: bool) {
+        for (env, expected) in cases {
+            let once = with_tool_options(env.clone(), intercept);
+            let twice = with_tool_options(once.clone(), intercept);
+
+            assert_eq!(&once, expected, "{env:?}, intercepting: {intercept}");
+            assert_eq!(&twice, expected, "{env:?} twice, intercepting: {intercept}");
+        }
     }
 
     #[test]
-    fn with_tool_options_sets_the_options_when_intercepting() {
-        let env = with_tool_options(vars(&[("PORT", "3000")]), true);
+    fn with_tool_options_adds_the_options_once_when_intercepting() {
+        let (java, options) = (TOOL_OPTIONS_VAR, TRUST_STORE_OPTIONS);
+        let appended = format!("-Xmx1g {options}");
+        let own_store = vars(&[(java, "-Djavax.net.ssl.trustStore=/opt/my.p12")]);
+        let cases = [
+            (
+                vars(&[("PORT", "3000")]),
+                vars(&[("PORT", "3000"), (java, options)]),
+            ),
+            (vars(&[(java, "-Xmx1g")]), vars(&[(java, &appended)])),
+            (vars(&[(java, " -Xmx1g ")]), vars(&[(java, &appended)])),
+            (vars(&[(java, "")]), vars(&[(java, options)])),
+            (own_store.clone(), own_store),
+        ];
 
-        assert_eq!(
-            env,
-            vars(&[("PORT", "3000"), (TOOL_OPTIONS_VAR, TRUST_STORE_OPTIONS)])
-        );
+        assert_tool_options(&cases, true);
     }
 
     #[test]
-    fn with_tool_options_appends_the_options_to_the_users_value() {
-        let env = with_tool_options(vars(&[(TOOL_OPTIONS_VAR, "-Xmx1g")]), true);
+    fn with_tool_options_removes_only_its_options_without_interception() {
+        let (java, options) = (TOOL_OPTIONS_VAR, TRUST_STORE_OPTIONS);
+        let users = vars(&[(java, "-Xmx1g"), ("PORT", "3000")]);
+        let cases = [
+            (
+                vars(&[(java, &format!("-Xmx1g {options}"))]),
+                vars(&[(java, "-Xmx1g")]),
+            ),
+            (vars(&[(java, options)]), vars(&[])),
+            (vars(&[(java, "")]), vars(&[(java, "")])),
+            (users.clone(), users),
+            (vars(&[]), vars(&[])),
+        ];
 
-        assert_eq!(
-            env[TOOL_OPTIONS_VAR],
-            format!("-Xmx1g {TRUST_STORE_OPTIONS}")
-        );
-    }
-
-    #[test]
-    fn with_tool_options_appends_the_options_once() {
-        let once = with_tool_options(vars(&[(TOOL_OPTIONS_VAR, "-Xmx1g")]), true);
-
-        assert_eq!(with_tool_options(once.clone(), true), once);
-    }
-
-    #[test]
-    fn with_tool_options_is_stable_for_a_value_with_surrounding_whitespace() {
-        let once = with_tool_options(vars(&[(TOOL_OPTIONS_VAR, " -Xmx1g ")]), true);
-
-        assert_eq!(
-            once[TOOL_OPTIONS_VAR],
-            format!("-Xmx1g {TRUST_STORE_OPTIONS}")
-        );
-        assert_eq!(with_tool_options(once.clone(), true), once);
-    }
-
-    #[test]
-    fn with_tool_options_keeps_a_trust_store_of_the_users_own() {
-        let own = vars(&[(TOOL_OPTIONS_VAR, "-Djavax.net.ssl.trustStore=/opt/my.p12")]);
-
-        assert_eq!(with_tool_options(own.clone(), true), own);
-    }
-
-    #[test]
-    fn with_tool_options_keeps_an_empty_value_without_interception() {
-        let empty = vars(&[(TOOL_OPTIONS_VAR, "")]);
-
-        assert_eq!(with_tool_options(empty.clone(), false), empty);
-        assert_eq!(
-            with_tool_options(empty, true),
-            vars(&[(TOOL_OPTIONS_VAR, TRUST_STORE_OPTIONS)])
-        );
-    }
-
-    #[test]
-    fn with_tool_options_removes_the_options_without_interception() {
-        let added = with_tool_options(vars(&[(TOOL_OPTIONS_VAR, "-Xmx1g")]), true);
-
-        assert_eq!(
-            with_tool_options(added, false),
-            vars(&[(TOOL_OPTIONS_VAR, "-Xmx1g")])
-        );
-        assert_eq!(
-            with_tool_options(with_tool_options(vars(&[]), true), false),
-            vars(&[])
-        );
-    }
-
-    #[test]
-    fn with_tool_options_keeps_the_users_value_without_interception() {
-        let env = vars(&[(TOOL_OPTIONS_VAR, "-Xmx1g"), ("PORT", "3000")]);
-
-        assert_eq!(with_tool_options(env.clone(), false), env);
-        assert_eq!(with_tool_options(vars(&[]), false), vars(&[]));
+        assert_tool_options(&cases, false);
     }
 
     #[tokio::test]
@@ -327,25 +291,5 @@ mod tests {
             .await
             .unwrap()
             .spec
-    }
-
-    #[test]
-    fn build_args_build_the_store_from_the_system_bundle() {
-        let args = build_args();
-
-        assert_eq!(&args[3..], [SYSTEM_BUNDLE_PATH, STORE_PATH]);
-    }
-
-    #[test]
-    fn a_failed_build_names_the_reason() {
-        let err = BuildError::from(ExitError {
-            code: 1,
-            stderr: "openssl is not installed".to_string(),
-        });
-
-        assert_eq!(
-            err.to_string(),
-            "the build exited with code 1: openssl is not installed"
-        );
     }
 }

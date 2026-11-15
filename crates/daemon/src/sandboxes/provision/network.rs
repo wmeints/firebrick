@@ -419,7 +419,7 @@ mod tests {
         assert_eq!(resolved, proxy);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn proxy_dns_timeout_returns_an_error() {
         let proxy: ProxySpec = "http://proxy.internal:3128".parse().unwrap();
         let error = resolve_proxy_with(&proxy, std::future::pending())
@@ -692,53 +692,46 @@ mod tests {
     }
 
     #[test]
-    fn rules_label_lists_enforced_rules() {
-        assert_eq!(
-            rules_label(&enforced(&["github.com", "*.npmjs.org"], &["10.0.0.0/8"])),
-            "allow=github.com,*.npmjs.org;deny=10.0.0.0/8"
-        );
-        assert_eq!(rules_label(&enforced(&[], &[])), "allow=;deny=");
-    }
-
-    #[test]
-    fn rules_label_ignores_rules_that_are_not_enforced() {
-        let off = NetworkSpec {
+    fn rules_label_lists_only_enforced_rules_and_records_a_disabled_network() {
+        let not_enforced = NetworkSpec {
             enforce: false,
             ..enforced(&["github.com"], &[])
         };
-
-        assert_eq!(rules_label(&off), "off");
-        assert_eq!(rules_label(&NetworkSpec::default()), "off");
-    }
-
-    #[test]
-    fn rules_label_records_a_disabled_network_without_rules() {
-        assert_eq!(
-            rules_label(&disabled(enforced(&["github.com"], &[]))),
-            "disabled"
-        );
-        assert_eq!(rules_label(&disabled(NetworkSpec::default())), "disabled");
-    }
-
-    #[test]
-    fn rules_label_of_an_explicitly_enabled_network_matches_the_default() {
         let enabled = |network: NetworkSpec| NetworkSpec {
             enabled: Some(true),
             ..network
         };
+        let cases = [
+            (
+                enforced(&["github.com", "*.npmjs.org"], &["10.0.0.0/8"]),
+                "allow=github.com,*.npmjs.org;deny=10.0.0.0/8",
+            ),
+            (enforced(&[], &[]), "allow=;deny="),
+            (not_enforced, "off"),
+            (NetworkSpec::default(), "off"),
+            (disabled(enforced(&["github.com"], &[])), "disabled"),
+            (disabled(NetworkSpec::default()), "disabled"),
+            (enabled(NetworkSpec::default()), "off"),
+            (
+                enabled(enforced(&["github.com"], &[])),
+                "allow=github.com;deny=",
+            ),
+        ];
 
-        assert_eq!(rules_label(&enabled(NetworkSpec::default())), "off");
-        assert_eq!(
-            rules_label(&enabled(enforced(&["github.com"], &[]))),
-            "allow=github.com;deny="
-        );
+        for (network, label) in cases {
+            assert_eq!(rules_label(&network), label, "{network:?}");
+        }
     }
 
     #[tokio::test]
-    async fn disabled_network_removes_the_device_and_ignores_the_rules() {
-        let config = config_with(&disabled(enforced(&["github.com"], &[])), &[]).await;
+    async fn only_a_disabled_network_removes_the_device_whatever_its_rules() {
+        let rules = enforced(&["github.com"], &[]);
 
-        assert!(!config.spec.network.enabled);
+        let off = config_with(&disabled(rules.clone()), &[]).await;
+        let on = config_with(&rules, &[]).await;
+
+        assert!(!off.spec.network.enabled);
+        assert!(on.spec.network.enabled);
     }
 
     #[tokio::test]
@@ -748,13 +741,6 @@ mod tests {
         let config = config_with(&disabled(NetworkSpec::default()), &[secret]).await;
 
         assert!(!config.spec.network.enabled);
-    }
-
-    #[tokio::test]
-    async fn enabled_network_keeps_the_device() {
-        let config = config_with(&enforced(&["github.com"], &[]), &[]).await;
-
-        assert!(config.spec.network.enabled);
     }
 
     #[tokio::test]

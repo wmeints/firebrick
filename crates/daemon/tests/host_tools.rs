@@ -152,13 +152,20 @@ async fn a_failing_tool_is_reported_with_its_message() {
     );
 }
 
-#[tokio::test]
+// Paused time skips ahead to the timeout once the runtime only waits for the tool.
+#[tokio::test(start_paused = true)]
 async fn a_tool_that_hangs_is_given_up_on() {
     let dir = stubs(&[("wl-paste", "exec sleep 30")]);
 
     let kinds = tools(Desktop::Wayland, dir.path()).kinds().await;
 
-    assert_eq!(cause(kinds), Cause::Failed);
+    assert_eq!(
+        kinds,
+        Err(HostError::Unavailable(
+            Cause::Failed,
+            "wl-paste didn't finish within 4s".to_string()
+        ))
+    );
 }
 
 /// A stub copy tool that records its arguments in `args` and its stdin in `copied`, next to

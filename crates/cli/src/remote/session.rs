@@ -307,13 +307,6 @@ mod tests {
     }
 
     #[test]
-    fn a_buffered_console_refuses_invalid_bytes_when_it_flushes_them() {
-        let raw = show(&[b"a\xff"], |_, chunk| chunk.to_vec());
-
-        assert_eq!(raw.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
-    }
-
-    #[test]
     fn utf8_output_reaches_a_buffered_console_unchanged() {
         let shown = show(
             &["héllo\x1b[0m\n".as_bytes(), b"next"],

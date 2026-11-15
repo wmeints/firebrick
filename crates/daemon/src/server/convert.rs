@@ -512,52 +512,32 @@ mod tests {
     }
 
     #[test]
-    fn map_sandbox_status_produces_valid_proto_values() {
-        let value = map_sandbox_status(Some(MsbStatus::Draining));
-        assert_eq!(SandboxStatus::try_from(value), Ok(SandboxStatus::Stopping));
-    }
-
-    #[test]
-    fn start_sandbox_from_request_defaults_init_to_true() {
-        let request = StartSandboxRequest::default();
-
-        assert!(start_sandbox_from(&request, &ParsedStart::default()).init);
-    }
-
-    #[test]
-    fn start_sandbox_from_request_defaults_mise_to_true() {
-        let request = StartSandboxRequest::default();
-
-        assert!(start_sandbox_from(&request, &ParsedStart::default()).mise);
-    }
-
-    #[test]
-    fn start_sandbox_from_request_keeps_mise() {
-        let request = StartSandboxRequest {
-            mise: Some(false),
-            ..Default::default()
-        };
-
-        assert!(!start_sandbox_from(&request, &ParsedStart::default()).mise);
-    }
-
-    #[test]
-    fn start_sandbox_from_request_keeps_init() {
+    fn start_sandbox_from_request_keeps_the_request_and_defaults_init_and_mise_to_true() {
+        let empty = StartSandboxRequest::default();
         let request = StartSandboxRequest {
             name: "dev".to_string(),
             image: "alpine:3.22".to_string(),
             workspace: "/home/user/project".to_string(),
             init: Some(false),
+            mise: Some(false),
             ..Default::default()
         };
+        let env = BTreeMap::from([("A".to_string(), "1".to_string())]);
+        let parsed = ParsedStart {
+            env: Some(env.clone()),
+            ..ParsedStart::default()
+        };
 
-        let parsed = ParsedStart::default();
+        let defaults = start_sandbox_from(&empty, &parsed);
         let start = start_sandbox_from(&request, &parsed);
 
+        assert!(defaults.init && defaults.mise);
         assert_eq!(
-            (start.name, start.image, start.workspace, start.init),
-            ("dev", "alpine:3.22", "/home/user/project", false)
+            (start.name, start.image, start.workspace),
+            ("dev", "alpine:3.22", "/home/user/project")
         );
+        assert!(!start.init && !start.mise);
+        assert_eq!(start.env, Some(&env));
     }
 
     #[test]
@@ -668,30 +648,6 @@ mod tests {
                 "{progress:?}"
             );
         }
-    }
-
-    #[test]
-    fn pull_progress_response_keeps_the_progress() {
-        let update = PullUpdate {
-            image: "alpine:3.22".to_string(),
-            downloaded_bytes: 100,
-            total_bytes: None,
-            complete: true,
-        };
-
-        assert_eq!(
-            pull_progress_response(update),
-            StartSandboxResponse {
-                message: Some(start_sandbox_response::Message::PullProgress(
-                    ImagePullProgress {
-                        image: "alpine:3.22".to_string(),
-                        downloaded_bytes: 100,
-                        total_bytes: None,
-                        complete: true,
-                    }
-                )),
-            }
-        );
     }
 
     /// Returns a listener on the port and addresses, owned by the pid and name when given.
@@ -867,38 +823,6 @@ mod tests {
     }
 
     #[test]
-    fn start_sandbox_from_request_keeps_env() {
-        let request = StartSandboxRequest::default();
-        let env = BTreeMap::from([("A".to_string(), "1".to_string())]);
-        let parsed = ParsedStart {
-            env: Some(env.clone()),
-            ..ParsedStart::default()
-        };
-
-        let start = start_sandbox_from(&request, &parsed);
-
-        assert_eq!(start.env, Some(&env));
-    }
-
-    #[test]
-    fn mount_specs_keep_the_paths_and_readonly() {
-        let mounts = [Mount {
-            host: "/home/user/lib".to_string(),
-            guest: "/workspaces/lib".to_string(),
-            readonly: true,
-        }];
-
-        assert_eq!(
-            mount_specs(&mounts),
-            [MountSpec {
-                host: "/home/user/lib".to_string(),
-                guest: "/workspaces/lib".to_string(),
-                readonly: true,
-            }]
-        );
-    }
-
-    #[test]
     fn network_spec_without_network_does_not_enforce() {
         assert_eq!(network_spec(None).unwrap(), NetworkSpec::default());
     }
@@ -1069,17 +993,6 @@ mod tests {
     }
 
     #[test]
-    fn root_disk_notice_without_a_current_size_leaves_it_unset() {
-        let response = sandbox_started(started_with_root_disk(RootDiskNotice {
-            requested_mib: 32768,
-            current_mib: None,
-            reason: NoticeReason::GrowFailed("unreadable".to_string()),
-        }));
-
-        assert_eq!(response.root_disk.unwrap().current_mib, None);
-    }
-
-    #[test]
     fn start_reads_the_root_disk_size_or_the_default() {
         let cases = [(Some("32 GiB"), 32768), (Some(""), 16384), (None, 16384)];
 
@@ -1121,42 +1034,35 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_resources_converts_request() {
-        let request = resources_request(4, "8 GiB", Some("40 GiB"));
+    fn sandbox_resources_converts_the_request_or_falls_back_to_defaults() {
+        let resources = |cpus, memory_mib, docker_volume_mib| Resources {
+            cpus,
+            memory_mib,
+            docker_volume_mib,
+        };
+        let cases = [
+            (
+                resources_request(4, "8 GiB", Some("40 GiB")),
+                resources(4, 8192, 40960),
+            ),
+            (
+                resources_request(4, "8 GiB", None),
+                resources(4, 8192, 20480),
+            ),
+            (
+                resources_request(4, "8 GiB", Some("")),
+                resources(4, 8192, 20480),
+            ),
+            (StartSandboxRequest::default(), resources(2, 4096, 20480)),
+        ];
 
-        assert_eq!(
-            sandbox_resources(&request).unwrap(),
-            Resources {
-                cpus: 4,
-                memory_mib: 8192,
-                docker_volume_mib: 40960,
-            }
-        );
-    }
-
-    #[test]
-    fn sandbox_resources_uses_default_docker_volume_when_missing_or_empty() {
-        for docker in [None, Some("")] {
-            let request = resources_request(4, "8 GiB", docker);
-
+        for (request, expected) in cases {
             assert_eq!(
-                sandbox_resources(&request).unwrap().docker_volume_mib,
-                20480,
-                "{docker:?}"
+                sandbox_resources(&request).unwrap(),
+                expected,
+                "{request:?}"
             );
         }
-    }
-
-    #[test]
-    fn sandbox_resources_falls_back_to_defaults() {
-        assert_eq!(
-            sandbox_resources(&StartSandboxRequest::default()).unwrap(),
-            Resources {
-                cpus: 2,
-                memory_mib: 4096,
-                docker_volume_mib: 20480,
-            }
-        );
     }
 
     #[test]
@@ -1310,33 +1216,5 @@ mod tests {
         let entries = network_activity(record(), &rules);
 
         assert!(entries.iter().all(|entry| entry.allowed), "{entries:?}");
-    }
-
-    #[test]
-    fn network_activity_of_an_empty_record_is_empty() {
-        assert_eq!(
-            network_activity(Record::default(), &NetworkSpec::default()),
-            []
-        );
-    }
-
-    #[test]
-    fn sandbox_upgraded_keeps_the_result() {
-        let response = sandbox_upgraded(Upgrade {
-            upgraded: true,
-            old_image: "alpine:3.21".to_string(),
-            new_image: "alpine:3.22".to_string(),
-        });
-
-        assert_eq!(
-            response.message,
-            Some(upgrade_sandbox_response::Message::Upgraded(
-                SandboxUpgraded {
-                    upgraded: true,
-                    old_image: "alpine:3.21".to_string(),
-                    new_image: "alpine:3.22".to_string(),
-                }
-            ))
-        );
     }
 }

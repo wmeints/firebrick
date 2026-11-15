@@ -451,26 +451,6 @@ mod tests {
     }
 
     #[test]
-    fn first_settings_list_a_shared_clipboard() {
-        let fixture = Fixture::new();
-        let mut prompt = prompt("n\n");
-
-        let error = fixture
-            .approvals()
-            .approve_sandbox(clipboard(Clipboard::Both), &mut prompt)
-            .unwrap_err();
-
-        assert_eq!(error.to_string(), ABORTED);
-        assert_eq!(
-            printed(&prompt),
-            ".firebrick.yml sets mounts, network or clipboard settings you haven't approved \
-             for this workspace yet:\n  network.enabled: true\n  network.enforce: false\n  \
-             + clipboard: shared with the host, both ways\nApply these changes? [y/N] "
-        );
-        assert_eq!(fixture.approvals().approved().unwrap(), None);
-    }
-
-    #[test]
     fn a_clipboard_approved_before_copying_existed_is_asked_about_again() {
         let fixture = Fixture::new();
         write_entry(&fixture, "    clipboard: true\n");
@@ -510,39 +490,23 @@ mod tests {
     }
 
     #[test]
-    fn approvals_file_with_each_clipboard_mode_loads() {
+    fn approvals_file_with_each_clipboard_mode_or_none_loads() {
         let modes = [
-            ("off", Clipboard::Off),
-            ("false", Clipboard::Off),
-            ("paste", Clipboard::Paste),
-            ("both", Clipboard::Both),
+            ("    clipboard: off\n", Clipboard::Off),
+            ("    clipboard: false\n", Clipboard::Off),
+            ("    clipboard: paste\n", Clipboard::Paste),
+            ("    clipboard: both\n", Clipboard::Both),
+            ("    network:\n      enforce: true\n", Clipboard::Off),
         ];
 
-        for (stored, mode) in modes {
+        for (fields, mode) in modes {
             let fixture = Fixture::new();
-            write_entry(&fixture, &format!("    clipboard: {stored}\n"));
+            write_entry(&fixture, fields);
 
             let approved = fixture.approvals().approved().unwrap().unwrap();
 
-            assert_eq!(approved.clipboard, mode, "{stored}");
+            assert_eq!(approved.clipboard, mode, "{fields}");
         }
-    }
-
-    #[test]
-    fn approvals_file_without_the_clipboard_loads_with_it_off() {
-        let fixture = Fixture::new();
-        let workspace = dunce::canonicalize(fixture.workspace.path()).unwrap();
-        fs::create_dir_all(fixture.path().parent().unwrap()).unwrap();
-        let content = format!(
-            "workspaces:\n  {}:\n    mounts: []\n    network:\n      enforce: true\n",
-            workspace.display()
-        );
-        fs::write(fixture.path(), content).unwrap();
-
-        let approved = fixture.approvals().approved().unwrap().unwrap();
-
-        assert_eq!(approved.clipboard, Clipboard::Off);
-        assert!(approved.network.enforce);
     }
 
     #[test]
@@ -608,35 +572,27 @@ mod tests {
     }
 
     #[test]
-    fn yes_is_accepted_in_any_case() {
-        for answer in ["yes\n", "Y\n", " YES \n"] {
+    fn only_yes_in_any_case_records_the_changes() {
+        let cases = [
+            ("yes\n", None),
+            ("Y\n", None),
+            (" YES \n", None),
+            ("n\n", Some(ABORTED)),
+            ("\n", Some(ABORTED)),
+            ("", Some(ABORTED)),
+            ("sure\n", Some(ABORTED)),
+        ];
+
+        for (answer, error) in cases {
             let fixture = Fixture::new();
             let approvals = fixture.approvals_with_defaults();
 
-            approvals
-                .approve_sandbox(home_mount(), &mut prompt(answer))
-                .unwrap();
+            let result = approvals.approve_sandbox(home_mount(), &mut prompt(answer));
 
-            assert_eq!(
-                approvals.approved().unwrap(),
-                Some(home_mount()),
-                "{answer:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn other_answers_abort_without_recording() {
-        for answer in ["n\n", "\n", "", "sure\n"] {
-            let fixture = Fixture::new();
-            let approvals = fixture.approvals_with_defaults();
-
-            let error = approvals
-                .approve_sandbox(home_mount(), &mut prompt(answer))
-                .unwrap_err();
-
-            assert_eq!(error.to_string(), ABORTED, "{answer:?}");
-            assert_eq!(approvals.approved().unwrap(), Some(Settings::default()));
+            let recorded = error.map_or_else(home_mount, |_| Settings::default());
+            let error_text = result.err().map(|error| error.to_string());
+            assert_eq!(error_text.as_deref(), error, "{answer:?}");
+            assert_eq!(approvals.approved().unwrap(), Some(recorded), "{answer:?}");
         }
     }
 
@@ -737,21 +693,37 @@ mod tests {
 
     #[test]
     fn first_settings_are_shown_in_full() {
-        let fixture = Fixture::new();
-        let approvals = fixture.approvals();
-        let mut prompt = prompt("y\n");
+        let cases = [
+            (
+                home_mount(),
+                "+ mount /home/me -> /mnt/home (read/write)\n  network.enabled: true\n  \
+                 network.enforce: false\n",
+            ),
+            (
+                clipboard(Clipboard::Both),
+                "network.enabled: true\n  network.enforce: false\n  \
+                 + clipboard: shared with the host, both ways\n",
+            ),
+        ];
 
-        approvals
-            .approve_sandbox(home_mount(), &mut prompt)
-            .unwrap();
+        for (settings, listed) in cases {
+            let fixture = Fixture::new();
+            let approvals = fixture.approvals();
+            let mut prompt = prompt("y\n");
 
-        assert_eq!(
-            printed(&prompt),
-            ".firebrick.yml sets mounts, network or clipboard settings you haven't approved \
-             for this workspace yet:\n  + mount /home/me -> /mnt/home (read/write)\n  \
-             network.enabled: true\n  network.enforce: false\nApply these changes? [y/N] "
-        );
-        assert_eq!(approvals.approved().unwrap(), Some(home_mount()));
+            approvals
+                .approve_sandbox(settings.clone(), &mut prompt)
+                .unwrap();
+
+            assert_eq!(
+                printed(&prompt),
+                format!(
+                    ".firebrick.yml sets mounts, network or clipboard settings you haven't \
+                     approved for this workspace yet:\n  {listed}Apply these changes? [y/N] "
+                )
+            );
+            assert_eq!(approvals.approved().unwrap(), Some(settings));
+        }
     }
 
     #[test]

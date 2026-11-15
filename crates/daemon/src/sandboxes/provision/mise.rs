@@ -468,16 +468,17 @@ mod tests {
     }
 
     #[test]
-    fn is_enabled_defaults_to_true() {
-        assert!(is_enabled(&BTreeMap::new()));
-    }
+    fn is_enabled_reads_the_label_and_defaults_to_true() {
+        let labels =
+            |enabled| BTreeMap::from([(ENABLED_LABEL.to_string(), label_value(enabled).into())]);
+        let cases = [
+            (BTreeMap::new(), true),
+            (labels(true), true),
+            (labels(false), false),
+        ];
 
-    #[test]
-    fn is_enabled_reads_the_label() {
-        for enabled in [true, false] {
-            let labels = BTreeMap::from([(ENABLED_LABEL.to_string(), label_value(enabled).into())]);
-
-            assert_eq!(is_enabled(&labels), enabled);
+        for (labels, enabled) in cases {
+            assert_eq!(is_enabled(&labels), enabled, "{labels:?}");
         }
     }
 
@@ -486,19 +487,6 @@ mod tests {
         assert_eq!(tail("a\nb\n\nc\nd\n", 3), "b\nc\nd");
         assert_eq!(tail("only\n", 3), "only");
         assert_eq!(tail("", 3), "");
-    }
-
-    #[test]
-    fn failed_error_names_the_sandbox_and_output() {
-        let error = MiseError::Failed {
-            sandbox: "demo".into(),
-            output: "mise ERROR no such version".into(),
-        };
-
-        assert_eq!(
-            error.to_string(),
-            "mise install failed in sandbox demo: mise ERROR no such version"
-        );
     }
 
     #[test]

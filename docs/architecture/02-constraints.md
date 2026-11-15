@@ -14,8 +14,8 @@
 - **Coding conventions:** we follow the coding conventions published as part of
   [clippy][LINTER] to ensure adequate formatting of the code. On top of the
   defaults, `clippy.toml` and `[workspace.lints]` in `Cargo.toml` limit
-  functions to 30 lines, 4 arguments, 1 bool argument and 3 levels of nesting.
-  The generated gRPC code in the `api` modules is exempt.
+  functions to 4 arguments, 1 bool argument and 3 levels of nesting. The
+  generated gRPC code in the `api` modules is exempt.
 
 - **Website conventions:** the website in `website/` is formatted by Prettier
   and linted by ESLint and `astro check`, all failing on warnings. It is a

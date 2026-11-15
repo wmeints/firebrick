@@ -63,7 +63,12 @@ mod tests {
     fn missing_spec_returns_error() {
         let dir = TempDir::new().unwrap();
 
-        assert!(validate_spec(dir.path()).is_err());
+        let err = validate_spec(dir.path()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("can't find .firebrick.yml in {}", dir.path().display())
+        );
     }
 
     #[test]

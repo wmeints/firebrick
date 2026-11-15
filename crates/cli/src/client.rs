@@ -451,7 +451,7 @@ mod tests {
         drop(lock);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn wait_for_shutdown_returns_once_the_daemon_released_its_lock() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fbkd.lock");
@@ -481,21 +481,15 @@ mod tests {
     }
 
     #[test]
-    fn daemon_binary_is_the_one_next_to_fbk() {
+    fn daemon_binary_is_the_one_next_to_fbk_or_on_the_path() {
         let dir = tempfile::tempdir().unwrap();
         let daemon = dir
             .path()
             .join(format!("fbkd{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&daemon, "").unwrap();
-
-        assert_eq!(daemon_binary_in(Some(dir.path())), daemon);
-    }
-
-    #[test]
-    fn daemon_binary_falls_back_to_the_path_without_one_next_to_fbk() {
-        let dir = tempfile::tempdir().unwrap();
 
         assert_eq!(daemon_binary_in(Some(dir.path())), PathBuf::from("fbkd"));
         assert_eq!(daemon_binary_in(None), PathBuf::from("fbkd"));
+        std::fs::write(&daemon, "").unwrap();
+        assert_eq!(daemon_binary_in(Some(dir.path())), daemon);
     }
 }

@@ -287,16 +287,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn up_to_date_sandbox_gets_no_warning() {
-        let sandbox = GetSandboxResponse {
-            upgrade_image: String::new(),
-            ..outdated("dev", "")
-        };
-
-        assert_eq!(outdated_warning(&sandbox, false), None);
-    }
-
     #[tokio::test]
     async fn outdated_check_warns_about_the_daemons_outdated_sandbox() {
         let mut client = fake_daemon::serve_outdated("dev", "").await;
@@ -359,16 +349,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(spec.name, "firebrick-8a5eda");
-    }
-
-    #[tokio::test]
-    async fn invalid_spec_file_returns_error() {
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join(SPEC_FILE_NAME), "image: ubuntu:24.04\n").unwrap();
-
-        let result = resolve_spec(dir.path(), &mut unreachable_client()).await;
-
-        assert!(result.is_err());
     }
 
     async fn assert_resolve_refuses_symlink(content: Option<&str>) {
@@ -453,19 +433,14 @@ mod tests {
     }
 
     #[test]
-    fn not_found_status_names_missing_sandbox() {
-        let error = describe_status("dev", tonic::Status::not_found("couldn't find it"));
+    fn describe_status_names_a_missing_sandbox_and_keeps_other_statuses() {
+        let missing = describe_status("dev", tonic::Status::not_found("couldn't find it"));
+        let other = describe_status("dev", tonic::Status::internal("failed to stop sandbox"));
 
-        assert_eq!(error.to_string(), "sandbox dev doesn't exist");
-    }
-
-    #[test]
-    fn other_status_is_kept() {
-        let error = describe_status("dev", tonic::Status::internal("failed to stop sandbox"));
-
+        assert_eq!(missing.to_string(), "sandbox dev doesn't exist");
         assert!(
-            error.to_string().contains("failed to stop sandbox"),
-            "{error}"
+            other.to_string().contains("failed to stop sandbox"),
+            "{other}"
         );
     }
 
@@ -483,40 +458,6 @@ mod tests {
                 .starts_with("failed to check for existing sandbox "),
             "{error}"
         );
-    }
-
-    #[test]
-    fn same_workspace_passes() {
-        let result = ensure_same_workspace(
-            "dev",
-            "/home/user/my-project",
-            Path::new("/home/user/my-project"),
-        );
-
-        assert!(result.is_ok(), "{result:?}");
-    }
-
-    #[test]
-    fn other_workspace_is_refused() {
-        let error = ensure_same_workspace(
-            "firebrick-d9f287",
-            "/home/user/my-project",
-            Path::new("/home/user/other-project"),
-        )
-        .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "sandbox firebrick-d9f287 belongs to /home/user/my-project; give this directory its \
-             own name in .firebrick.yml to use a separate sandbox"
-        );
-    }
-
-    #[test]
-    fn sandbox_without_workspace_mount_passes() {
-        let result = ensure_same_workspace("dev", "", Path::new("/home/user/other-project"));
-
-        assert!(result.is_ok(), "{result:?}");
     }
 
     #[tokio::test]

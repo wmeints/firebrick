@@ -431,15 +431,6 @@ mod tests {
         assert_eq!(answer.len(), format!("ok {MAX_TEXT}\n").len() + MAX_TEXT);
     }
 
-    #[tokio::test]
-    async fn answers_invalid_to_unknown_requests() {
-        let dir = tempfile::tempdir().unwrap();
-        let clipboards = clipboards(dir.path(), FakeClipboard::with(Some(b"text"), None));
-        clipboards.listen("sb", true).await.unwrap();
-
-        assert_eq!(ask(&clipboards, "sb", b"primary\n").await, b"invalid\n");
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn answers_invalid_to_unfinished_requests() {
@@ -666,7 +657,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn answers_invalid_to_malformed_copy_requests() {
+    async fn answers_invalid_to_unknown_and_malformed_requests() {
         let dir = tempfile::tempdir().unwrap();
         let host = Arc::new(FakeClipboard::with(None, None));
         let clipboards = Clipboards::new(
@@ -674,7 +665,8 @@ mod tests {
             host.clone(),
         );
         clipboards.listen("sb", true).await.unwrap();
-        let requests: [&[u8]; 6] = [
+        let requests: [&[u8]; 7] = [
+            b"primary\n",
             b"copy text\nhi",
             b"copy text +2\nhi",
             b"copy text 2 3\nhi",
@@ -685,7 +677,7 @@ mod tests {
 
         let answers = ask_each(&clipboards, &requests).await;
 
-        assert_eq!(answers, [b"invalid\n"; 6]);
+        assert_eq!(answers, [b"invalid\n"; 7]);
         assert!(host.written().is_empty());
     }
 
@@ -790,28 +782,22 @@ mod tests {
     }
 
     #[test]
-    fn is_enabled_reads_the_label() {
-        let labels = |value: &str| BTreeMap::from([(ENABLED_LABEL.to_string(), value.into())]);
+    fn the_labels_enable_pasting_and_copying() {
+        let cases = [
+            (&[(ENABLED_LABEL, "true")][..], true, false),
+            (&[(ENABLED_LABEL, "false")], false, false),
+            (&[], false, false),
+            (&[(ENABLED_LABEL, "true"), (COPY_LABEL, "true")], true, true),
+            (&[(COPY_LABEL, "true")], false, false),
+        ];
 
-        assert!(is_enabled(&labels("true")));
-        assert!(!is_enabled(&labels("false")));
-        assert!(!is_enabled(&BTreeMap::new()));
-    }
-
-    #[test]
-    fn can_copy_needs_both_labels() {
-        let labels = |pairs: &[(&str, &str)]| {
-            pairs
+        for (pairs, enabled, copy) in cases {
+            let labels: BTreeMap<String, String> = pairs
                 .iter()
                 .map(|(key, value)| (key.to_string(), value.to_string()))
-                .collect::<BTreeMap<_, _>>()
-        };
-
-        assert!(can_copy(&labels(&[
-            (ENABLED_LABEL, "true"),
-            (COPY_LABEL, "true")
-        ])));
-        assert!(!can_copy(&labels(&[(ENABLED_LABEL, "true")])));
-        assert!(!can_copy(&labels(&[(COPY_LABEL, "true")])));
+                .collect();
+            assert_eq!(is_enabled(&labels), enabled, "{pairs:?}");
+            assert_eq!(can_copy(&labels), copy, "{pairs:?}");
+        }
     }
 }

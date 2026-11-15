@@ -116,51 +116,24 @@ mod tests {
     }
 
     #[test]
-    fn hashed_name_uses_first_six_hex_digits_of_sha256() {
-        let name = hashed_name(Path::new("/home/user/my-project.v2"));
+    fn legacy_name_encodes_the_path_as_alphanumerics_and_underscores() {
+        let cases = [
+            ("/home/user/my-project.v2", Some("home_user_my_project_v2")),
+            ("//home//user/--project--/", Some("home_user_project")),
+            ("/", None),
+        ];
 
-        assert_eq!(name, "firebrick-d9f287");
+        for (path, expected) in cases {
+            assert_eq!(legacy_name(Path::new(path)).as_deref(), expected, "{path}");
+        }
     }
 
     #[test]
-    fn hashed_name_differs_per_path() {
-        assert_ne!(
-            hashed_name(Path::new("/home/user/a/project")),
-            hashed_name(Path::new("/home/user/b/project"))
-        );
-    }
+    fn default_name_keeps_an_existing_legacy_name_and_hashes_the_path_otherwise() {
+        let path = Path::new("/home/user/my-project.v2");
 
-    #[test]
-    fn legacy_name_encodes_full_path() {
-        let name = legacy_name(Path::new("/home/user/my-project.v2"));
-
-        assert_eq!(name.as_deref(), Some("home_user_my_project_v2"));
-    }
-
-    #[test]
-    fn legacy_name_collapses_and_trims_separators() {
-        let name = legacy_name(Path::new("//home//user/--project--/"));
-
-        assert_eq!(name.as_deref(), Some("home_user_project"));
-    }
-
-    #[test]
-    fn default_name_keeps_existing_legacy_name() {
-        let name = default_name(Path::new("/home/user/my-project.v2"), true);
-
-        assert_eq!(name, "home_user_my_project_v2");
-    }
-
-    #[test]
-    fn default_name_hashes_path_without_legacy_sandbox() {
-        let name = default_name(Path::new("/home/user/my-project.v2"), false);
-
-        assert_eq!(name, "firebrick-d9f287");
-    }
-
-    #[test]
-    fn root_path_has_no_legacy_name() {
-        assert_eq!(legacy_name(Path::new("/")), None);
+        assert_eq!(default_name(path, true), "home_user_my_project_v2");
+        assert_eq!(default_name(path, false), "firebrick-d9f287");
     }
 
     #[test]

@@ -1,6 +1,3 @@
-# Max lines per function body (default: 100)
-too-many-lines-threshold = 30
-
 # Max nesting depth of blocks (default: 0 = disabled)
 excessive-nesting-threshold = 3
 

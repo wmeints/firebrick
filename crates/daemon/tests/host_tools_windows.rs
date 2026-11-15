@@ -110,14 +110,6 @@ fn tools(dir: &Path) -> HostTools {
     HostTools::new(Some(Desktop::Windows), Some(dir.as_os_str().into()))
 }
 
-/// Returns the cause of an unavailable clipboard, or panics with the result.
-fn cause<T: std::fmt::Debug>(result: Result<T, HostError>) -> Cause {
-    match result {
-        Err(HostError::Unavailable(cause, _)) => cause,
-        other => panic!("expected an unavailable clipboard, got {other:?}"),
-    }
-}
-
 /// What the real list script prints for a clipboard with text and an image.
 const TEXT_AND_PNG: &[u8] = b"text/plain\r\nimage/png\r\n";
 
@@ -199,13 +191,20 @@ async fn a_failing_tool_is_reported_with_its_message() {
     );
 }
 
-#[tokio::test]
+// Paused time skips ahead to the timeout once the runtime only waits for the tool.
+#[tokio::test(start_paused = true)]
 async fn a_tool_that_hangs_is_given_up_on() {
     let dir = stub(&[("list.sleep", b"30000")]);
 
     let kinds = tools(dir.path()).kinds().await;
 
-    assert_eq!(cause(kinds), Cause::Failed);
+    assert_eq!(
+        kinds,
+        Err(HostError::Unavailable(
+            Cause::Failed,
+            "powershell.exe didn't finish within 4s".to_string()
+        ))
+    );
 }
 
 #[tokio::test]
