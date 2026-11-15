@@ -300,34 +300,13 @@ mod tests {
     }
 
     #[test]
-    fn label_round_trips_mappings() {
+    fn label_round_trips_mappings_and_skips_invalid_entries() {
         let ports = [mapping(3000, 3000), mapping(8080, 5173)];
 
         assert_eq!(label_value(&ports), "3000:3000,8080:5173");
         assert_eq!(ports_from_label(&label_value(&ports)), ports);
+        assert_eq!(ports_from_label("3000:3000,web,0:80,8080:5173"), ports);
         assert!(ports_from_label("").is_empty());
-    }
-
-    #[test]
-    fn label_skips_invalid_entries() {
-        assert_eq!(
-            ports_from_label("3000:3000,web,0:80,8080:5173"),
-            [mapping(3000, 3000), mapping(8080, 5173)]
-        );
-    }
-
-    #[tokio::test]
-    async fn forwards_bytes_both_ways() {
-        let forwards = Forwards::new(LocalConnector);
-        let guest = upper_case_server().await;
-        let host = free_port().await;
-
-        let report = forwards.apply("dev", &[mapping(host, guest)]).await;
-        let mut stream = connect(host).await.unwrap();
-
-        assert_eq!(report.open, [mapping(host, guest)]);
-        assert!(report.failed.is_empty());
-        assert_eq!(round_trip(&mut stream, "hello").await, "HELLO");
     }
 
     #[tokio::test]

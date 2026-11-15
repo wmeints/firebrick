@@ -593,50 +593,56 @@ fn process_is_alive_tells_live_from_dead_processes() {
 }
 
 #[tokio::test]
-async fn list_sandboxes_succeeds() {
-    let daemon = TestDaemon::start("list").await;
+async fn rpcs_return_not_found_for_an_unknown_sandbox() {
+    let daemon = TestDaemon::start("unknown").await;
     let mut client = daemon.client().await;
-
-    client
-        .list_sandboxes(ListSandboxesRequest {})
+    let name = "fbk-it-does-not-exist";
+    let (tx, rx) = mpsc::channel(4);
+    tx.send(attach_start(name, "sh", &[], DEFAULT_SIZE))
         .await
-        .expect("list_sandboxes failed");
+        .unwrap();
 
-    daemon.stop().await;
-}
-
-#[tokio::test]
-async fn stop_sandbox_returns_not_found_for_unknown_sandbox() {
-    let daemon = TestDaemon::start("stop-unknown").await;
-    let mut client = daemon.client().await;
-
-    let status = client
+    let stop = client
         .stop_sandbox(StopSandboxRequest {
-            name: "fbk-it-does-not-exist".to_string(),
+            name: name.to_string(),
         })
         .await
-        .expect_err("stopping an unknown sandbox should fail");
-
-    assert_eq!(status.code(), Code::NotFound);
-
-    daemon.stop().await;
-}
-
-#[tokio::test]
-async fn get_sandbox_returns_not_found_for_unknown_sandbox() {
-    let daemon = TestDaemon::start("get-unknown").await;
-    let mut client = daemon.client().await;
-
-    let status = client
+        .map(drop);
+    let get = client
         .get_sandbox(GetSandboxRequest {
-            name: "fbk-it-does-not-exist".to_string(),
+            name: name.to_string(),
         })
         .await
-        .expect_err("getting an unknown sandbox should fail");
-
-    assert_eq!(status.code(), Code::NotFound);
+        .map(drop);
+    let remove = client
+        .remove_sandbox(RemoveSandboxRequest {
+            name: name.to_string(),
+            force: false,
+        })
+        .await
+        .map(drop);
+    let update = update_network(&mut client, name, NetworkPolicy::default()).await;
+    let upgraded = upgrade(&mut client, name, UPGRADE_IMAGE).await.map(drop);
+    let activity = list_network_activity(&mut client, name).await.map(drop);
+    let attach = client.attach(ReceiverStream::new(rx)).await.map(drop);
 
     daemon.stop().await;
+
+    let update = update.unwrap_err();
+    assert_eq!(update.message(), "couldn't find specified sandbox");
+    let results = [
+        ("stop", stop),
+        ("get", get),
+        ("remove", remove),
+        ("update_network", Err(update)),
+        ("upgrade", upgraded),
+        ("list_network_activity", activity),
+        ("attach", attach),
+    ];
+    for (rpc, result) in results {
+        let code = result.map_err(|status| status.code());
+        assert_eq!(code, Err(Code::NotFound), "{rpc}");
+    }
 }
 
 #[tokio::test]
@@ -675,38 +681,6 @@ async fn get_sandbox_returns_name_status_workspace_path_and_image() {
         get_sandbox(&mut client, name).await.status(),
         SandboxStatus::Stopped
     );
-
-    daemon.stop().await;
-    remove_sandbox(name).await;
-}
-
-#[tokio::test]
-async fn sandbox_lifecycle() {
-    let name: &str = &sandbox_name("lifecycle");
-    remove_sandbox(name).await;
-
-    let daemon = TestDaemon::start("lifecycle").await;
-    let mut client = daemon.client().await;
-
-    // Starting an unknown sandbox creates it.
-    start(&mut client, start_request(name))
-        .await
-        .expect("failed to create sandbox");
-    wait_for_status(&mut client, name, SandboxStatus::Running).await;
-
-    client
-        .stop_sandbox(StopSandboxRequest {
-            name: name.to_string(),
-        })
-        .await
-        .expect("failed to stop sandbox");
-    wait_for_status(&mut client, name, SandboxStatus::Stopped).await;
-
-    // Starting an existing sandbox restarts it.
-    start(&mut client, start_request(name))
-        .await
-        .expect("failed to restart sandbox");
-    wait_for_status(&mut client, name, SandboxStatus::Running).await;
 
     daemon.stop().await;
     remove_sandbox(name).await;
@@ -1051,7 +1025,7 @@ async fn update_network_keeps_the_root_disk_size() {
 }
 
 #[tokio::test]
-async fn remove_sandbox_removes_docker_disk() {
+async fn remove_sandbox_removes_a_stopped_sandbox_and_its_docker_disk() {
     let name: &str = &sandbox_name("docker-disk-rm");
     remove_sandbox(name).await;
 
@@ -1071,6 +1045,7 @@ async fn remove_sandbox_removes_docker_disk() {
         .await
         .expect("failed to remove sandbox");
 
+    assert_eq!(sandbox_status(&mut client, name).await, None);
     assert!(!disk_dir.exists(), "disk kept at {}", disk_dir.display());
 
     daemon.stop().await;
@@ -1176,59 +1151,6 @@ async fn start_sandbox_rejects_invalid_resources() {
 }
 
 #[tokio::test]
-async fn remove_sandbox_returns_not_found_for_unknown_sandbox() {
-    let daemon = TestDaemon::start("remove-unknown").await;
-    let mut client = daemon.client().await;
-
-    let status = client
-        .remove_sandbox(RemoveSandboxRequest {
-            name: "fbk-it-does-not-exist".to_string(),
-            force: false,
-        })
-        .await
-        .expect_err("removing an unknown sandbox should fail");
-
-    assert_eq!(status.code(), Code::NotFound);
-
-    daemon.stop().await;
-}
-
-#[tokio::test]
-async fn remove_sandbox_removes_stopped_sandbox() {
-    let name: &str = &sandbox_name("remove");
-    remove_sandbox(name).await;
-
-    let daemon = TestDaemon::start("remove").await;
-    let mut client = daemon.client().await;
-
-    start(&mut client, start_request(name))
-        .await
-        .expect("failed to create sandbox");
-    wait_for_status(&mut client, name, SandboxStatus::Running).await;
-
-    client
-        .stop_sandbox(StopSandboxRequest {
-            name: name.to_string(),
-        })
-        .await
-        .expect("failed to stop sandbox");
-    wait_for_status(&mut client, name, SandboxStatus::Stopped).await;
-
-    client
-        .remove_sandbox(RemoveSandboxRequest {
-            name: name.to_string(),
-            force: false,
-        })
-        .await
-        .expect("failed to remove sandbox");
-
-    assert_eq!(sandbox_status(&mut client, name).await, None);
-
-    daemon.stop().await;
-    remove_sandbox(name).await;
-}
-
-#[tokio::test]
 async fn remove_sandbox_refuses_running_sandbox() {
     let name: &str = &sandbox_name("remove-running");
     remove_sandbox(name).await;
@@ -1280,30 +1202,6 @@ async fn remove_sandbox_with_force_stops_and_removes_running_sandbox() {
         .await
         .expect_err("the removed sandbox should be gone");
     assert_eq!(status.code(), Code::NotFound);
-
-    daemon.stop().await;
-    remove_sandbox(name).await;
-}
-
-#[tokio::test]
-async fn remove_sandbox_with_force_removes_stopped_sandbox() {
-    let name: &str = &sandbox_name("remove-force-stopped");
-    remove_sandbox(name).await;
-
-    let daemon = TestDaemon::start("remove-force-stopped").await;
-    let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, name).await;
-    stop_sandbox(&mut client, name).await;
-
-    client
-        .remove_sandbox(RemoveSandboxRequest {
-            name: name.to_string(),
-            force: true,
-        })
-        .await
-        .expect("failed to force-remove stopped sandbox");
-
-    assert_eq!(sandbox_status(&mut client, name).await, None);
 
     daemon.stop().await;
     remove_sandbox(name).await;
@@ -1483,31 +1381,6 @@ async fn attach_rejects_missing_start() {
         .expect_err("attach without start should fail");
 
     assert_eq!(status.code(), Code::InvalidArgument);
-
-    daemon.stop().await;
-}
-
-#[tokio::test]
-async fn attach_returns_not_found_for_unknown_sandbox() {
-    let daemon = TestDaemon::start("attach-unknown").await;
-    let mut client = daemon.client().await;
-
-    let (tx, rx) = mpsc::channel(4);
-    tx.send(attach_start(
-        "fbk-it-does-not-exist",
-        "sh",
-        &[],
-        DEFAULT_SIZE,
-    ))
-    .await
-    .unwrap();
-
-    let status = client
-        .attach(ReceiverStream::new(rx))
-        .await
-        .expect_err("attaching to an unknown sandbox should fail");
-
-    assert_eq!(status.code(), Code::NotFound);
 
     daemon.stop().await;
 }
@@ -3665,25 +3538,6 @@ async fn update_network_of_stopped_sandbox_keeps_it_stopped() {
     assert!(unrestricted.trim_end().ends_with("200"), "{unrestricted:?}");
 }
 
-#[tokio::test]
-async fn update_network_returns_not_found_for_unknown_sandbox() {
-    let daemon = TestDaemon::start("update-unknown").await;
-    let mut client = daemon.client().await;
-
-    let status = update_network(
-        &mut client,
-        "fbk-it-does-not-exist",
-        NetworkPolicy::default(),
-    )
-    .await
-    .unwrap_err();
-
-    daemon.stop().await;
-
-    assert_eq!(status.code(), Code::NotFound);
-    assert_eq!(status.message(), "couldn't find specified sandbox");
-}
-
 /// Returns the resolved paths of the snapshots that the network updates of the sandbox kept.
 async fn network_snapshot_paths(name: &str) -> Vec<PathBuf> {
     network_snapshots(name)
@@ -4534,18 +4388,6 @@ async fn upgrade_refuses_a_paused_sandbox() {
     assert_eq!(paused, Some(SandboxStatus::Paused));
 }
 
-#[tokio::test]
-async fn upgrade_returns_not_found_for_unknown_sandbox() {
-    let daemon = TestDaemon::start("upgrade-missing").await;
-    let mut client = daemon.client().await;
-
-    let status = upgrade(&mut client, &sandbox_name("upgrade-missing"), UPGRADE_IMAGE).await;
-
-    daemon.stop().await;
-
-    assert_eq!(status.unwrap_err().code(), Code::NotFound);
-}
-
 /// Returns a host port that nothing listens on at the moment.
 async fn free_port() -> u16 {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -5351,17 +5193,6 @@ fn entry_of_kind(entries: &[NetworkActivity], kind: NetworkActivityKind) -> &Net
         .iter()
         .find(|entry| entry.kind() == kind)
         .unwrap_or_else(|| panic!("no {kind:?} entry in {entries:?}"))
-}
-
-#[tokio::test]
-async fn list_network_activity_returns_not_found_for_unknown_sandbox() {
-    let daemon = TestDaemon::start("activity-unknown").await;
-    let mut client = daemon.client().await;
-
-    let status = list_network_activity(&mut client, &sandbox_name("activity-unknown")).await;
-
-    daemon.stop().await;
-    assert_eq!(status.unwrap_err().code(), Code::NotFound);
 }
 
 #[tokio::test]

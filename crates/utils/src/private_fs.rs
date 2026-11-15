@@ -197,33 +197,23 @@ mod unix_tests {
         assert!(err.to_string().contains(&temp.path().display().to_string()));
     }
 
-    /// Asserts that the path is refused as no directory.
-    fn assert_not_a_directory(path: &Path) {
-        let err = create_private_dir(path).unwrap_err();
-
-        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
-        assert!(err.to_string().contains("isn't a directory"), "{err}");
-    }
-
     #[test]
-    fn create_private_dir_refuses_a_symlink_to_a_private_directory() {
+    fn create_private_dir_refuses_a_symlink_to_a_private_directory_and_a_file() {
         let temp = tempfile::TempDir::new().unwrap();
         let target = temp.path().join("target");
         create_private_dir(&target).unwrap();
         let link = temp.path().join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
-
-        assert_not_a_directory(&link);
-    }
-
-    #[test]
-    fn create_private_dir_refuses_a_file() {
-        let temp = tempfile::TempDir::new().unwrap();
         let file = temp.path().join("file");
         fs::write(&file, "").unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
 
-        assert_not_a_directory(&file);
+        for path in [link, file] {
+            let err = create_private_dir(&path).unwrap_err();
+
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+            assert!(err.to_string().contains("isn't a directory"), "{err}");
+        }
     }
 }
 

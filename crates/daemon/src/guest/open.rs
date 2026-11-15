@@ -606,45 +606,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn accepts_http_and_https_in_any_case() {
-        assert!(is_valid_url("http://example.com"));
-        assert!(is_valid_url("https://github.com/login/device"));
-        assert!(is_valid_url("HTTPS://EXAMPLE.COM/path?q=1#x"));
-        assert!(is_valid_url("hTtP://localhost:8080/callback"));
-    }
-
-    #[test]
-    fn rejects_other_schemes_and_missing_scheme() {
-        assert!(!is_valid_url("file:///etc/passwd"));
-        assert!(!is_valid_url("javascript:alert(1)"));
-        assert!(!is_valid_url("ftp://example.com"));
-        assert!(!is_valid_url("example.com"));
-        assert!(!is_valid_url("http:/example.com"));
-        assert!(!is_valid_url(" https://example.com"));
-        assert!(!is_valid_url(""));
-    }
-
-    #[test]
-    fn rejects_whitespace_and_control_characters() {
-        assert!(!is_valid_url("https://example.com/a b"));
-        assert!(!is_valid_url("https://example.com/\t"));
-        assert!(!is_valid_url("https://example.com/\r"));
-        assert!(!is_valid_url("https://example.com/\u{1b}[31m"));
-        assert!(!is_valid_url("https://example.com/\u{7f}"));
-        assert!(!is_valid_url("https://example.com/\u{85}"));
-    }
-
-    #[test]
-    fn rejects_urls_over_the_length_limit() {
-        let prefix = "https://example.com/";
-        let at_limit = format!("{prefix}{}", "a".repeat(MAX_URL_LEN - prefix.len()));
-        let over_limit = format!("{at_limit}a");
-
-        assert!(is_valid_url(&at_limit));
-        assert!(!is_valid_url(&over_limit));
-    }
-
     /// Returns callback forwards that connect to `localhost:<guest>` on the host.
     fn forwards_to(guest: u16) -> CallbackForwards {
         forwards_with(
@@ -749,32 +710,63 @@ mod tests {
 
     #[test]
     fn check_url_returns_the_url_as_the_browser_reads_it() {
-        let network = NetworkSpec::default();
+        let prefix = "https://example.com/";
+        let at_limit = format!("{prefix}{}", "a".repeat(MAX_URL_LEN - prefix.len()));
+        let cases = [
+            (
+                "HTTPS://GitHub.com/login/device",
+                "https://github.com/login/device",
+            ),
+            (
+                "http://example.com:8080/a?b=c#d",
+                "http://example.com:8080/a?b=c#d",
+            ),
+            ("hTtP://example.com", "http://example.com/"),
+            (
+                "HTTPS://EXAMPLE.COM/path?q=1#x",
+                "https://example.com/path?q=1#x",
+            ),
+            (&at_limit, &at_limit),
+        ];
 
-        assert_eq!(
-            check("HTTPS://GitHub.com/login/device", &network),
-            Ok("https://github.com/login/device".into())
-        );
-        assert_eq!(
-            check("http://example.com:8080/a?b=c#d", &network),
-            Ok("http://example.com:8080/a?b=c#d".into())
-        );
+        for (line, expected) in cases {
+            assert_eq!(
+                check(line, &NetworkSpec::default()),
+                Ok(expected.to_string()),
+                "{line}"
+            );
+        }
     }
 
     #[test]
     fn check_url_rejects_invalid_urls() {
-        let network = NetworkSpec::default();
-
-        for line in [
+        let over_limit = format!("https://example.com/{}", "a".repeat(MAX_URL_LEN));
+        let lines = [
             "file:///etc/passwd",
+            "javascript:alert(1)",
+            "ftp://example.com",
+            "example.com",
+            "http:/example.com",
+            " https://example.com",
+            "",
             "https://",
             "https://exa mple.com",
             "http://[::1",
-        ] {
-            assert_eq!(check(line, &network), Err(Rejection::Invalid), "{line}");
+            "https://example.com/a b",
+            "https://example.com/\t",
+            "https://example.com/\r",
+            "https://example.com/\u{1b}[31m",
+            "https://example.com/\u{7f}",
+            "https://example.com/\u{85}",
+            &over_limit,
+        ];
+
+        for line in lines {
+            let result = check(line, &NetworkSpec::default());
+            assert_eq!(result, Err(Rejection::Invalid), "{line:?}");
         }
         assert_eq!(
-            check_url(b"https://example.com/\xff", &network),
+            check_url(b"https://example.com/\xff", &NetworkSpec::default()),
             Err(Rejection::Invalid)
         );
     }
@@ -802,6 +794,10 @@ mod tests {
             "http://[fe80::1]/",
             "http://[::ffff:127.0.0.1]/",
             "http://user@127.0.0.1/",
+            "http://localhost:0/",
+            "http://app.localhost:8080/",
+            "http://10.0.0.1:8080/",
+            "http://[::ffff:127.0.0.1]:8080/",
         ];
 
         for line in local {
@@ -813,75 +809,66 @@ mod tests {
     }
 
     #[test]
-    fn check_url_rejects_local_hosts_with_ports_it_doesnt_forward() {
-        let network = NetworkSpec::default();
-
-        for line in [
-            "http://localhost:0/",
-            "http://app.localhost:8080/",
-            "http://10.0.0.1:8080/",
-            "http://[::ffff:127.0.0.1]:8080/",
-        ] {
-            assert_eq!(check(line, &network), Err(Rejection::LocalHost), "{line}");
-        }
-    }
-
-    #[test]
-    fn check_url_forwards_the_port_of_a_loopback_host() {
-        for line in [
-            "http://localhost:8080/callback",
-            "https://LOCALHOST:8080/",
-            "http://127.0.0.1:8080/",
-            "http://[::1]:8080/",
-        ] {
-            assert_eq!(ports(line), Ok((Some(8080), None)), "{line}");
-        }
-    }
-
-    #[test]
-    fn check_url_forwards_the_port_of_a_loopback_redirect_uri() {
-        let redirects = [
-            "http%3A%2F%2Flocalhost%3A43117%2Fcallback",
-            "http://localhost:43117/callback",
-            "http%3A%2F%2F127.0.0.1%3A43117%2F",
-            "http%3A%2F%2F%5B%3A%3A1%5D%3A43117%2Fcb",
+    fn check_url_forwards_the_ports_of_loopback_urls_and_their_redirect_uris() {
+        let login =
+            |redirect: &str| format!("https://github.com/login?redirect_uri={redirect}&s=1");
+        let cases = [
+            (
+                "http://localhost:8080/callback".to_string(),
+                Ok((Some(8080), None)),
+            ),
+            (
+                "https://LOCALHOST:8080/".to_string(),
+                Ok((Some(8080), None)),
+            ),
+            ("http://127.0.0.1:8080/".to_string(), Ok((Some(8080), None))),
+            ("http://[::1]:8080/".to_string(), Ok((Some(8080), None))),
+            (
+                login("http%3A%2F%2Flocalhost%3A43117%2Fcallback"),
+                Ok((None, Some(43117))),
+            ),
+            (
+                login("http://localhost:43117/callback"),
+                Ok((None, Some(43117))),
+            ),
+            (
+                login("http%3A%2F%2F127.0.0.1%3A43117%2F"),
+                Ok((None, Some(43117))),
+            ),
+            (
+                login("http%3A%2F%2F%5B%3A%3A1%5D%3A43117%2Fcb"),
+                Ok((None, Some(43117))),
+            ),
+            (
+                "http://localhost:3000/login?redirect_uri=http%3A%2F%2Flocalhost%3A4000%2Fcb"
+                    .to_string(),
+                Ok((Some(3000), Some(4000))),
+            ),
+            (login("http%3A%2F%2Flocalhost%2Fcallback"), Ok((None, None))),
+            (login("http%3A%2F%2Flocalhost%3A0%2F"), Ok((None, None))),
+            (
+                login("https%3A%2F%2Flocalhost%3A43117%2F"),
+                Ok((None, None)),
+            ),
+            (
+                login("http%3A%2F%2Fexample.com%3A43117%2F"),
+                Ok((None, None)),
+            ),
+            (login("http%3A%2F%2F10.0.0.1%3A43117%2F"), Ok((None, None))),
+            (login("not%20a%20url"), Ok((None, None))),
+            (login("http%3A%2F%2Flocalhost%3A99999%2F"), Ok((None, None))),
+            (login(""), Ok((None, None))),
+            (
+                "https://github.com/login?redirect_url=http%3A%2F%2Flocalhost%3A43117%2F"
+                    .to_string(),
+                Ok((None, None)),
+            ),
+            ("https://example.com:8080/".to_string(), Ok((None, None))),
         ];
 
-        for redirect in redirects {
-            let line = format!("https://github.com/login?client_id=x&redirect_uri={redirect}&s=1");
-            assert_eq!(ports(&line), Ok((None, Some(43117))), "{line}");
+        for (line, expected) in cases {
+            assert_eq!(ports(&line), expected, "{line}");
         }
-    }
-
-    #[test]
-    fn check_url_forwards_both_ports_of_a_loopback_url_with_a_redirect_uri() {
-        let line = "http://localhost:3000/login?redirect_uri=http%3A%2F%2Flocalhost%3A4000%2Fcb";
-
-        assert_eq!(ports(line), Ok((Some(3000), Some(4000))));
-    }
-
-    #[test]
-    fn check_url_forwards_nothing_for_other_redirect_uris() {
-        let redirects = [
-            "http%3A%2F%2Flocalhost%2Fcallback",
-            "http%3A%2F%2Flocalhost%3A0%2F",
-            "https%3A%2F%2Flocalhost%3A43117%2F",
-            "http%3A%2F%2Fexample.com%3A43117%2F",
-            "http%3A%2F%2F10.0.0.1%3A43117%2F",
-            "not%20a%20url",
-            "http%3A%2F%2Flocalhost%3A99999%2F",
-            "",
-        ];
-
-        for redirect in redirects {
-            let line = format!("https://github.com/login?redirect_uri={redirect}");
-            assert_eq!(ports(&line), Ok((None, None)), "{line}");
-        }
-        assert_eq!(
-            ports("https://github.com/login?redirect_url=http%3A%2F%2Flocalhost%3A43117%2F"),
-            Ok((None, None))
-        );
-        assert_eq!(ports("https://example.com:8080/"), Ok((None, None)));
     }
 
     #[test]

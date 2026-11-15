@@ -510,66 +510,58 @@ mod unix_tests {
     }
 
     #[test]
-    fn netlog_socket_dir_is_under_xdg_runtime_dir_on_every_platform() {
-        let var = env(&[("XDG_RUNTIME_DIR", "/run/user/1000")]);
-        for macos in [false, true] {
+    fn socket_dirs_are_under_xdg_runtime_dir_or_a_canonical_tmp_dir_per_user_on_macos() {
+        let runtime = &[("XDG_RUNTIME_DIR", "/run/user/1000")][..];
+        let relative = &[("XDG_RUNTIME_DIR", "run")][..];
+        let empty = &[("XDG_RUNTIME_DIR", "")][..];
+        let cases = [
+            (
+                runtime,
+                false,
+                NETLOG_SOCKETS,
+                Some("/run/user/1000/firebrick/netlog"),
+            ),
+            (
+                runtime,
+                true,
+                NETLOG_SOCKETS,
+                Some("/run/user/1000/firebrick/netlog"),
+            ),
+            (
+                runtime,
+                false,
+                CLIPBOARD_SOCKETS,
+                Some("/run/user/1000/firebrick/clipboard"),
+            ),
+            (&[], false, NETLOG_SOCKETS, None),
+            (relative, false, NETLOG_SOCKETS, None),
+            (empty, false, CLIPBOARD_SOCKETS, None),
+            (&[], true, NETLOG_SOCKETS, Some("/private/tmp/fbk-501")),
+            (relative, true, NETLOG_SOCKETS, Some("/private/tmp/fbk-501")),
+            (
+                empty,
+                true,
+                CLIPBOARD_SOCKETS,
+                Some("/private/tmp/fbkc-501"),
+            ),
+        ];
+        for (vars, macos, sockets, expected) in cases {
             assert_eq!(
-                socket_dir_from(&var, macos, 1000, NETLOG_SOCKETS),
-                Some(PathBuf::from("/run/user/1000/firebrick/netlog")),
-                "macos: {macos}"
+                socket_dir_from(&env(vars), macos, 501, sockets),
+                expected.map(PathBuf::from),
+                "{vars:?}, macos: {macos}, {sockets:?}"
             );
         }
     }
 
-    /// Environments without an absolute `XDG_RUNTIME_DIR`.
-    const NO_RUNTIME_DIR: [&[(&str, &str)]; 3] = [
-        &[],
-        &[("XDG_RUNTIME_DIR", "run")],
-        &[("XDG_RUNTIME_DIR", "")],
-    ];
-
     #[test]
-    fn netlog_socket_dir_is_none_on_linux_without_absolute_xdg_runtime_dir() {
-        for vars in NO_RUNTIME_DIR {
-            let dir = socket_dir_from(&env(vars), false, 1000, NETLOG_SOCKETS);
-            assert_eq!(dir, None, "{vars:?}");
+    fn macos_socket_dirs_fit_sockets_of_63_character_sandbox_names() {
+        for sockets in [NETLOG_SOCKETS, CLIPBOARD_SOCKETS] {
+            let dir = socket_dir_from(&env(&[]), true, u32::MAX, sockets).unwrap();
+            let socket = dir.join(format!("{}.sock", "a".repeat(63)));
+
+            assert!(socket.as_os_str().len() < 104, "{}", socket.display());
         }
-    }
-
-    #[test]
-    fn netlog_socket_dir_falls_back_to_a_canonical_tmp_dir_per_user_on_macos() {
-        for vars in NO_RUNTIME_DIR {
-            assert_eq!(
-                socket_dir_from(&env(vars), true, 501, NETLOG_SOCKETS),
-                Some(PathBuf::from("/private/tmp/fbk-501")),
-                "{vars:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn macos_netlog_socket_dir_fits_sockets_of_63_character_sandbox_names() {
-        let dir = socket_dir_from(&env(&[]), true, u32::MAX, NETLOG_SOCKETS).unwrap();
-        let socket = dir.join(format!("{}.sock", "a".repeat(63)));
-
-        assert!(socket.as_os_str().len() < 104, "{}", socket.display());
-    }
-
-    #[test]
-    fn clipboard_sockets_have_their_own_directory_that_fits_long_sandbox_names() {
-        let var = env(&[("XDG_RUNTIME_DIR", "/run/user/1000")]);
-        let macos = socket_dir_from(&env(&[]), true, u32::MAX, CLIPBOARD_SOCKETS).unwrap();
-        let socket = macos.join(format!("{}.sock", "a".repeat(63)));
-
-        assert_eq!(
-            socket_dir_from(&var, false, 1000, CLIPBOARD_SOCKETS),
-            Some(PathBuf::from("/run/user/1000/firebrick/clipboard"))
-        );
-        assert_eq!(
-            macos,
-            PathBuf::from(format!("/private/tmp/fbkc-{}", u32::MAX))
-        );
-        assert!(socket.as_os_str().len() < 104, "{}", socket.display());
     }
 
     #[test]
@@ -595,31 +587,28 @@ mod unix_tests {
     }
 
     #[test]
-    fn approvals_path_is_under_xdg_config_home() {
-        let var = env(&[("XDG_CONFIG_HOME", "/config"), ("HOME", "/home/user")]);
-        assert_eq!(
-            approvals_path_from(&var),
-            Some(PathBuf::from("/config/firebrick/approved.yml"))
-        );
-    }
-
-    #[test]
-    fn approvals_path_falls_back_to_config_in_home() {
-        for config in ["", "config"] {
-            let vars = [("XDG_CONFIG_HOME", config), ("HOME", "/home/user")];
+    fn approvals_path_is_under_xdg_config_home_falling_back_to_config_in_home() {
+        let in_home = Some("/home/user/.config/firebrick/approved.yml");
+        let cases = [
+            (
+                &[("XDG_CONFIG_HOME", "/config"), ("HOME", "/home/user")][..],
+                Some("/config/firebrick/approved.yml"),
+            ),
+            (&[("XDG_CONFIG_HOME", ""), ("HOME", "/home/user")], in_home),
+            (
+                &[("XDG_CONFIG_HOME", "config"), ("HOME", "/home/user")],
+                in_home,
+            ),
+            (&[], None),
+            (&[("XDG_CONFIG_HOME", "config"), ("HOME", "home")], None),
+        ];
+        for (vars, expected) in cases {
             assert_eq!(
-                approvals_path_from(&env(&vars)),
-                Some(PathBuf::from("/home/user/.config/firebrick/approved.yml")),
-                "XDG_CONFIG_HOME={config:?}"
+                approvals_path_from(&env(vars)),
+                expected.map(PathBuf::from),
+                "{vars:?}"
             );
         }
-    }
-
-    #[test]
-    fn approvals_path_is_none_without_absolute_home() {
-        assert_eq!(approvals_path_from(&env(&[])), None);
-        let var = env(&[("XDG_CONFIG_HOME", "config"), ("HOME", "home")]);
-        assert_eq!(approvals_path_from(&var), None);
     }
 }
 
