@@ -111,41 +111,21 @@ mod tests {
         let sandboxes = [
             summary("dev", SandboxStatus::Running, "dev.fbk"),
             summary("long_project_name", SandboxStatus::Stopped, ""),
+            summary("paused", SandboxStatus::Unknown, "paused.fbk"),
         ];
 
         let table = render_sandbox_table(&sandboxes).unwrap();
 
         assert_eq!(
             table,
-            "┌───────────────────┬─────────┬──────────┐\n\
-             │ NAME              │ STATUS  │ HOSTNAME │\n\
-             ├───────────────────┼─────────┼──────────┤\n\
-             │ dev               │ Running │ dev.fbk  │\n\
-             │ long_project_name │ Stopped │          │\n\
-             └───────────────────┴─────────┴──────────┘\n"
+            "┌───────────────────┬─────────┬────────────┐\n\
+             │ NAME              │ STATUS  │ HOSTNAME   │\n\
+             ├───────────────────┼─────────┼────────────┤\n\
+             │ dev               │ Running │ dev.fbk    │\n\
+             │ long_project_name │ Stopped │            │\n\
+             │ paused            │ Unknown │ paused.fbk │\n\
+             └───────────────────┴─────────┴────────────┘\n"
         );
-    }
-
-    #[test]
-    fn table_shows_a_sandbox_whose_pause_state_is_unknown() {
-        let sandboxes = [summary("dev", SandboxStatus::Unknown, "dev.fbk")];
-
-        let table = render_sandbox_table(&sandboxes).unwrap();
-
-        assert!(table.contains("│ dev  │ Unknown │ dev.fbk  │"), "{table}");
-    }
-
-    #[test]
-    fn table_aligns_wide_characters() {
-        let sandboxes = [summary("名前", SandboxStatus::Running, "")];
-
-        let table = render_sandbox_table(&sandboxes).unwrap();
-        let widths: Vec<usize> = table
-            .lines()
-            .map(|line| ratatui::text::Line::from(line).width())
-            .collect();
-
-        assert!(widths.windows(2).all(|pair| pair[0] == pair[1]), "{table}");
     }
 
     #[test]
@@ -172,10 +152,6 @@ mod tests {
             value,
             serde_json::json!([{ "name": "dev", "status": "running", "hostname": "dev.fbk" }])
         );
-    }
-
-    #[test]
-    fn empty_json_is_empty_array() {
         assert_eq!(render_sandbox_json(&[]).unwrap(), "[]\n");
     }
 }

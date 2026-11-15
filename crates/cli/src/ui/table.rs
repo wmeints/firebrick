@@ -142,6 +142,21 @@ mod tests {
     }
 
     #[test]
+    fn aligns_wide_characters() {
+        let table = render(
+            ["NAME", "STATUS"],
+            &[["名前".to_string(), "Running".to_string()]],
+        )
+        .unwrap();
+        let widths: Vec<usize> = table
+            .lines()
+            .map(|line| ratatui::text::Line::from(line).width())
+            .collect();
+
+        assert!(widths.windows(2).all(|pair| pair[0] == pair[1]), "{table}");
+    }
+
+    #[test]
     fn renders_single_column() {
         let table = render(["NAME"], &[["A".to_string()]]).unwrap();
 

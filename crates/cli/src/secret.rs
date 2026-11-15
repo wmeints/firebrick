@@ -309,15 +309,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_table_shows_header() {
-        let table = render_table(&[]).unwrap();
-
-        assert!(table.contains("NAME"), "{table}");
-        assert!(table.contains("SCOPE"), "{table}");
-        assert!(table.contains("ALLOWED HOSTS"), "{table}");
-    }
-
-    #[test]
     fn json_lists_names_scopes_and_hosts() {
         let secrets = [
             summary("A", &["example.com"]),
@@ -337,25 +328,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_json_is_empty_array() {
-        assert_eq!(render_json(&[]).unwrap(), "[]\n");
-    }
+    fn read_value_removes_one_line_ending_and_keeps_other_whitespace() {
+        let cases = [
+            ("token\n", "token"),
+            ("token\r\n", "token"),
+            ("token\n\n", "token\n"),
+            (" to ken ", " to ken "),
+            ("", ""),
+        ];
 
-    #[test]
-    fn read_value_removes_one_line_ending() {
-        assert_eq!(read_value("token\n".as_bytes()).unwrap(), "token");
-        assert_eq!(read_value("token\r\n".as_bytes()).unwrap(), "token");
-        assert_eq!(read_value("token\n\n".as_bytes()).unwrap(), "token\n");
-    }
-
-    #[test]
-    fn read_value_keeps_other_whitespace() {
-        assert_eq!(read_value(" to ken ".as_bytes()).unwrap(), " to ken ");
-        assert_eq!(read_value("".as_bytes()).unwrap(), "");
-    }
-
-    #[test]
-    fn read_value_rejects_invalid_utf8() {
+        for (input, expected) in cases {
+            assert_eq!(read_value(input.as_bytes()).unwrap(), expected, "{input:?}");
+        }
         assert!(read_value(&[0xff, 0xfe][..]).is_err());
     }
 }

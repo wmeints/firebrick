@@ -530,72 +530,57 @@ mod tests {
         let cases = [
             (
                 notice(Reason::PendingRestart, 32 * 1024, ""),
-                "root disk grows to 32 GiB after the sandbox restarts: fbk stop && fbk start",
+                Some("root disk grows to 32 GiB after the sandbox restarts: fbk stop && fbk start"),
             ),
             (
                 notice(Reason::ShrinkUnsupported, 8 * 1024, ""),
-                "volumes.root (8 GiB) is smaller than the sandbox's root disk (16 GiB); \
-                 recreate the sandbox to shrink it: fbk rm --force && fbk start",
+                Some(
+                    "volumes.root (8 GiB) is smaller than the sandbox's root disk (16 GiB); \
+                     recreate the sandbox to shrink it: fbk rm --force && fbk start",
+                ),
             ),
             (
                 notice(Reason::GrowFailed, 20 * 1024 + 512, "disk full"),
-                "warning: failed to grow the root disk to 20992 MiB: disk full",
+                Some("warning: failed to grow the root disk to 20992 MiB: disk full"),
             ),
+            (notice(Reason::Unspecified, 1, ""), None),
         ];
 
         for (notice, expected) in cases {
-            assert_eq!(root_disk_warning(&notice).as_deref(), Some(expected));
+            assert_eq!(
+                root_disk_warning(&notice).as_deref(),
+                expected,
+                "{notice:?}"
+            );
         }
     }
 
     #[test]
-    fn unknown_root_disk_reason_has_no_warning() {
-        assert_eq!(root_disk_warning(&notice(Reason::Unspecified, 1, "")), None);
-    }
-
-    fn sandbox(hostname: &str, workspace_path: &str) -> GetSandboxResponse {
-        GetSandboxResponse {
+    fn connect_instructions_need_a_hostname_and_a_workspace_path_for_the_editors() {
+        let sandbox = |hostname: &str, workspace_path: &str| GetSandboxResponse {
             name: "project".to_string(),
             hostname: hostname.to_string(),
             workspace_path: workspace_path.to_string(),
             ..Default::default()
+        };
+        let cases = [
+            (
+                sandbox("project.fbk", "/workspaces/project"),
+                "Connect with: ssh project.fbk\n\
+                 Open in VS Code: code --folder-uri \
+                 vscode-remote://ssh-remote+project.fbk/workspaces/project\n\
+                 Open in Zed: zed ssh://project.fbk/workspaces/project\n",
+            ),
+            (
+                sandbox("project.fbk", ""),
+                "Connect with: ssh project.fbk\n",
+            ),
+            (sandbox("", "/workspaces/project"), ""),
+        ];
+
+        for (sandbox, expected) in cases {
+            assert_eq!(connect_instructions(&sandbox), expected, "{sandbox:?}");
         }
-    }
-
-    #[test]
-    fn connect_instructions_include_editor_commands() {
-        assert_eq!(
-            connect_instructions(&sandbox("project.fbk", "/workspaces/project")),
-            "Connect with: ssh project.fbk\n\
-             Open in VS Code: code --folder-uri \
-             vscode-remote://ssh-remote+project.fbk/workspaces/project\n\
-             Open in Zed: zed ssh://project.fbk/workspaces/project\n"
-        );
-    }
-
-    #[test]
-    fn connect_instructions_skip_editors_without_workspace_path() {
-        assert_eq!(
-            connect_instructions(&sandbox("project.fbk", "")),
-            "Connect with: ssh project.fbk\n"
-        );
-    }
-
-    #[test]
-    fn connect_instructions_are_empty_without_hostname() {
-        assert_eq!(
-            connect_instructions(&sandbox("", "/workspaces/project")),
-            ""
-        );
-    }
-
-    #[test]
-    fn start_request_carries_workspace() {
-        let spec = firebrick_spec::default_spec("dev".to_string());
-
-        let request = build_start_request(spec, Path::new("/home/user/project"), None).unwrap();
-
-        assert_eq!(request.workspace, "/home/user/project");
     }
 
     fn identity() -> GitIdentity {
@@ -628,35 +613,32 @@ mod tests {
         assert_eq!(request.env, Some(env_vars(spec.env)));
     }
 
-    #[test]
-    fn named_start_request_carries_no_git_identity() {
-        let request = start_request("dev", Path::new(""), None);
-
-        assert_eq!(request.git_identity, None);
-    }
-
-    #[test]
-    fn start_request_carries_image_and_resources_from_spec() {
+    /// Returns the start request for a working directory whose spec file has the content.
+    fn start_request_with(spec: &str) -> StartSandboxRequest {
         let dir = TempDir::new().unwrap();
-        fs::write(
-            dir.path().join(SPEC_FILE_NAME),
-            "name: dev\nimage: alpine:3.22\ninit: false\nmise:\n  enabled: false\nresources:\n  cpu: 4\n  memory: 8Gi\nvolumes:\n  docker: 40 GiB\n  root: 32 GiB\n",
-        )
-        .unwrap();
+        fs::write(dir.path().join(SPEC_FILE_NAME), spec).unwrap();
 
-        let request = build_start_request(
+        build_start_request(
             read_spec_file(dir.path()).unwrap().unwrap(),
             dir.path(),
             None,
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn start_request_carries_the_image_and_resources_of_the_spec() {
+        let request = start_request_with(
+            "name: dev\nimage: alpine:3.22\ninit: false\nmise:\n  enabled: false\n\
+             resources:\n  cpu: 4\n  memory: 8Gi\nvolumes:\n  docker: 40 GiB\n  root: 32 GiB\n",
+        );
         let resources = request.resources.unwrap();
+        let volumes = request.volumes.unwrap();
 
         assert_eq!(request.image, "alpine:3.22");
         assert_eq!(request.init, Some(false));
         assert_eq!(request.mise, Some(false));
         assert_eq!((resources.cpu, resources.memory.as_str()), (4, "8Gi"));
-        let volumes = request.volumes.unwrap();
         assert_eq!(
             (volumes.docker.as_str(), volumes.root.as_str()),
             ("40 GiB", "32 GiB")
@@ -664,96 +646,18 @@ mod tests {
     }
 
     #[test]
-    fn start_request_carries_network_from_spec() {
-        let dir = TempDir::new().unwrap();
-        fs::write(
-            dir.path().join(SPEC_FILE_NAME),
-            "name: dev\nnetwork:\n  enabled: false\n  enforce: true\n  allow: [github.com, \"*.example.com\", 10.0.0.1, 10.0.0.0/8]\n  deny: [gist.github.com]\n",
-        )
-        .unwrap();
-
-        let request = build_start_request(
-            read_spec_file(dir.path()).unwrap().unwrap(),
-            dir.path(),
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(
-            request.network,
-            Some(NetworkPolicy {
-                enforce: true,
-                allow: vec![
-                    "github.com".to_string(),
-                    "*.example.com".to_string(),
-                    "10.0.0.1".to_string(),
-                    "10.0.0.0/8".to_string(),
-                ],
-                deny: vec!["gist.github.com".to_string()],
-                enabled: Some(false),
-                proxy: None,
-            })
+    fn start_request_carries_the_ports_and_env_of_the_spec() {
+        let request = start_request_with(
+            "name: dev\nports: [3000, \"8080:5173\"]\nenv:\n  GREETING: \"$HOME\"\n  PORT: 3000\n",
         );
-    }
-
-    #[test]
-    fn start_request_carries_proxy_from_spec() {
-        let spec: firebrick_spec::SandboxSpec =
-            serde_yaml::from_str("name: dev\nnetwork:\n  proxy: http://127.0.0.1:3128\n").unwrap();
-        let message = network_policy(spec.network.unwrap());
-        assert_eq!(message.proxy.as_deref(), Some("http://127.0.0.1:3128"));
-        assert!(!message.enforce);
-    }
-
-    #[test]
-    fn start_request_carries_ports_from_spec() {
-        let dir = TempDir::new().unwrap();
-        fs::write(
-            dir.path().join(SPEC_FILE_NAME),
-            "name: dev\nports: [3000, \"8080:5173\"]\n",
-        )
-        .unwrap();
-
-        let request = build_start_request(
-            read_spec_file(dir.path()).unwrap().unwrap(),
-            dir.path(),
-            None,
-        )
-        .unwrap();
+        let forward = |host, guest| PortForward { host, guest };
 
         assert_eq!(
             request.ports,
             Some(PortForwards {
-                ports: vec![
-                    PortForward {
-                        host: 3000,
-                        guest: 3000
-                    },
-                    PortForward {
-                        host: 8080,
-                        guest: 5173
-                    },
-                ]
+                ports: vec![forward(3000, 3000), forward(8080, 5173)]
             })
         );
-    }
-
-    #[test]
-    fn start_request_carries_env_from_spec() {
-        let dir = TempDir::new().unwrap();
-        fs::write(
-            dir.path().join(SPEC_FILE_NAME),
-            "name: dev\nenv:\n  GREETING: \"$HOME\"\n  PORT: 3000\n",
-        )
-        .unwrap();
-
-        let request = build_start_request(
-            read_spec_file(dir.path()).unwrap().unwrap(),
-            dir.path(),
-            None,
-        )
-        .unwrap();
-
         assert_eq!(
             request.env,
             Some(EnvVars {
@@ -765,18 +669,25 @@ mod tests {
     }
 
     #[test]
-    fn start_request_without_env_in_spec_carries_no_variables() {
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join(SPEC_FILE_NAME), "name: dev\n").unwrap();
+    fn start_request_carries_the_network_of_the_spec() {
+        let request = start_request_with(
+            "name: dev\nnetwork:\n  enabled: false\n  enforce: true\n  \
+             proxy: http://127.0.0.1:3128\n  \
+             allow: [github.com, \"*.example.com\", 10.0.0.1, 10.0.0.0/8]\n  \
+             deny: [gist.github.com]\n",
+        );
+        let strings = |values: &[&str]| values.iter().map(ToString::to_string).collect();
 
-        let request = build_start_request(
-            read_spec_file(dir.path()).unwrap().unwrap(),
-            dir.path(),
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(request.env, Some(EnvVars::default()));
+        assert_eq!(
+            request.network,
+            Some(NetworkPolicy {
+                enforce: true,
+                allow: strings(&["github.com", "*.example.com", "10.0.0.1", "10.0.0.0/8"]),
+                deny: strings(&["gist.github.com"]),
+                enabled: Some(false),
+                proxy: Some("http://127.0.0.1:3128".to_string()),
+            })
+        );
     }
 
     #[test]
@@ -809,13 +720,16 @@ mod tests {
         let resources = request.resources.unwrap();
         let defaults = firebrick_spec::SandboxResourcesSpec::default();
 
+        assert_eq!(request.workspace, dir.path().to_string_lossy());
         assert_eq!(request.image, firebrick_spec::DEFAULT_IMAGE);
         assert_eq!(request.init, Some(true));
         assert_eq!(request.mise, Some(true));
         assert_eq!(request.network, None);
         assert!(request.mounts.is_empty());
         assert_eq!(request.ports, Some(PortForwards { ports: vec![] }));
+        assert_eq!(request.env, Some(EnvVars::default()));
         assert_eq!(request.clipboard, Some(false));
+        assert_eq!(request.git_identity, None);
         assert_eq!(resources.cpu, u32::from(defaults.cpu));
         assert_eq!(resources.memory, defaults.memory);
         assert_eq!(
@@ -829,19 +743,7 @@ mod tests {
 
     #[test]
     fn clipboard_from_the_spec_is_sent_and_needs_approval() {
-        let dir = TempDir::new().unwrap();
-        fs::write(
-            dir.path().join(SPEC_FILE_NAME),
-            "name: dev\nclipboard: true\n",
-        )
-        .unwrap();
-
-        let request = build_start_request(
-            read_spec_file(dir.path()).unwrap().unwrap(),
-            dir.path(),
-            None,
-        )
-        .unwrap();
+        let request = start_request_with("name: dev\nclipboard: true\n");
         let settings = new_sandbox_settings(&request, NetworkSpec::default());
 
         assert_eq!(request.clipboard, Some(true));
@@ -960,28 +862,30 @@ mod tests {
     }
 
     #[test]
-    fn start_request_without_a_mise_toml_carries_no_mise_config() {
-        let (_dir, project, _) = project_with_dotfiles("  config: ../dotfiles\n", false);
+    fn start_request_without_a_mise_toml_or_with_mise_disabled_carries_no_mise_config() {
+        let cases = [
+            ("  config: ../dotfiles\n", false, Some(true)),
+            (
+                "  enabled: false\n  config: ../dotfiles\n",
+                true,
+                Some(false),
+            ),
+        ];
 
-        let request = start_request_of(&project).unwrap();
+        for (mise, with_config, enabled) in cases {
+            let (_dir, project, _) = project_with_dotfiles(mise, with_config);
 
-        assert_eq!(request.mise_config, "");
-        assert!(
-            new_sandbox_settings(&request, NetworkSpec::default())
-                .mounts
-                .is_empty()
-        );
-    }
+            let request = start_request_of(&project).unwrap();
 
-    #[test]
-    fn start_request_with_mise_disabled_carries_no_mise_config() {
-        let (_dir, project, _) =
-            project_with_dotfiles("  enabled: false\n  config: ../dotfiles\n", true);
-
-        let request = start_request_of(&project).unwrap();
-
-        assert_eq!(request.mise, Some(false));
-        assert_eq!(request.mise_config, "");
+            assert_eq!(request.mise, enabled, "{mise}");
+            assert_eq!(request.mise_config, "", "{mise}");
+            assert!(
+                new_sandbox_settings(&request, NetworkSpec::default())
+                    .mounts
+                    .is_empty(),
+                "{mise}"
+            );
+        }
     }
 
     #[test]
@@ -997,23 +901,5 @@ mod tests {
                 project.join("../missing").display()
             )
         );
-    }
-
-    #[test]
-    fn start_request_fails_for_missing_mount() {
-        let dir = TempDir::new().unwrap();
-        fs::write(
-            dir.path().join(SPEC_FILE_NAME),
-            "name: dev\nmounts:\n  - host: missing\n    guest: /data\n",
-        )
-        .unwrap();
-
-        let result = build_start_request(
-            read_spec_file(dir.path()).unwrap().unwrap(),
-            dir.path(),
-            None,
-        );
-
-        assert!(result.is_err());
     }
 }

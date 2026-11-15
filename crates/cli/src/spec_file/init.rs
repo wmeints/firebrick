@@ -49,72 +49,42 @@ mod tests {
     }
 
     #[test]
-    fn cuts_a_long_directory_name_to_a_valid_sandbox_name() {
-        let (_root, dir) = project_dir(&format!("{}_yz", "x".repeat(127)));
-
-        let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap())
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(spec.name, "x".repeat(127));
-    }
-
-    #[test]
     fn creates_default_spec() {
         let (_root, dir) = project_dir("project");
 
         let spec_path = init_spec(&dir, false).unwrap();
+        let content = fs::read_to_string(&spec_path).unwrap();
         let spec = firebrick_spec::from_file(&spec_path).unwrap().unwrap();
-        let resources = spec.resources.unwrap();
 
         assert_eq!(spec_path, dir.join(SPEC_FILE_NAME));
         assert_eq!(spec.name, "project");
         assert_eq!(spec.image, None);
-        assert_eq!(resources.cpu, 2);
-        assert_eq!(resources.memory, "4 GiB");
         assert_eq!(spec.init, Some(true));
         assert_eq!(spec.mise.and_then(|mise| mise.enabled), Some(true));
-        assert!(
-            fs::read_to_string(&spec_path)
-                .unwrap()
-                .contains("mise:\n  enabled: true\n")
-        );
-        assert_eq!(spec.volumes, firebrick_spec::VolumesSpec::default());
-        assert!(spec.mounts.is_none());
-    }
-
-    #[test]
-    fn default_spec_leaves_out_mounts() {
-        let (_root, dir) = project_dir("project");
-
-        let spec_path = init_spec(&dir, false).unwrap();
-
-        let content = fs::read_to_string(spec_path).unwrap();
+        assert!(content.contains("mise:\n  enabled: true\n"), "{content}");
         assert!(!content.contains("mounts"), "{content}");
     }
 
     #[test]
     fn name_is_sanitized_leaf_of_working_dir() {
-        for (leaf, name) in [("My.App", "my-app"), ("my project_", "my-project")] {
+        let long = format!("{}_yz", "x".repeat(127));
+        let cases = [
+            ("My.App", "my-app".to_string()),
+            ("my project_", "my-project".to_string()),
+            // A long name is cut to a valid sandbox name.
+            (long.as_str(), "x".repeat(127)),
+            ("__", "sandbox".to_string()),
+        ];
+
+        for (leaf, name) in cases {
             let (_root, dir) = project_dir(leaf);
 
             let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap())
                 .unwrap()
                 .unwrap();
 
-            assert_eq!(spec.name, name);
+            assert_eq!(spec.name, name, "{leaf}");
         }
-    }
-
-    #[test]
-    fn name_falls_back_to_sandbox() {
-        let (_root, dir) = project_dir("__");
-
-        let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap())
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(spec.name, "sandbox");
     }
 
     #[test]

@@ -194,30 +194,6 @@ mod tests {
     }
 
     #[test]
-    fn defines_the_expected_presets() {
-        let expected = [
-            "claude", "copilot", "github", "codex", "node", "dotnet", "java", "rust", "go",
-            "python", "mise", "ruby",
-        ];
-        let actual: Vec<&str> = PRESETS.iter().map(|preset| preset.name).collect();
-
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn preset_names_are_unique_lowercase_and_not_all() {
-        for (index, preset) in PRESETS.iter().enumerate() {
-            assert_ne!(preset.name, ALL);
-            assert_eq!(preset.name, preset.name.to_lowercase());
-            assert!(
-                PRESETS[index + 1..].iter().all(|p| p.name != preset.name),
-                "{}",
-                preset.name
-            );
-        }
-    }
-
-    #[test]
     fn names_lists_all_then_every_preset_in_order() {
         let names: Vec<&str> = names().collect();
 

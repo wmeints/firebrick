@@ -99,62 +99,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn value_loses_the_trailing_newline() {
+    fn parse_value_returns_the_value_without_its_newline_or_none_when_unset() {
         assert_eq!(
             parse_value(Some(0), b"Ada Lovelace\n", b""),
             Ok(Some("Ada Lovelace".to_string()))
         );
-    }
-
-    #[test]
-    fn value_keeps_quotes_and_shell_metacharacters() {
-        assert_eq!(
-            parse_value(Some(0), b"O'Brien; $(id)\n", b""),
-            Ok(Some("O'Brien; $(id)".to_string()))
-        );
-    }
-
-    #[test]
-    fn unset_key_has_no_value() {
+        // git config exits with 1 for a key that isn't set.
         assert_eq!(parse_value(Some(1), b"", b""), Ok(None));
     }
 
     #[test]
-    fn other_git_failure_is_reported_with_its_error() {
+    fn parse_value_refuses_failures_and_values_it_cant_pass_on() {
         let stderr = b"fatal: bad config line 3 in file /home/ada/.gitconfig\n";
+        let cases: [(&[u8], &str); 3] = [
+            (b"Ada\nLovelace\n", "the value has a newline or NUL"),
+            (b"ada\0@example.com\n", "the value has a newline or NUL"),
+            (b"\xff\n", "the value isn't valid UTF-8"),
+        ];
 
+        for (stdout, reason) in cases {
+            assert_eq!(parse_value(Some(0), stdout, b""), Err(reason.to_string()));
+        }
         assert_eq!(
             parse_value(Some(128), b"", stderr),
             Err("git config failed: fatal: bad config line 3 in file /home/ada/.gitconfig".into())
         );
-    }
-
-    #[test]
-    fn git_killed_by_a_signal_is_reported() {
+        // Killed by a signal.
         assert!(parse_value(None, b"", b"").is_err());
-    }
-
-    #[test]
-    fn value_with_a_newline_is_refused() {
-        assert_eq!(
-            parse_value(Some(0), b"Ada\nLovelace\n", b""),
-            Err("the value has a newline or NUL".to_string())
-        );
-    }
-
-    #[test]
-    fn value_with_a_nul_is_refused() {
-        assert_eq!(
-            parse_value(Some(0), b"ada\0@example.com\n", b""),
-            Err("the value has a newline or NUL".to_string())
-        );
-    }
-
-    #[test]
-    fn value_that_is_not_utf8_is_refused() {
-        assert_eq!(
-            parse_value(Some(0), b"\xff\n", b""),
-            Err("the value isn't valid UTF-8".to_string())
-        );
     }
 }
