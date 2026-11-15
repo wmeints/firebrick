@@ -554,20 +554,27 @@ mod tests {
     }
 
     #[test]
-    fn edit_spec_writes_a_new_file_even_without_a_change() {
+    fn edit_spec_writes_a_new_file_with_the_change_or_without_one() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(SPEC_FILE_NAME);
-        let spec = SandboxSpec {
-            network: enforced(false),
-            ..firebrick_spec::default_spec("firebrick-abc123".to_string())
+        let allow = NetworkChange::Allow(rules(&["example.org"]));
+        let unchanged = NetworkChange::Enforce(false);
+        let allowed = NetworkSpec {
+            allow: rules(&["example.org"]),
+            ..NetworkSpec::default()
         };
+        let cases = [(&allow, allowed), (&unchanged, NetworkSpec::default())];
 
-        let (_, changed) = edit_spec(&path, spec, &NetworkChange::Enforce(false), true).unwrap();
-        let written = firebrick_spec::from_file(&path).unwrap().unwrap();
+        for (change, expected) in cases {
+            let spec = firebrick_spec::default_spec("firebrick-abc123".to_string());
 
-        assert!(changed);
-        assert_eq!(written.name, "firebrick-abc123");
-        assert_eq!(written.network, enforced(false));
+            let (_, changed) = edit_spec(&path, spec, change, true).unwrap();
+            let written = firebrick_spec::from_file(&path).unwrap().unwrap();
+
+            assert!(changed, "{change:?}");
+            assert_eq!(written.name, "firebrick-abc123");
+            assert_eq!(written.network, Some(expected), "{change:?}");
+        }
     }
 
     #[test]

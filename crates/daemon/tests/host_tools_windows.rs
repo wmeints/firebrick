@@ -206,7 +206,13 @@ async fn a_tool_that_hangs_is_given_up_on() {
 
     let kinds = tools(dir.path()).kinds().await;
 
-    assert_eq!(cause(kinds), Cause::Failed);
+    assert_eq!(
+        kinds,
+        Err(HostError::Unavailable(
+            Cause::Failed,
+            "powershell.exe didn't finish within 4s".to_string()
+        ))
+    );
 }
 
 #[tokio::test]

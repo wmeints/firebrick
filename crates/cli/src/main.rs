@@ -445,6 +445,11 @@ mod tests {
         Cli::try_parse_from(["fbk"].iter().chain(args)).map(|cli| cli.command)
     }
 
+    /// Returns the kind of the parse error, or panics when the arguments parse.
+    fn kind<T: std::fmt::Debug>(result: Result<T, clap::Error>) -> clap::error::ErrorKind {
+        result.unwrap_err().kind()
+    }
+
     fn parse_secret_set(args: &[&str]) -> Result<SetSecretArgs, clap::Error> {
         let args: Vec<&str> = ["secret", "set"].iter().chain(args).copied().collect();
 
@@ -565,7 +570,10 @@ mod tests {
                 })
             )
         });
-        assert!(parse(&["secret", "rm"]).is_err());
+        assert_eq!(
+            kind(parse(&["secret", "rm"])),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
     }
 
     #[test]
@@ -587,8 +595,14 @@ mod tests {
         assert_eq!(args.allowed_hosts, ["a.example.com", "*.example.org"]);
         assert!(from_stdin.from_stdin);
         assert_eq!(from_stdin.value, None);
-        assert!(parse_secret_set(&["GH_TOKEN"]).is_err());
-        assert!(parse_secret_set(&["GH_TOKEN", "abc", "--from-stdin"]).is_err());
+        assert_eq!(
+            kind(parse_secret_set(&["GH_TOKEN"])),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(
+            kind(parse_secret_set(&["GH_TOKEN", "abc", "--from-stdin"])),
+            clap::error::ErrorKind::ArgumentConflict
+        );
     }
 
     #[test]
@@ -629,16 +643,29 @@ mod tests {
                 }
             }
         ));
-        assert!(parse_port(&["forward"]).is_err());
+        assert_eq!(
+            kind(parse_port(&["forward"])),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
         assert!(matches!(
             parse_port(&["rm", "8080"]).unwrap(),
             PortCommands::Rm { port: 8080 }
         ));
         for arg in ["0", "65536", "web", "8080:5173"] {
-            assert!(parse_port(&["rm", arg]).is_err(), "{arg}");
+            assert_eq!(
+                kind(parse_port(&["rm", arg])),
+                clap::error::ErrorKind::ValueValidation,
+                "{arg}"
+            );
         }
-        assert!(parse_port(&["ls", "--format", "yaml"]).is_err());
-        assert!(parse_port(&["ls", "dev"]).is_err());
+        assert_eq!(
+            kind(parse_port(&["ls", "--format", "yaml"])),
+            clap::error::ErrorKind::InvalidValue
+        );
+        assert_eq!(
+            kind(parse_port(&["ls", "dev"])),
+            clap::error::ErrorKind::UnknownArgument
+        );
     }
 
     #[test]

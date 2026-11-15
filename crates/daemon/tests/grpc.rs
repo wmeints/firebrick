@@ -1208,6 +1208,30 @@ async fn remove_sandbox_with_force_stops_and_removes_running_sandbox() {
 }
 
 #[tokio::test]
+async fn remove_sandbox_with_force_removes_stopped_sandbox() {
+    let name: &str = &sandbox_name("remove-force-stopped");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("remove-force-stopped").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, name).await;
+    stop_sandbox(&mut client, name).await;
+
+    client
+        .remove_sandbox(RemoveSandboxRequest {
+            name: name.to_string(),
+            force: true,
+        })
+        .await
+        .expect("failed to force-remove stopped sandbox");
+
+    assert_eq!(sandbox_status(&mut client, name).await, None);
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+}
+
+#[tokio::test]
 async fn stop_or_kill_kills_sandbox_that_misses_the_timeout() {
     let name: &str = &sandbox_name("stop-or-kill");
     remove_sandbox(name).await;
