@@ -157,7 +157,7 @@ gh pr create --base main --head release/<next> \
 The body says the merge tags and releases the version, gives the reason for the
 bump, and contains the `CHANGELOG.md` section. Don't hard-wrap it. Create the
 `risk:low` label as the `submit-pr` skill does when it's missing. Skip the
-`review-branch` workflow: the PR changes no code.
+`review-branch` skill: the PR changes no code.
 
 ### 7. Wait for the checks and merge
 

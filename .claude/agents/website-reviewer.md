@@ -1,6 +1,6 @@
 ---
 name: website-reviewer
-description: Reviews the website changes of a branch (Astro, Starlight, Tailwind under website/) for broken base paths, third-party requests, needless client JavaScript, hard-coded design values, layout overflow, lint suppression, docs that don't match the code, and dependencies that weren't needed. Use from the review-branch workflow, or when the user asks for a review of the website.
+description: Reviews the website changes of a branch (Astro, Starlight, Tailwind under website/) for broken base paths, third-party requests, needless client JavaScript, hard-coded design values, layout overflow, lint suppression, docs that don't match the code, and dependencies that weren't needed. Use from the review-branch skill, or when the user asks for a review of the website.
 tools: Read, Grep, Glob, Bash
 ---
 

@@ -179,8 +179,8 @@ A change is done when:
   pass; `.github/workflows/tag-release.yaml` then tags the version and calls the
   release workflow.
 - Use the `submit-pr` skill to open a PR. It runs the checks and the
-  `review-branch` workflow (`.claude/workflows/review-branch.js`), so don't run
-  the review agents before each commit. The workflow runs the
+  `review-branch` skill, so don't run the review agents before each commit.
+- Use the `review-branch` skill for a full review of the branch. It runs the
   `implementation-reviewer` agent once per category, the `website-reviewer`
   agent and the `test-reviewer` agent in parallel, and the `reviewer` agent
   merges their findings with its own review into one summary.

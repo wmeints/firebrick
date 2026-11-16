@@ -1,6 +1,6 @@
 ---
 name: implementation-reviewer
-description: Reviews the Rust production code of a branch for the mistakes coding agents keep making, one category per pass, ownership, safety, errors, fallbacks, async or ladder. Use from the review-branch workflow, or when the user asks to check a branch for borrow-checker workarounds, lint suppression, casts, swallowed errors, fallbacks, blocking async code or code that didn't need to be built.
+description: Reviews the Rust production code of a branch for the mistakes coding agents keep making, one category per pass, ownership, safety, errors, fallbacks, async or ladder. Use from the review-branch skill, or when the user asks to check a branch for borrow-checker workarounds, lint suppression, casts, swallowed errors, fallbacks, blocking async code or code that didn't need to be built.
 tools: Read, Grep, Glob, Bash
 ---
 
