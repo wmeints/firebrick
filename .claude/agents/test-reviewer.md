@@ -1,6 +1,6 @@
 ---
 name: test-reviewer
-description: Reviews only the test code of a branch and the git history of its tests, for tests that can't fail, weak assertions, over-mocking, redundant tests and changes that game the test suite. Use from the review-branch workflow, or when the user asks for a review of the tests on the current branch.
+description: Reviews only the test code of a branch and the git history of its tests, for tests that can't fail, weak assertions, over-mocking, redundant tests and changes that game the test suite. Use from the review-branch skill, or when the user asks for a review of the tests on the current branch.
 tools: Read, Grep, Glob, Bash
 ---
 

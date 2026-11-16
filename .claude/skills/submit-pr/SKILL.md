@@ -46,12 +46,12 @@ Before opening the PR, verify the change:
    `website/src/content/docs/docs/` must describe it. When it changes the
    development workflow, `README.md` must describe it. If any of these is
    missing, stop and offer to write it before opening the PR.
-3. Run the `review-branch` workflow with the Workflow tool, by name. It runs the
+3. Run the `review-branch` skill with the Skill tool. It runs the
    `implementation-reviewer` passes, the `website-reviewer` agent and the
    `test-reviewer` agent in parallel, and the `reviewer` agent merges their
    findings into one report with one verdict. Fix confirmed findings with the
    user's approval, or list the ones you leave open under **Review focus**. When
-   the report names passes as not reviewed, run the workflow again or list them
+   the report names passes as not reviewed, run the skill again or list them
    under **Review focus**.
 
 ## Steps

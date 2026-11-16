@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Reviews a branch against the project's coding guidelines before it is submitted as a pull request, and merges the findings of the implementation-reviewer and test-reviewer agents into one summary. Use from the review-branch workflow, or when the user asks for a review of the current changes.
+description: Reviews a branch against the project's coding guidelines before it is submitted as a pull request, and merges the findings of the implementation-reviewer and test-reviewer agents into one summary. Use from the review-branch skill, or when the user asks for a review of the current changes.
 tools: Read, Grep, Glob, Bash
 ---
 
@@ -57,7 +57,7 @@ interactive applications.
 ## Merging findings
 
 When the caller hands you findings from `implementation-reviewer`,
-`website-reviewer` and `test-reviewer`, as the `review-branch` workflow does, do
+`website-reviewer` and `test-reviewer`, as the `review-branch` skill does, do
 your own review first, then merge their findings with yours into one summary.
 Remove duplicates: keep one finding per problem, with the category and check
 number of the agent that reported it. Drop a finding only when you read the code
