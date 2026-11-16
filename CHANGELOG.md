@@ -6,6 +6,31 @@ request, and the release workflow copies the section into the GitHub release,
 above the generated list of pull requests. Each section starts with a `##
 vX.Y.Z - YYYY-MM-DD` heading.
 
+## v0.14.0 - 2026-11-16
+
+This release lists the ports listening in a sandbox, makes firebrick installable
+with Homebrew, and fixes HTTPS requests from sandboxes with an enforced network
+policy on Windows hosts.
+
+### Features
+
+- `fbk port ls` lists a sandbox's port forwards next to the TCP ports listening
+  inside it, with the owning process and a status (`forwarded`, `listening`,
+  `not listening`, `stopped` or `unknown`), as a table or with `--format json`.
+  It works on running sandboxes without recreating them, and warns when the
+  listing is truncated or can't be read. (#273)
+- Install `fbk` and `fbkd` on macOS (Apple Silicon) and Linux with `brew install
+  wmeints/tap/firebrick`, and upgrade with `brew upgrade firebrick`. Each
+  release updates the formula in the `wmeints/homebrew-tap` tap. (#280)
+
+### Fixes
+
+- On Windows hosts, HTTPS requests from a sandbox with `network.enforce: true`
+  or a secret no longer fail with `unexpected eof` when the site's root CA isn't
+  installed in the Windows certificate store yet. `fbkd` now also trusts the
+  Mozilla root certificates for upstream TLS. (#272)
+- The dependencies are updated to their latest compatible versions. (#285)
+
 ## v0.13.1 - 2026-11-12
 
 This release lets Java make HTTPS requests in sandboxes that intercept TLS, and
