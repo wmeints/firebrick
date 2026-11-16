@@ -14,7 +14,7 @@ Firebrick supports two ways of working:
   sandbox over SSH.
 
 > [!NOTE]
-> Firebrick is early in development.
+> Windows support for Firebrick is experimental.
 
 ## Installing and using Firebrick
 
