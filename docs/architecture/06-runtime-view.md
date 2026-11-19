@@ -677,6 +677,18 @@ forward, such as `Forwarding localhost:8080 -> sandbox port 5173`.
 When fbkd starts, it opens the stored forwards of the sandboxes that are already
 running. `fbk stop`, `fbk rm` and fbkd's exit close them.
 
+Each connection first waits for the first bytes of either side. When the
+client's first byte starts a TLS handshake record, fbkd accepts the handshake
+with its localhost server certificate, opens a TLS connection to the guest port
+that offers the client's ALPN protocols and server name, finishes the client's
+handshake with only the protocol the guest chose, and copies the decrypted bytes
+between the two connections. A browser that trusts the localhost CA (see
+[Trusting the localhost CA](#trusting-the-localhost-ca)) thus opens an HTTPS dev
+server in the sandbox without a warning, whatever certificate the dev server
+uses. Plain clients and guests that speak first, such as databases, get the
+relay as before
+([ADR 0065](decisions/0065-serve-https-on-forwarded-ports-with-a-localhost-ca.md)).
+
 - The host port is in use, by another process or another sandbox's forward, or
   needs privileges: the sandbox still starts. fbkd logs `couldn't forward
   localhost:<host> for sandbox <name>: <error>` as a warning and returns the
@@ -685,6 +697,9 @@ running. `fbk stop`, `fbk rm` and fbkd's exit close them.
 - Nothing listens on the guest port when a connection arrives: fbkd closes that
   host connection and logs it at `debug`. The listener stays up, so a later
   connection works once the guest listens.
+- A TLS client connects but the guest port doesn't speak TLS, or asks for a
+  client certificate: the guest handshake fails, fbkd closes the host connection
+  and logs it at `debug`, and the listener stays up.
 
 ```mermaid
 sequenceDiagram
@@ -955,6 +970,39 @@ sequenceDiagram
         CLI-->>Dev: Forwards with status stopped
     end
 ```
+
+## Trusting the localhost CA
+
+When fbkd starts, it loads its localhost CA from `tls/` in its data directory or
+creates it, with a name constraint to `localhost`, `127.0.0.0/8` and `::1`, and
+issues the server certificate that forwarded ports serve HTTPS with. It replaces
+a CA that doesn't parse or doesn't match its key and logs a warning to run `fbk
+cert trust` again.
+
+`fbk cert trust` connects to fbkd, starting it when needed, so the CA exists,
+and adds `tls/ca.crt` to the host's trust stores. It first removes the earlier
+firebrick CAs by their common name, so a replaced CA doesn't stay trusted:
+
+| Platform | Store                           | Commands                                                                                                                                              |
+| -------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux    | System store                    | `sudo install -m 644` into the first anchor directory that exists, then `update-ca-trust extract`, `update-ca-certificates` or `trust extract-compat` |
+| Linux    | NSS databases (Chrome, Firefox) | `certutil -L`/`-D` for earlier copies, then `certutil -A -t C,,`, when `certutil` is installed                                                        |
+| macOS    | Login keychain                  | `security find-certificate`/`delete-certificate -t`, then `security add-trusted-cert -r trustRoot`                                                    |
+| Windows  | User root store                 | `certutil -user -store`/`-delstore Root`, then `certutil -user -addstore Root`                                                                        |
+
+It prints `Trusted the firebrick localhost CA in <store>.` for each store and
+`Restart your browser to pick it up.` at the end. `fbk cert clean` runs the
+removals without the daemon and prints `Removed the firebrick localhost CA from
+<store>.`; on Linux it only touches the system store when the CA's file is in
+it.
+
+- A command fails, for example when `sudo` is refused: `fbk` stops with
+  `couldn't trust the certificate in <store>: <command> failed: <stderr>` and
+  exits with code 1. The stores changed before stay changed.
+- There's no known system store, or NSS databases exist but `certutil` doesn't:
+  `fbk` changes the other stores and prints a `note:` that says what to do.
+- fbkd hasn't created the CA, for example because its data directory differs:
+  `fbkd hasn't created the localhost certificate authority in <path>`.
 
 ## Setting a secret
 

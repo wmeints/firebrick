@@ -427,6 +427,41 @@ run `fbk start` again. Ports must be from 1 to 65535, and each host port may
 appear once. See also
 [Troubleshooting](/docs/troubleshooting/#a-host-port-is-already-in-use).
 
+### HTTPS dev servers
+
+Dev servers that serve HTTPS in the sandbox, such as the Aspire dashboard or an
+ASP.NET Core app with its development certificate, use a certificate your
+browser doesn't trust. Every forward handles this for you: when your browser
+opens `https://localhost:<port>`, `fbkd` answers with a certificate of its own
+and passes the requests on to the dev server over a second HTTPS connection.
+HTTP/2, gRPC and WebSockets work as before, and plain HTTP and other protocols
+are forwarded as they are.
+
+`fbkd`'s certificate is signed by a localhost certificate authority (CA) that it
+keeps in its data directory and that may only sign certificates for `localhost`,
+its subdomains and the loopback addresses. Trust it once:
+
+```sh
+fbk cert trust
+```
+
+```text
+Trusted the firebrick localhost CA in the system trust store (/etc/ca-certificates/trust-source/anchors).
+Trusted the firebrick localhost CA in the NSS database /home/me/.pki/nssdb.
+Restart your browser to pick it up.
+```
+
+On Linux it asks for your password to change the system store, and also updates
+the certificate databases of Chrome and Firefox when `certutil` is installed
+(`libnss3-tools` on Debian and Ubuntu, `nss-tools` on Fedora, `nss` on Arch). On
+macOS it adds the CA to your login keychain, and on Windows to your user's root
+store, which asks you to confirm. `fbk cert clean` removes the CA again.
+
+The CA's key never enters a sandbox, so an agent can't use it, and your host
+never trusts a certificate made in the sandbox. A dev server that requires
+client certificates doesn't work through a forward, because the browser's
+certificate ends at `fbkd`.
+
 ### Browser logins
 
 Logins that send your browser back to `localhost`, such as `gh auth login

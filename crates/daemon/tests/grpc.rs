@@ -190,7 +190,8 @@ impl TestDaemon {
             content: Mutex::new(FakeContent::Full),
             written: Mutex::new(Vec::new()),
         });
-        let service = server::FirebrickServer::new(secrets, opener.clone(), clipboard.clone());
+        let service =
+            server::FirebrickServer::new(secrets, opener.clone(), clipboard.clone(), None);
 
         if restore_listeners {
             service.restore_listeners().await;

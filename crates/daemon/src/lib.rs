@@ -4,6 +4,7 @@
 /// Generated gRPC types for the firebrick API.
 pub use firebrick_proto as api;
 
+pub mod certificate;
 pub mod forward;
 pub mod guest;
 mod host_config;

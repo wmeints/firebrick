@@ -12,7 +12,7 @@ mod secret_updates;
 mod settings;
 mod status;
 
-use crate::forward::{ForwardReport, Forwards, SshConnector};
+use crate::forward::{ForwardReport, Forwards, SshConnector, TlsBridge};
 use crate::guest::clipboard::{self, Clipboards, HostClipboard};
 use crate::guest::netlog::{NetLogs, Record};
 use crate::guest::open::{Opener, Relays};
@@ -291,13 +291,19 @@ impl SandboxManager {
     /// Creates a manager that adds the secrets from `secrets` to sandboxes, opens the URLs from
     /// sandboxes with `opener` and reads the host clipboard for them from `clipboard`. It keeps
     /// network logs and clipboard sockets in the directories the environment selects, see
-    /// [`NetLogs::from_env`] and [`Clipboards::from_env`].
+    /// [`NetLogs::from_env`] and [`Clipboards::from_env`]. Its port forwards bridge TLS
+    /// connections through `tls` when there is one.
     pub fn new(
         secrets: SecretStore,
         opener: Arc<dyn Opener>,
         clipboard: Arc<dyn HostClipboard>,
+        tls: Option<Arc<TlsBridge>>,
     ) -> Self {
-        let forwards = Arc::new(Forwards::new(SshConnector::default()));
+        let forwards = Forwards::new(SshConnector::default());
+        let forwards = Arc::new(match tls {
+            Some(tls) => forwards.with_tls(tls),
+            None => forwards,
+        });
 
         Self {
             secrets,
@@ -998,6 +1004,7 @@ mod tests {
             store,
             Arc::new(HostOpener),
             Arc::new(HostTools::new(None, None)),
+            None,
         )
     }
 
@@ -1106,6 +1113,7 @@ mod tests {
             SecretStore::new(&path),
             Arc::new(HostOpener),
             Arc::new(HostTools::new(None, None)),
+            None,
         );
         let sandbox = format!("fbk-unit-missing-{}", std::process::id());
 

@@ -11,6 +11,7 @@ use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::task::JoinSet;
 
 use super::Connector;
+use super::tls::TlsBridge;
 
 /// The listeners of one forward. Dropping it closes them and their connections.
 pub(super) struct Forward(JoinSet<()>);
@@ -22,6 +23,9 @@ pub(super) struct Route {
     pub(super) port: PortMapping,
     pub(super) connector: Arc<dyn Connector>,
     pub(super) activity: Arc<Activity>,
+    /// Terminates TLS connections with the localhost certificate, or `None` to relay every
+    /// connection as it is.
+    pub(super) tls: Option<Arc<TlsBridge>>,
 }
 
 /// Listens on the route's host port and forwards its connections to the guest port, until the
@@ -202,6 +206,7 @@ async fn accept_loop(listener: TcpListener, route: Route) {
         port,
         connector,
         activity,
+        tls,
     } = route;
     let mut connections = JoinSet::new();
 
@@ -210,7 +215,8 @@ async fn accept_loop(listener: TcpListener, route: Route) {
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
                     let guard = activity.connected();
-                    let relayed = relay(stream, sandbox.clone(), port.guest, Arc::clone(&connector));
+                    let guest = Guest { sandbox: sandbox.clone(), port: port.guest, connector: Arc::clone(&connector) };
+                    let relayed = relay(stream, guest, tls.clone());
                     connections.spawn(async move {
                         relayed.await;
                         drop(guard);
@@ -237,23 +243,38 @@ async fn accept_failed(host_port: u16, err: &io::Error) {
     tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
 }
 
-/// Connects the host connection to the guest port and copies bytes both ways until both sides
-/// are done. Closes the host connection when nothing listens on the guest port.
-async fn relay(
-    mut host: TcpStream,
+/// The guest port a connection is forwarded to.
+struct Guest {
     sandbox: String,
-    guest_port: u16,
+    port: u16,
     connector: Arc<dyn Connector>,
-) {
-    let mut guest = match connector.connect(&sandbox, guest_port).await {
+}
+
+/// Connects the host connection to the guest port and copies bytes both ways until both sides
+/// are done, through the TLS bridge when there is one. Closes the host connection when nothing
+/// listens on the guest port.
+async fn relay(mut host: TcpStream, guest: Guest, tls: Option<Arc<TlsBridge>>) {
+    let Guest {
+        sandbox,
+        port,
+        connector,
+    } = guest;
+    let mut guest = match connector.connect(&sandbox, port).await {
         Ok(guest) => guest,
         Err(err) => {
-            tracing::debug!("couldn't connect to port {guest_port} of sandbox {sandbox}: {err}");
+            tracing::debug!("couldn't connect to port {port} of sandbox {sandbox}: {err}");
             return;
         }
     };
 
-    if let Err(err) = tokio::io::copy_bidirectional(&mut host, &mut guest).await {
+    let relayed = match tls {
+        Some(bridge) => bridge.relay(host, guest).await,
+        None => tokio::io::copy_bidirectional(&mut host, &mut guest)
+            .await
+            .map(drop),
+    };
+
+    if let Err(err) = relayed {
         tracing::debug!("forwarded connection to sandbox {sandbox} ended: {err}");
     }
 }

@@ -1,7 +1,7 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::builder::PossibleValuesParser;
 use clap::{Args, Parser, Subcommand};
 use firebrick_cli::api::sandbox_management_service_client::SandboxManagementServiceClient;
@@ -11,7 +11,7 @@ use firebrick_cli::remote::{session, ssh};
 use firebrick_cli::sandbox::OutputFormat;
 use firebrick_cli::secret::Scope;
 use firebrick_cli::spec_file::{self, init, validate};
-use firebrick_cli::{client, port, sandbox, secret};
+use firebrick_cli::{cert, client, port, sandbox, secret};
 use firebrick_spec::PortMapping;
 use tonic::transport::Channel;
 
@@ -81,6 +81,9 @@ enum Commands {
     /// or list the ports listening in it
     #[command(subcommand)]
     Port(PortCommands),
+    /// Trust the certificate that forwarded ports serve HTTPS with on this host, or remove it
+    #[command(subcommand)]
+    Cert(CertCommands),
     /// Tunnel an SSH connection to a sandbox over stdin/stdout (used by the generated SSH config)
     #[command(hide = true)]
     SshProxy {
@@ -181,6 +184,15 @@ enum PolicyCommands {
 }
 
 #[derive(Subcommand, Debug)]
+enum CertCommands {
+    /// Add the localhost certificate authority to the trust stores of this host, so browsers
+    /// accept HTTPS on forwarded ports. Asks for your password to change the system store
+    Trust,
+    /// Remove the localhost certificate authority from the trust stores of this host
+    Clean,
+}
+
+#[derive(Subcommand, Debug)]
 enum PortCommands {
     /// Forward a host port on localhost to a port in the sandbox, right away when it runs
     Forward {
@@ -258,11 +270,41 @@ async fn main() -> Result<()> {
         Commands::Secret(SecretCommands::Set(args)) => set_secret(args, &working_dir).await,
         // Changes the spec file first and only needs the daemon to apply it.
         Commands::Network(command) => run_network_command(command, &working_dir).await,
+        Commands::Cert(command) => run_cert_command(command).await,
         Commands::Upgrade { name } => {
             sandbox::upgrade_sandbox(name, &working_dir, &mut client::connect().await?).await
         }
         command => run_with_daemon(command, working_dir).await,
     }
+}
+
+/// Changes the trust stores of the host. Trusting starts the daemon first, which creates the
+/// certificate authority; removing it doesn't need the daemon.
+async fn run_cert_command(command: CertCommands) -> Result<()> {
+    let action = match command {
+        CertCommands::Trust => {
+            client::connect().await?;
+            cert::Action::Trust(localhost_ca()?)
+        }
+        CertCommands::Clean => cert::Action::Clean,
+    };
+
+    let plan = cert::plan(&cert::Host::detect()?, &action);
+    cert::execute(&plan, &action)
+}
+
+/// Returns the certificate of the daemon's localhost certificate authority.
+fn localhost_ca() -> Result<PathBuf> {
+    let path = firebrick_utils::localhost_ca_path().context(firebrick_utils::NO_DATA_DIR)?;
+
+    if !path.is_file() {
+        anyhow::bail!(
+            "fbkd hasn't created the localhost certificate authority in {}",
+            path.display()
+        );
+    }
+
+    Ok(path)
 }
 
 /// Returns the working directory.
@@ -339,6 +381,7 @@ async fn run_with_daemon(command: Commands, working_dir: PathBuf) -> Result<()> 
         | Commands::Init { .. }
         | Commands::Secret(SecretCommands::Set(_))
         | Commands::Network(_)
+        | Commands::Cert(_)
         | Commands::Upgrade { .. } => {
             unreachable!("handled before connecting to the daemon")
         }

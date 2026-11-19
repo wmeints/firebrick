@@ -76,6 +76,17 @@ changes nothing. Free the port and run `fbk start` again.
 
 See [Forwarding ports](/docs/networking/#forwarding-ports).
 
+## The browser warns about the certificate of a forwarded port
+
+Run `fbk cert trust` and restart the browser. On Linux, Chrome and Firefox only
+pick up the certificate authority when `certutil` is installed, or when they
+read the system store, as on Arch; `fbk cert trust` prints a note when it
+skipped them. A dev server that serves plain HTTP must be opened with `http://`,
+and one that requires client certificates can't be reached over HTTPS through a
+forward.
+
+See [HTTPS dev servers](/docs/networking/#https-dev-servers).
+
 ## SSH sessions start in /bin/sh and SHELL isn't set
 
 SSH sessions run in `/bin/sh`, and clients that require `SHELL`, such as the
