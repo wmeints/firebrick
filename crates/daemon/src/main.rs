@@ -112,8 +112,9 @@ async fn run(log_dir: &Path, secrets_path: PathBuf) -> Result<()> {
     secrets::protect_database(&msb_config.home())
         .context("failed to protect the microsandbox database")?;
     ssh::ensure_keys()?;
-    let certificate = certificate::ensure()?;
-    let tls = TlsBridge::new(&certificate).context("can't serve the localhost certificate")?;
+    let certificate =
+        certificate::ensure().context("can't set up the localhost certificate authority")?;
+    let tls = TlsBridge::new(certificate).context("can't serve the localhost certificate")?;
     sandboxes::sync_ssh_config().await;
 
     tracing::info!(path = %log_dir.display(), "writing logs");

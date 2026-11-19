@@ -457,10 +457,20 @@ the certificate databases of Chrome and Firefox when `certutil` is installed
 macOS it adds the CA to your login keychain, and on Windows to your user's root
 store, which asks you to confirm. `fbk cert clean` removes the CA again.
 
+`fbkd` keeps the CA until its files are removed or damaged. When it has to
+create a new one, it logs a warning with the reason, and your browser warns
+again until you run `fbk cert trust` once more.
+
 The CA's key never enters a sandbox, so an agent can't use it, and your host
-never trusts a certificate made in the sandbox. A dev server that requires
-client certificates doesn't work through a forward, because the browser's
-certificate ends at `fbkd`.
+never trusts a certificate made in the sandbox. Some clients don't work through
+an HTTPS forward:
+
+- A dev server that requires client certificates, because the browser's
+  certificate ends at `fbkd`.
+- A client that trusts only the dev server's own certificate, such as `curl
+  --cacert` with that certificate. Trust the localhost CA instead; its
+  certificate is `tls/ca.crt` in Firebrick's data directory.
+- A server that only speaks TLS 1.0 or 1.1.
 
 ### Browser logins
 

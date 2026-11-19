@@ -279,7 +279,8 @@ async fn main() -> Result<()> {
 }
 
 /// Changes the trust stores of the host. Trusting starts the daemon first, which creates the
-/// certificate authority; removing it doesn't need the daemon.
+/// certificate authority; removing it doesn't need the daemon. The tools run on a blocking
+/// thread, because `sudo` may wait for a password.
 async fn run_cert_command(command: CertCommands) -> Result<()> {
     let action = match command {
         CertCommands::Trust => {
@@ -289,8 +290,11 @@ async fn run_cert_command(command: CertCommands) -> Result<()> {
         CertCommands::Clean => cert::Action::Clean,
     };
 
-    let plan = cert::plan(&cert::Host::detect()?, &action);
-    cert::execute(&plan, &action)
+    tokio::task::spawn_blocking(move || {
+        let plan = cert::plan(&cert::Host::detect()?, &action);
+        cert::execute(&plan, &action)
+    })
+    .await?
 }
 
 /// Returns the certificate of the daemon's localhost certificate authority.
@@ -299,7 +303,9 @@ fn localhost_ca() -> Result<PathBuf> {
 
     if !path.is_file() {
         anyhow::bail!(
-            "fbkd hasn't created the localhost certificate authority in {}",
+            "fbkd hasn't created the localhost certificate authority in {}; stop the running fbkd \
+             so fbk starts one that creates it, and check that fbk and fbkd see the same \
+             XDG_DATA_HOME",
             path.display()
         );
     }

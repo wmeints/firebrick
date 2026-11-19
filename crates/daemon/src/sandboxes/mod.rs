@@ -299,11 +299,7 @@ impl SandboxManager {
         clipboard: Arc<dyn HostClipboard>,
         tls: Option<Arc<TlsBridge>>,
     ) -> Self {
-        let forwards = Forwards::new(SshConnector::default());
-        let forwards = Arc::new(match tls {
-            Some(tls) => forwards.with_tls(tls),
-            None => forwards,
-        });
+        let forwards = Arc::new(Forwards::new(SshConnector::default()).with_tls(tls));
 
         Self {
             secrets,

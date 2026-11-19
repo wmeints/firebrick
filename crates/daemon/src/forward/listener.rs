@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::task::JoinSet;
 
-use super::Connector;
-use super::tls::TlsBridge;
+use super::tls::{TlsBridge, relay_plain};
+use super::{Connector, GuestIo};
 
 /// The listeners of one forward. Dropping it closes them and their connections.
 pub(super) struct Forward(JoinSet<()>);
@@ -250,31 +250,37 @@ struct Guest {
     connector: Arc<dyn Connector>,
 }
 
+impl Guest {
+    /// Opens a connection to the guest port.
+    async fn connect(&self) -> io::Result<Box<dyn GuestIo>> {
+        self.connector.connect(&self.sandbox, self.port).await
+    }
+
+    /// Names the guest port in the log.
+    fn describe(&self) -> String {
+        format!("port {} of sandbox {}", self.port, self.sandbox)
+    }
+}
+
 /// Connects the host connection to the guest port and copies bytes both ways until both sides
 /// are done, through the TLS bridge when there is one. Closes the host connection when nothing
 /// listens on the guest port.
-async fn relay(mut host: TcpStream, guest: Guest, tls: Option<Arc<TlsBridge>>) {
-    let Guest {
-        sandbox,
-        port,
-        connector,
-    } = guest;
-    let mut guest = match connector.connect(&sandbox, port).await {
-        Ok(guest) => guest,
+async fn relay(host: TcpStream, guest: Guest, tls: Option<Arc<TlsBridge>>) {
+    let target = guest.describe();
+    let connection = match guest.connect().await {
+        Ok(connection) => connection,
         Err(err) => {
-            tracing::debug!("couldn't connect to port {port} of sandbox {sandbox}: {err}");
+            tracing::debug!("couldn't connect to {target}: {err}");
             return;
         }
     };
 
     let relayed = match tls {
-        Some(bridge) => bridge.relay(host, guest).await,
-        None => tokio::io::copy_bidirectional(&mut host, &mut guest)
-            .await
-            .map(drop),
+        Some(bridge) => bridge.relay(host, connection, &target).await,
+        None => relay_plain(host, connection, &[]).await,
     };
 
     if let Err(err) = relayed {
-        tracing::debug!("forwarded connection to sandbox {sandbox} ended: {err}");
+        tracing::debug!("forwarded connection to {target} ended: {err}");
     }
 }

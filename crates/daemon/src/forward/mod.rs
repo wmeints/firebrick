@@ -105,13 +105,11 @@ impl Forwards {
         }
     }
 
-    /// Returns the forwards with TLS connections from host clients bridged through `tls`.
+    /// Returns the forwards with TLS connections from host clients bridged through `tls`, or
+    /// relayed as they are when it's `None`.
     #[must_use]
-    pub fn with_tls(self, tls: Arc<TlsBridge>) -> Self {
-        Self {
-            tls: Some(tls),
-            ..self
-        }
+    pub fn with_tls(self, tls: Option<Arc<TlsBridge>>) -> Self {
+        Self { tls, ..self }
     }
 
     /// Makes the open forwards of the sandbox match `ports`: closes the ones that aren't listed,
@@ -329,12 +327,16 @@ mod tests {
             .add(CertificateDer::from_pem_file(dir.path().join("ca.crt")).unwrap())
             .unwrap();
 
-        (Arc::new(TlsBridge::new(&certificate).unwrap()), roots)
+        (Arc::new(TlsBridge::new(certificate).unwrap()), roots)
     }
+
+    /// The server names that the guest's TLS server received, one per connection.
+    type ServerNames = tokio::sync::mpsc::UnboundedReceiver<Option<String>>;
 
     /// Starts a TLS server on a free port, standing in for a guest's HTTPS dev server, with a
     /// self-signed certificate that offers the protocols and answers each read in upper case.
-    async fn tls_guest_server(protocols: &[&str]) -> u16 {
+    /// Returns its port and the server names its clients sent.
+    async fn tls_guest_server(protocols: &[&str]) -> (u16, ServerNames) {
         let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
         let key =
             rustls::pki_types::PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der());
@@ -350,25 +352,40 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        tokio::spawn(answer_tls_in_upper_case(listener, acceptor));
+        let (names, received) = tokio::sync::mpsc::unbounded_channel();
 
-        port
+        tokio::spawn(answer_tls_in_upper_case(listener, acceptor, names));
+
+        (port, received)
     }
 
     /// Accepts TLS connections on the listener and answers each with what it receives in upper
     /// case.
-    async fn answer_tls_in_upper_case(listener: TcpListener, acceptor: tokio_rustls::TlsAcceptor) {
+    async fn answer_tls_in_upper_case(
+        listener: TcpListener,
+        acceptor: tokio_rustls::TlsAcceptor,
+        names: tokio::sync::mpsc::UnboundedSender<Option<String>>,
+    ) {
         while let Ok((stream, _)) = listener.accept().await {
-            tokio::spawn(write_back_tls_in_upper_case(acceptor.clone(), stream));
+            tokio::spawn(write_back_tls_in_upper_case(
+                acceptor.clone(),
+                stream,
+                names.clone(),
+            ));
         }
     }
 
-    /// Completes the TLS handshake and writes back what the connection receives in upper case
-    /// until it closes.
-    async fn write_back_tls_in_upper_case(acceptor: tokio_rustls::TlsAcceptor, stream: TcpStream) {
+    /// Completes the TLS handshake, reports the server name the client sent and writes back
+    /// what the connection receives in upper case until it closes.
+    async fn write_back_tls_in_upper_case(
+        acceptor: tokio_rustls::TlsAcceptor,
+        stream: TcpStream,
+        names: tokio::sync::mpsc::UnboundedSender<Option<String>>,
+    ) {
         let Ok(mut stream) = acceptor.accept(stream).await else {
             return;
         };
+        let _ = names.send(stream.get_ref().1.server_name().map(str::to_owned));
         let mut buffer = [0; 64];
 
         while let Ok(count @ 1..) = stream.read(&mut buffer).await {
@@ -384,9 +401,11 @@ mod tests {
         write_back_in_upper_case(stream).await;
     }
 
-    /// Connects to the host port with TLS, trusting only `roots` and offering the protocols.
+    /// Connects to the host port with TLS for the server name, which is a DNS name or an IP
+    /// address, trusting only `roots` and offering the protocols.
     async fn connect_tls(
         port: u16,
+        name: &str,
         roots: rustls::RootCertStore,
         protocols: &[&str],
     ) -> io::Result<tokio_rustls::client::TlsStream<TcpStream>> {
@@ -398,7 +417,7 @@ mod tests {
             .with_no_client_auth();
         config.alpn_protocols = protocols.iter().map(|p| p.as_bytes().to_vec()).collect();
         let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
-        let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let name = rustls::pki_types::ServerName::try_from(name.to_string()).unwrap();
 
         connector.connect(name, connect(port).await?).await
     }
@@ -406,24 +425,47 @@ mod tests {
     #[tokio::test]
     async fn tls_client_reaches_a_tls_guest_with_the_localhost_certificate_and_its_protocol() {
         let (bridge, roots) = tls_bridge();
-        let forwards = Forwards::new(LocalConnector).with_tls(bridge);
-        let guest = tls_guest_server(&["http/1.1"]).await;
+        let forwards = Forwards::new(LocalConnector).with_tls(Some(bridge));
+        let (guest, mut names) = tls_guest_server(&["http/1.1"]).await;
         let host = free_port().await;
         forwards.apply("dev", &[mapping(host, guest)]).await;
 
-        let mut stream = connect_tls(host, roots, &["h2", "http/1.1"]).await.unwrap();
+        let mut stream = connect_tls(host, "app.dev.localhost", roots, &["h2", "http/1.1"])
+            .await
+            .unwrap();
 
         assert_eq!(stream.get_ref().1.alpn_protocol(), Some(&b"http/1.1"[..]));
         stream.write_all(b"secure").await.unwrap();
         let mut reply = [0; 6];
         stream.read_exact(&mut reply).await.unwrap();
         assert_eq!(&reply, b"SECURE");
+        assert_eq!(
+            names.recv().await,
+            Some(Some("app.dev.localhost".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn tls_client_of_an_ip_address_reaches_the_guest_as_localhost() {
+        let (bridge, roots) = tls_bridge();
+        let forwards = Forwards::new(LocalConnector).with_tls(Some(bridge));
+        let (guest, mut names) = tls_guest_server(&[]).await;
+        let host = free_port().await;
+        forwards.apply("dev", &[mapping(host, guest)]).await;
+
+        let mut stream = connect_tls(host, "127.0.0.1", roots, &[]).await.unwrap();
+
+        stream.write_all(b"by ip").await.unwrap();
+        let mut reply = [0; 5];
+        stream.read_exact(&mut reply).await.unwrap();
+        assert_eq!(&reply, b"BY IP");
+        assert_eq!(names.recv().await, Some(Some("localhost".to_string())));
     }
 
     #[tokio::test]
     async fn plain_client_is_relayed_as_is_with_tls_bridge() {
         let (bridge, _) = tls_bridge();
-        let forwards = Forwards::new(LocalConnector).with_tls(bridge);
+        let forwards = Forwards::new(LocalConnector).with_tls(Some(bridge));
         let guest = upper_case_server().await;
         let host = free_port().await;
         forwards.apply("dev", &[mapping(host, guest)]).await;
@@ -436,7 +478,7 @@ mod tests {
     #[tokio::test]
     async fn guest_that_speaks_first_is_relayed_with_tls_bridge() {
         let (bridge, _) = tls_bridge();
-        let forwards = Forwards::new(LocalConnector).with_tls(bridge);
+        let forwards = Forwards::new(LocalConnector).with_tls(Some(bridge));
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let guest = listener.local_addr().unwrap().port();
         tokio::spawn(greet_then_answer_in_upper_case(listener));
@@ -454,12 +496,17 @@ mod tests {
     #[tokio::test]
     async fn tls_client_of_a_plain_guest_is_closed_and_listener_stays_up() {
         let (bridge, roots) = tls_bridge();
-        let forwards = Forwards::new(LocalConnector).with_tls(bridge);
+        let forwards = Forwards::new(LocalConnector).with_tls(Some(bridge));
         let guest = upper_case_server().await;
         let host = free_port().await;
         forwards.apply("dev", &[mapping(host, guest)]).await;
 
-        assert!(connect_tls(host, roots, &[]).await.is_err());
+        let err = connect_tls(host, "localhost", roots, &[])
+            .await
+            .unwrap_err();
+
+        // Without the bridge, the guest's echo of the handshake would be invalid data instead.
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof, "{err}");
 
         let mut stream = connect(host).await.unwrap();
         assert_eq!(round_trip(&mut stream, "still up").await, "STILL UP");

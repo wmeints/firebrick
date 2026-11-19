@@ -65,6 +65,8 @@ pub struct Host {
     pub nss_dbs: Vec<PathBuf>,
     /// Whether NSS's `certutil` is installed on Linux.
     pub has_nss_certutil: bool,
+    /// Directories with Firefox profiles that couldn't be read, with the reason.
+    pub unreadable: Vec<String>,
 }
 
 /// The Linux system stores `fbk` knows, as anchor directories and the commands that rebuild
@@ -85,10 +87,11 @@ const SYSTEM_STORES: [(&str, &[&str]); 4] = [
     ("/usr/share/pki/trust/anchors", &["update-ca-certificates"]),
 ];
 
-/// The directories under the home directory that hold Firefox profiles: the package, the Snap
-/// and the Flatpak.
-const FIREFOX_DIRS: [&str; 3] = [
+/// The directories under the home directory that hold Firefox profiles: the package, before and
+/// after it moved them to the XDG config directory, the Snap and the Flatpak.
+const FIREFOX_DIRS: [&str; 4] = [
     ".mozilla/firefox",
+    ".config/mozilla/firefox",
     "snap/firefox/common/.mozilla/firefox",
     ".var/app/org.mozilla.firefox/.mozilla/firefox",
 ];
@@ -109,12 +112,18 @@ impl Host {
             other => bail!("fbk can't manage the trust stores of {other}"),
         };
         let linux = platform == Platform::Linux;
+        let (nss_dbs, unreadable) = if linux {
+            find_nss_dbs(&home)
+        } else {
+            (vec![], vec![])
+        };
 
         Ok(Self {
             platform,
             system: linux.then(find_system_store).flatten(),
-            nss_dbs: if linux { find_nss_dbs(&home) } else { vec![] },
+            nss_dbs,
             has_nss_certutil: linux && on_path("certutil"),
+            unreadable,
             home,
         })
     }
@@ -133,17 +142,28 @@ fn find_system_store() -> Option<SystemStore> {
         })
 }
 
-/// Returns the NSS databases of Chrome and of the Firefox profiles under `home`.
-fn find_nss_dbs(home: &Path) -> Vec<PathBuf> {
-    let chrome = CHROME_DBS.iter().map(|dir| home.join(dir));
-    let firefox = FIREFOX_DIRS
-        .iter()
-        .filter_map(|dir| std::fs::read_dir(home.join(dir)).ok())
-        .flat_map(|entries| entries.filter_map(|entry| entry.ok().map(|entry| entry.path())));
+/// Returns the NSS databases of Chrome and of the Firefox profiles under `home`, and the
+/// Firefox directories that exist but couldn't be read, with the reason.
+fn find_nss_dbs(home: &Path) -> (Vec<PathBuf>, Vec<String>) {
+    let mut dbs: Vec<PathBuf> = CHROME_DBS.iter().map(|dir| home.join(dir)).collect();
+    let mut unreadable = vec![];
 
-    chrome
-        .chain(firefox)
-        .filter(|dir| dir.join("cert9.db").is_file())
+    for dir in FIREFOX_DIRS.map(|dir| home.join(dir)) {
+        match profiles(&dir) {
+            Ok(profiles) => dbs.extend(profiles),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => unreadable.push(format!("{}: {err}", dir.display())),
+        }
+    }
+
+    dbs.retain(|dir| dir.join("cert9.db").is_file());
+    (dbs, unreadable)
+}
+
+/// Returns the entries of a directory of Firefox profiles.
+fn profiles(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    std::fs::read_dir(dir)?
+        .map(|entry| entry.map(|entry| entry.path()))
         .collect()
 }
 
@@ -202,6 +222,9 @@ pub enum Step {
         present: Command,
         /// Removes one copy of the certificate.
         remove: Command,
+        /// Text in the output of a failing `present` that means the store doesn't hold the
+        /// certificate. Any other failure is an error.
+        absent: &'static str,
     },
 }
 
@@ -256,6 +279,10 @@ fn linux_plan(host: &Host, action: &Action) -> Plan {
         )),
         (None, Action::Clean) => {}
     }
+
+    notes.extend(host.unreadable.iter().map(|reason| {
+        format!("couldn't look for Firefox profiles in {reason}; trust the CA there by hand")
+    }));
 
     if host.has_nss_certutil {
         stores.extend(host.nss_dbs.iter().map(|db| nss_store(db, action)));
@@ -316,6 +343,7 @@ fn nss_store(db: &Path, action: &Action) -> StorePlan {
     let mut steps = vec![Step::RemoveAll {
         present: named("-L"),
         remove: named("-D"),
+        absent: "Could not find cert",
     }];
 
     if let Action::Trust(ca) = action {
@@ -347,6 +375,7 @@ fn macos_store(home: &Path, action: &Action) -> StorePlan {
     let mut steps = vec![Step::RemoveAll {
         present: named(&["find-certificate"]),
         remove: named(&["delete-certificate", "-t"]),
+        absent: "could not be found",
     }];
 
     if let Action::Trust(ca) = action {
@@ -376,6 +405,7 @@ fn windows_store(action: &Action) -> StorePlan {
     let mut steps = vec![Step::RemoveAll {
         present: named("-store"),
         remove: named("-delstore"),
+        absent: "CRYPT_E_NOT_FOUND",
     }];
 
     if let Action::Trust(ca) = action {
@@ -397,24 +427,28 @@ fn windows_store(action: &Action) -> StorePlan {
 }
 
 /// Runs the plan's steps store by store, printing each store it changed, then prints the
-/// notes. Stops at the first step that fails, keeping the stores changed before it.
+/// notes. A store whose step fails keeps the steps that ran before, and the other stores are
+/// still changed; the error then lists every store that failed.
 pub fn execute(plan: &Plan, action: &Action) -> Result<()> {
-    for store in &plan.stores {
-        for step in &store.steps {
-            run_step(step).with_context(|| match action {
-                Action::Trust(_) => format!("couldn't trust the certificate in {}", store.name),
-                Action::Clean => format!("couldn't remove the certificate from {}", store.name),
-            })?;
-        }
+    let mut failures = vec![];
 
-        match action {
-            Action::Trust(_) => println!("Trusted the firebrick localhost CA in {}.", store.name),
-            Action::Clean => println!("Removed the firebrick localhost CA from {}.", store.name),
+    for store in &plan.stores {
+        match store.steps.iter().try_for_each(run_step) {
+            Ok(()) => println!("{}", done(action, &store.name)),
+            Err(err) => failures.push(format!("{}: {err:#}", store.name)),
         }
     }
 
     for note in &plan.notes {
         eprintln!("note: {note}");
+    }
+
+    if !failures.is_empty() {
+        let verb = match action {
+            Action::Trust(_) => "trust the certificate in",
+            Action::Clean => "remove the certificate from",
+        };
+        bail!("couldn't {verb} {}", failures.join("; "));
     }
 
     if matches!(action, Action::Trust(_)) && !plan.stores.is_empty() {
@@ -426,18 +460,31 @@ pub fn execute(plan: &Plan, action: &Action) -> Result<()> {
     Ok(())
 }
 
+/// Returns the line that reports the store as changed.
+fn done(action: &Action, store: &str) -> String {
+    match action {
+        Action::Trust(_) => format!("Trusted the firebrick localhost CA in {store}."),
+        Action::Clean => format!("Removed the firebrick localhost CA from {store}."),
+    }
+}
+
 /// Runs one step.
 fn run_step(step: &Step) -> Result<()> {
     match step {
         Step::Run(command) => run(command),
-        Step::RemoveAll { present, remove } => remove_all(present, remove),
+        Step::RemoveAll {
+            present,
+            remove,
+            absent,
+        } => remove_all(present, remove, absent),
     }
 }
 
-/// Runs `remove` as long as `present` succeeds, at most [`MAX_REMOVALS`] times.
-fn remove_all(present: &Command, remove: &Command) -> Result<()> {
+/// Runs `remove` as long as `present` succeeds, at most [`MAX_REMOVALS`] times. Stops when
+/// `present` fails with `absent` in its output, and fails when it fails otherwise.
+fn remove_all(present: &Command, remove: &Command, absent: &str) -> Result<()> {
     for _ in 0..MAX_REMOVALS {
-        if !output(present)?.status.success() {
+        if !holds(present, absent)? {
             return Ok(());
         }
 
@@ -447,16 +494,41 @@ fn remove_all(present: &Command, remove: &Command) -> Result<()> {
     bail!("{} didn't remove the certificate", remove.display())
 }
 
+/// Whether the store holds the certificate: `present` succeeds when it does and fails with
+/// `absent` in its output when it doesn't. Any other failure is an error.
+fn holds(present: &Command, absent: &str) -> Result<bool> {
+    let probe = output(present)?;
+    let text = output_text(&probe);
+
+    match probe.status.success() {
+        true => Ok(true),
+        false if text.contains(absent) => Ok(false),
+        false => bail!("{} failed: {}", present.display(), text.trim()),
+    }
+}
+
 /// Runs the command and fails with its error output when it fails.
 fn run(command: &Command) -> Result<()> {
     let output = output(command)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("{} failed: {}", command.display(), stderr.trim());
+        bail!(
+            "{} failed: {}",
+            command.display(),
+            output_text(&output).trim()
+        );
     }
 
     Ok(())
+}
+
+/// Returns what the command wrote to stdout and stderr, since some tools report errors on
+/// stdout.
+fn output_text(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    format!("{stderr}{stdout}")
 }
 
 /// Runs the command with the terminal as its input, so `sudo` can ask for a password, and
@@ -480,6 +552,7 @@ mod tests {
             system,
             nss_dbs: nss_dbs.iter().map(PathBuf::from).collect(),
             has_nss_certutil: certutil,
+            unreadable: vec![],
         }
     }
 
@@ -502,9 +575,15 @@ mod tests {
             .iter()
             .map(|step| match step {
                 Step::Run(command) => command.display(),
-                Step::RemoveAll { present, remove } => {
-                    format!("{} => {}", present.display(), remove.display())
-                }
+                Step::RemoveAll {
+                    present,
+                    remove,
+                    absent,
+                } => format!(
+                    "{} => {} unless {absent}",
+                    present.display(),
+                    remove.display()
+                ),
             })
             .collect()
     }
@@ -537,7 +616,8 @@ mod tests {
             lines(&plan.stores[1]),
             [
                 "certutil -L -d sql:/home/me/.pki/nssdb -n Firebrick localhost CA => \
-                 certutil -D -d sql:/home/me/.pki/nssdb -n Firebrick localhost CA",
+                 certutil -D -d sql:/home/me/.pki/nssdb -n Firebrick localhost CA \
+                 unless Could not find cert",
                 "certutil -A -d sql:/home/me/.pki/nssdb -n Firebrick localhost CA -t C,, \
                  -i /data/tls/ca.crt",
             ]
@@ -550,6 +630,8 @@ mod tests {
 
         let plan = plan(&host, &Action::Clean);
 
+        assert_eq!(plan.stores.len(), 2);
+        assert!(plan.notes.is_empty());
         assert_eq!(
             lines(&plan.stores[0]),
             [
@@ -561,7 +643,8 @@ mod tests {
             lines(&plan.stores[1]),
             [
                 "certutil -L -d sql:/home/me/.pki/nssdb -n Firebrick localhost CA => \
-              certutil -D -d sql:/home/me/.pki/nssdb -n Firebrick localhost CA"
+                 certutil -D -d sql:/home/me/.pki/nssdb -n Firebrick localhost CA \
+                 unless Could not find cert"
             ]
         );
     }
@@ -578,14 +661,18 @@ mod tests {
 
     #[test]
     fn linux_without_a_system_store_or_certutil_explains_what_to_do() {
-        let host = linux_host(None, &["/home/me/.pki/nssdb"], false);
+        let host = Host {
+            unreadable: vec!["/home/me/.mozilla/firefox: Permission denied".to_string()],
+            ..linux_host(None, &["/home/me/.pki/nssdb"], false)
+        };
 
         let plan = plan(&host, &trust());
 
         assert!(plan.stores.is_empty());
-        assert_eq!(plan.notes.len(), 2);
+        assert_eq!(plan.notes.len(), 3);
         assert!(plan.notes[0].contains("/data/tls/ca.crt"));
-        assert!(plan.notes[1].contains("install certutil"));
+        assert!(plan.notes[1].contains("/home/me/.mozilla/firefox: Permission denied"));
+        assert!(plan.notes[2].contains("install certutil"));
     }
 
     #[test]
@@ -604,7 +691,8 @@ mod tests {
             [
                 format!(
                     "security find-certificate -c Firebrick localhost CA {keychain} => \
-                     security delete-certificate -t -c Firebrick localhost CA {keychain}"
+                     security delete-certificate -t -c Firebrick localhost CA {keychain} \
+                     unless could not be found"
                 ),
                 format!("security add-trusted-cert -r trustRoot -k {keychain} /data/tls/ca.crt"),
             ]
@@ -623,7 +711,7 @@ mod tests {
         assert_eq!(
             lines(&plan.stores[0]),
             ["certutil -user -store Root Firebrick localhost CA => \
-              certutil -user -delstore Root Firebrick localhost CA"]
+              certutil -user -delstore Root Firebrick localhost CA unless CRYPT_E_NOT_FOUND"]
         );
     }
 }

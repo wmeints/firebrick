@@ -37,12 +37,13 @@ pub struct TlsBridge {
 impl TlsBridge {
     /// Creates a bridge that accepts connections with the certificate. Fails when the
     /// certificate and its key don't match.
-    pub fn new(certificate: &HostCertificate) -> Result<Self, rustls::Error> {
+    pub fn new(certificate: HostCertificate) -> Result<Self, rustls::Error> {
+        let HostCertificate { cert, key } = certificate;
         let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
         let server = ServerConfig::builder_with_provider(Arc::clone(&provider))
             .with_safe_default_protocol_versions()?
             .with_no_client_auth()
-            .with_single_cert(vec![certificate.cert.clone()], certificate.key.clone_key())?;
+            .with_single_cert(vec![cert], key)?;
         let algorithms = provider.signature_verification_algorithms;
         let client = ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()?
@@ -59,21 +60,29 @@ impl TlsBridge {
     /// Relays the host connection to the guest connection until both sides are done. When the
     /// host's client opens with a TLS handshake, the bridge terminates it with the localhost
     /// certificate and relays the plain bytes over a TLS connection to the guest. A guest that
-    /// speaks first, such as a database or SSH server, gets a plain relay.
+    /// speaks first, such as a database or SSH server, gets a plain relay. `target` names the
+    /// guest port in the log.
     pub(super) async fn relay(
         &self,
         host: TcpStream,
         mut guest: Box<dyn GuestIo>,
+        target: &str,
     ) -> io::Result<()> {
         match opening(&host, &mut guest).await? {
-            Opening::ClientTls => self.bridge(host, guest).await,
+            Opening::ClientTls => self.bridge(host, guest, target).await,
             Opening::Plain(greeting) => relay_plain(host, guest, &greeting).await,
         }
     }
 
     /// Completes the client's handshake and a handshake with the guest that offers the same
-    /// application protocols, then copies bytes between the two.
-    async fn bridge(&self, host: TcpStream, guest: Box<dyn GuestIo>) -> io::Result<()> {
+    /// application protocols, then copies bytes between the two. A failed guest handshake is
+    /// logged at `info`, because the browser only sees a closed connection.
+    async fn bridge(
+        &self,
+        host: TcpStream,
+        guest: Box<dyn GuestIo>,
+        target: &str,
+    ) -> io::Result<()> {
         let start = LazyConfigAcceptor::new(rustls::server::Acceptor::default(), host).await?;
         let hello = start.client_hello();
         let protocols: Vec<Vec<u8>> = hello
@@ -82,11 +91,13 @@ impl TlsBridge {
             .unwrap_or_default();
         let name = server_name(hello.server_name())?;
 
-        let mut guest = self
-            .client
-            .with_alpn(protocols)
-            .connect(name, guest)
-            .await?;
+        let connected = self.client.with_alpn(protocols).connect(name, guest).await;
+        let mut guest = connected.inspect_err(|err| {
+            tracing::info!(
+                "a client of {target} speaks TLS, but the TLS handshake with the guest failed: \
+                 {err}; serve HTTPS in the sandbox or connect with http://"
+            );
+        })?;
         let chosen = guest.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
         let mut host = start.into_stream(self.server_config(chosen)).await?;
 
@@ -141,7 +152,7 @@ async fn opening(host: &TcpStream, guest: &mut Box<dyn GuestIo>) -> io::Result<O
 
 /// Sends the guest's greeting to the host, then copies bytes both ways until both sides are
 /// done.
-async fn relay_plain(
+pub(super) async fn relay_plain(
     mut host: TcpStream,
     mut guest: Box<dyn GuestIo>,
     greeting: &[u8],

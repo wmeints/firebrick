@@ -540,9 +540,9 @@ const RECREATION_TIMEOUT: Duration = Duration::from_secs(60);
 /// Reopens the port forwards of the sandboxes that are running, listens for the network logs
 /// and clipboards of the sandboxes and removes the upgrade probes an earlier daemon left behind,
 /// then serves the gRPC API on the socket until SIGINT or SIGTERM is received or a client sends
-/// a `Shutdown` request, bridging TLS connections to forwarded ports through `tls` when there is one, opening the URLs
-/// from sandboxes in the host's browser and reading the host clipboard with its desktop's
-/// tools. Afterwards, waits up to [`RECREATION_TIMEOUT`] for the updates and upgrades that are
+/// a `Shutdown` request, bridging TLS connections to forwarded ports through `tls` when there is
+/// one, opening the URLs from sandboxes in the host's browser and reading the host clipboard
+/// with its desktop's tools. Afterwards, waits up to [`RECREATION_TIMEOUT`] for the updates and upgrades that are
 /// still running and writes the network records a last time. The caller makes sure no other
 /// daemon serves on the socket, so it doesn't take that daemon's host ports.
 pub async fn run(

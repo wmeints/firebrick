@@ -697,9 +697,11 @@ relay as before
 - Nothing listens on the guest port when a connection arrives: fbkd closes that
   host connection and logs it at `debug`. The listener stays up, so a later
   connection works once the guest listens.
-- A TLS client connects but the guest port doesn't speak TLS, or asks for a
-  client certificate: the guest handshake fails, fbkd closes the host connection
-  and logs it at `debug`, and the listener stays up.
+- A TLS client connects but the guest port doesn't speak TLS, asks for a client
+  certificate or only offers TLS that rustls doesn't support: the guest
+  handshake fails, fbkd closes the host connection and logs `a client of port
+  <guest> of sandbox <name> speaks TLS, but the TLS handshake with the guest
+  failed` at `info`, and the listener stays up.
 
 ```mermaid
 sequenceDiagram
@@ -976,8 +978,10 @@ sequenceDiagram
 When fbkd starts, it loads its localhost CA from `tls/` in its data directory or
 creates it, with a name constraint to `localhost`, `127.0.0.0/8` and `::1`, and
 issues the server certificate that forwarded ports serve HTTPS with. It replaces
-a CA that doesn't parse or doesn't match its key and logs a warning to run `fbk
-cert trust` again.
+a CA whose file is missing or doesn't parse, or whose certificate doesn't match
+its key, and logs `replaced the localhost certificate authority in <dir> because
+<reason>; run fbk cert trust again`. Other errors, such as a clock before 1970,
+stop fbkd with the reason and keep the CA.
 
 `fbk cert trust` connects to fbkd, starting it when needed, so the CA exists,
 and adds `tls/ca.crt` to the host's trust stores. It first removes the earlier
@@ -996,13 +1000,21 @@ removals without the daemon and prints `Removed the firebrick localhost CA from
 <store>.`; on Linux it only touches the system store when the CA's file is in
 it.
 
-- A command fails, for example when `sudo` is refused: `fbk` stops with
-  `couldn't trust the certificate in <store>: <command> failed: <stderr>` and
-  exits with code 1. The stores changed before stay changed.
-- There's no known system store, or NSS databases exist but `certutil` doesn't:
-  `fbk` changes the other stores and prints a `note:` that says what to do.
-- fbkd hasn't created the CA, for example because its data directory differs:
-  `fbkd hasn't created the localhost certificate authority in <path>`.
+- A command fails, for example when `sudo` is refused: `fbk` still changes the
+  other stores, then fails with `couldn't trust the certificate in <store>:
+  <command> failed: <output>`, listing every store that failed, and exits with
+  code 1.
+- A store's lookup fails with anything but its tool's not-found message (`Could
+  not find cert`, `could not be found` or `CRYPT_E_NOT_FOUND`), for example a
+  locked keychain: that store fails the same way, so `fbk cert clean` never
+  reports a removal that didn't happen.
+- There's no known system store, NSS databases exist but `certutil` doesn't, or
+  a directory of Firefox profiles can't be read: `fbk` changes the other stores
+  and prints a `note:` that says what to do.
+- fbkd hasn't created the CA, for example because an fbkd from before this
+  feature still runs or its data directory differs: `fbkd hasn't created the
+  localhost certificate authority in <path>; stop the running fbkd so fbk starts
+  one that creates it, and check that fbk and fbkd see the same XDG_DATA_HOME`.
 
 ## Setting a secret
 

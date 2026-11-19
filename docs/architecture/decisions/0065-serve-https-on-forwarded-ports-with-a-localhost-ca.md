@@ -33,11 +33,14 @@ What to trust has a few options:
 
 - **A name-constrained localhost CA.** At startup `fbkd` loads the CA from
   `tls/ca.crt` and `tls/ca.key` in its data directory, or creates it there, in a
-  directory and key file that only the user can read. It replaces the CA when a
-  file doesn't parse or the certificate doesn't match the key, and logs a
-  warning to run `fbk cert trust` again. The CA is valid for 20 years and isn't
-  renewed, because rustls and most browsers don't check when a trusted CA
-  expires, and reading the date back would take an X.509 parser.
+  directory and key file that only the user can read. It replaces the CA only
+  when a file is missing or doesn't parse, or the certificate doesn't match the
+  key, and logs a warning with the reason to run `fbk cert trust` again. Any
+  other error, such as a clock before 1970 or a directory it can't write, stops
+  `fbkd` instead, so it never throws away a CA the host trusts by mistake. The
+  CA is valid for 20 years and isn't renewed, because rustls and most browsers
+  don't check when a trusted CA expires, and reading the date back would take an
+  X.509 parser.
 - **A server certificate per start.** `fbkd` issues a certificate for
   `localhost`, `*.dev.localhost` (which Aspire uses), `127.0.0.1` and `::1`,
   valid for 825 days, the most macOS accepts, and keeps it in memory only.
@@ -59,9 +62,16 @@ What to trust has a few options:
   CA`:
   - Linux: `sudo install` into the first anchor directory that exists, then the
     distribution's update command, and `certutil` for the NSS databases of
-    Chrome and Firefox when it's installed.
+    Chrome and of the Firefox profiles in `~/.mozilla/firefox`,
+    `~/.config/mozilla/firefox`, the Snap and the Flatpak, when it's installed.
   - macOS: `security` with the login keychain.
   - Windows: `certutil -user` with the user's root store.
+
+  A store's tool reports a missing certificate with a message of its own (`Could
+  not find cert`, `could not be found`, `CRYPT_E_NOT_FOUND`); any other failure
+  is an error, so `fbk cert clean` never reports a removal that didn't happen. A
+  store that fails doesn't stop the others, so a refused `sudo` still updates
+  Chrome and Firefox.
 - **Dependencies.** `rcgen` creates the CA and the certificates, with the `time`
   crate for their dates. `rustls` and `tokio-rustls` were already in
   `Cargo.lock` through reqwest and become direct dependencies, with the same
@@ -78,7 +88,15 @@ What to trust has a few options:
 - A guest server that requires client certificates (mutual TLS) fails the
   handshake, because the browser's certificate ends at `fbkd`.
 - A browser that connects with TLS to a guest that serves plain HTTP gets a
-  closed connection, as it would get a protocol error before.
+  closed connection, as it would get a protocol error before. `fbkd` logs the
+  failed guest handshake at `info`.
+- A client that trusts only the guest's own certificate, such as `curl --cacert`
+  with the dev server's certificate or a database client with its own root, now
+  gets the localhost certificate and has to trust the localhost CA instead.
+- A guest server that only speaks TLS 1.0 or 1.1, or offers no cipher suite
+  rustls supports, fails the handshake with `fbkd`, where the plain relay worked
+  before. Forwards have no setting to turn the bridge off; one can be added if
+  such servers turn up, since the forwards already take an optional bridge.
 - Removing `fbkd`'s data directory creates a new CA at the next start, which
   needs `fbk cert trust` again.
 - `fbk cert trust` changes the Linux system store with `sudo`, so it asks for

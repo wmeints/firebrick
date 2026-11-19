@@ -81,9 +81,14 @@ See [Forwarding ports](/docs/networking/#forwarding-ports).
 Run `fbk cert trust` and restart the browser. On Linux, Chrome and Firefox only
 pick up the certificate authority when `certutil` is installed, or when they
 read the system store, as on Arch; `fbk cert trust` prints a note when it
-skipped them. A dev server that serves plain HTTP must be opened with `http://`,
-and one that requires client certificates can't be reached over HTTPS through a
-forward.
+skipped them. If the browser warned only after an update or a restart of `fbkd`,
+check its log for `replaced the localhost certificate authority`: it then made a
+new CA, which you have to trust again.
+
+When the page doesn't load at all, the daemon log says `the TLS handshake with
+the guest failed`: the dev server serves plain HTTP, so open it with `http://`,
+or it requires client certificates or old TLS versions, which don't work through
+a forward.
 
 See [HTTPS dev servers](/docs/networking/#https-dev-servers).
 

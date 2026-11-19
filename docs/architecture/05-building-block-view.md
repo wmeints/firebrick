@@ -203,13 +203,18 @@ C4Component
   ([ADR 0065](decisions/0065-serve-https-on-forwarded-ports-with-a-localhost-ca.md)).
   `Host::detect` finds the platform, on Linux the first system anchor directory
   that exists (Fedora, Debian, Arch, openSUSE), the NSS databases of Chrome and
-  the Firefox profiles that hold a `cert9.db`, and whether `certutil` is on
-  `PATH`. `plan` turns that and the `Action` into the commands per store, and
-  `execute` runs them, printing each store it changed and stopping at the first
-  command that fails, with its stderr. Earlier copies are removed by the common
-  name `Firebrick localhost CA` until the store no longer finds one, at most 16
-  times. A store it can't change, such as NSS without `certutil`, becomes a note
-  instead of an error. See
+  the Firefox profiles that hold a `cert9.db` (in `~/.mozilla/firefox`,
+  `~/.config/mozilla/firefox`, the Snap and the Flatpak), the Firefox
+  directories it can't read, and whether `certutil` is on `PATH`. `plan` turns
+  that and the `Action` into the commands per store, and `execute` runs them on
+  a blocking thread, printing each store it changed. A store whose command fails
+  keeps the steps before it, the other stores are still changed, and the error
+  lists every failed store with the command's output. Earlier copies are removed
+  by the common name `Firebrick localhost CA` until the store's tool reports it
+  can't find one, at most 16 times; any other failure of the lookup fails the
+  store. A store it can't change, such as NSS without `certutil` or Firefox
+  profiles it can't read, becomes a note instead of an error. A test binary of
+  its own, `tests/cert_runner.rs`, runs plans of shell commands. See
   [Trusting the localhost CA](06-runtime-view.md#trusting-the-localhost-ca).
 - `secret` - Sends a secret to the daemon with `SetSecret`. With `--from-stdin`,
   it reads the value from stdin and removes one trailing line ending. With
@@ -559,9 +564,11 @@ C4Component
   forwarded ports serve HTTPS with
   ([ADR 0065](decisions/0065-serve-https-on-forwarded-ports-with-a-localhost-ca.md)).
   `ensure` loads the CA, or creates it with a name constraint to `localhost`,
-  `127.0.0.0/8` and `::1`, and replaces it when a file doesn't parse or a client
-  that trusts the CA rejects the certificate it issues. It logs a warning to run
-  `fbk cert trust` again then. The CA is valid for 20 years; the server
+  `127.0.0.0/8` and `::1`, and replaces it when a file is missing or doesn't
+  parse, or a client that trusts the CA rejects the certificate it issues. It
+  logs a warning with the reason to run `fbk cert trust` again then. Other
+  errors, such as a clock before 1970 or a file it can't write, fail with the
+  path instead of replacing the CA. The CA is valid for 20 years; the server
   certificate, for `localhost`, `*.dev.localhost`, `127.0.0.1` and `::1`, for
   825 days from each start, and lives in memory only.
 - `forward` - Forwards host loopback ports to a sandbox's loopback
@@ -586,14 +593,15 @@ C4Component
   that session and no inactivity timeout, so forwards stay open while the
   sandbox runs. When nothing listens on the guest port, the host connection is
   closed and logged at `debug`. `Forwards::with_tls` gives the configured
-  forwards a `TlsBridge` (`tls`), which `main` creates from the server
+  forwards an optional `TlsBridge` (`tls`), which `main` creates from the server
   certificate: per connection it waits for the first bytes of either side, and
   when the client's first byte starts a TLS handshake record, it accepts the
   handshake with the localhost certificate, connects to the guest with TLS,
   offering the client's ALPN protocols and server name and accepting any guest
   certificate, and finishes the client's handshake with only the protocol the
   guest chose. Other connections, including those where the guest speaks first,
-  are relayed as they are
+  are relayed as they are. A failed guest handshake is logged at `info`, because
+  the browser only sees a closed connection
   ([ADR 0065](decisions/0065-serve-https-on-forwarded-ports-with-a-localhost-ca.md)).
   `CallbackForwards` holds the on-demand forwards of one sandbox that `open`
   uses for OAuth callback ports (see
