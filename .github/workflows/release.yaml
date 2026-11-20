@@ -223,6 +223,21 @@ jobs:
           # Tags such as v0.2.0-rc.1 publish a pre-release.
           prerelease: ${{ contains(env.TAG, '-') }}
 
+  website:
+    name: Publish the website
+    # Publish the docs only once the GitHub release they describe exists.
+    needs: release
+    # Pre-releases keep the docs of the last release online. The env context isn't available here.
+    if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
+    uses: ./.github/workflows/website.yaml
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
+    # A called workflow gets no more permissions than these, and its deploy job needs pages and id-token.
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
   homebrew:
     name: Update Homebrew formula
     # Update the tap only once the GitHub release has the archives the formula downloads.
