@@ -264,9 +264,10 @@ async fn main() -> Result<()> {
     let working_dir = working_dir()?;
 
     match cli.command {
-        // Validating and creating the spec don't need the daemon.
+        // Validating the spec doesn't need the daemon.
         Commands::Validate => validate_spec(&working_dir),
-        Commands::Init { force } => init_spec(&working_dir, force),
+        // Connects only once an existing spec file can be replaced.
+        Commands::Init { force } => init_spec(&working_dir, force).await,
         Commands::Secret(SecretCommands::Set(args)) => set_secret(args, &working_dir).await,
         // Changes the spec file first and only needs the daemon to apply it.
         Commands::Network(command) => run_network_command(command, &working_dir).await,
@@ -336,10 +337,18 @@ fn validate_spec(working_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Writes the default spec to the working directory.
-fn init_spec(working_dir: &Path, force: bool) -> Result<()> {
-    init::init_spec(working_dir, force)?;
-    println!("Created {}", spec_file::SPEC_FILE_NAME);
+/// Writes the default spec to the working directory, named after the workspace's existing
+/// sandbox if it has one.
+async fn init_spec(working_dir: &Path, force: bool) -> Result<()> {
+    let created = init::init_spec(working_dir, force, client::connect()).await?;
+
+    match created.existing_sandbox {
+        Some(name) => println!(
+            "Created {} for existing sandbox {name}",
+            spec_file::SPEC_FILE_NAME
+        ),
+        None => println!("Created {}", spec_file::SPEC_FILE_NAME),
+    }
 
     Ok(())
 }
