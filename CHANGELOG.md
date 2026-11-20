@@ -6,6 +6,35 @@ request, and the release workflow copies the section into the GitHub release,
 above the generated list of pull requests. Each section starts with a `##
 vX.Y.Z - YYYY-MM-DD` heading.
 
+## v0.15.0 - 2026-11-20
+
+This release serves trusted HTTPS on forwarded ports, adds network presets for
+VS Code and JetBrains IDEs, and fixes DNS in running sandboxes after a Mac wakes
+from sleep.
+
+### Features
+
+- Forwarded ports now serve HTTPS dev servers in a sandbox, such as the Aspire
+  dashboard, with a certificate the host browser trusts. `fbkd` keeps a
+  localhost CA that can only vouch for `localhost` and loopback addresses, and
+  bridges TLS clients to the guest. Run `fbk cert trust` once to add the CA to
+  the host's trust stores, and `fbk cert clean` to remove it. TLS clients of a
+  forward now get the localhost certificate instead of the guest's own. (#296)
+- `fbk network presets apply vscode` and `fbk network presets apply jetbrains`
+  allow the hosts that VS Code and JetBrains IDEs connected over SSH need to
+  install extensions and plugins with `network.enforce: true`. (#297)
+
+### Fixes
+
+- DNS in a running sandbox keeps working after the host wakes from sleep, joins
+  a VPN or changes networks: `fbkd` points new sandboxes at the host's current
+  DNS servers and keeps them up to date. Recreate existing sandboxes to get the
+  fix. (#298)
+- `fbk init` in a workspace that already has a sandbox, for example after `fbk
+  start` without a `.firebrick.yml`, names the spec after that sandbox instead
+  of the directory, so the next `fbk start` no longer creates a second sandbox.
+  (#301)
+
 ## v0.14.0 - 2026-11-16
 
 This release lists the ports listening in a sandbox, makes firebrick installable
