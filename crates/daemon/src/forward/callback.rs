@@ -94,6 +94,7 @@ impl CallbackForwards {
             port: mapping,
             connector: Arc::clone(&self.connector),
             activity: Arc::clone(&activity),
+            tls: None,
         };
 
         match listen(route).await {

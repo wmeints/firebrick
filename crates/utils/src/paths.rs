@@ -382,6 +382,26 @@ pub fn ssh_dir() -> Option<PathBuf> {
     data_dir().map(|dir| dir.join("ssh"))
 }
 
+/// The common name of the localhost certificate authority, which `fbk cert clean` finds it by
+/// in the trust stores.
+pub const LOCALHOST_CA_NAME: &str = "Firebrick localhost CA";
+
+/// The file in [`localhost_ca_dir`] that holds the localhost certificate authority's
+/// certificate.
+pub const LOCALHOST_CA_CERT_FILE: &str = "ca.crt";
+
+/// Returns the directory holding the localhost certificate authority that forwarded ports serve
+/// HTTPS with, or `None` when there's no data directory (see `data_dir`).
+pub fn localhost_ca_dir() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join("tls"))
+}
+
+/// Returns the certificate of the localhost certificate authority, which `fbk cert trust` adds
+/// to the host's trust stores, or `None` when there's no data directory (see `data_dir`).
+pub fn localhost_ca_path() -> Option<PathBuf> {
+    localhost_ca_dir().map(|dir| dir.join(LOCALHOST_CA_CERT_FILE))
+}
+
 /// Returns the file the daemon stores the secrets for sandboxes in, or `None` when there's no
 /// data directory (see `data_dir`).
 pub fn secrets_path() -> Option<PathBuf> {

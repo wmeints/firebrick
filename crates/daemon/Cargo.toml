@@ -61,6 +61,13 @@ jsonc-parser = { version = "0.34.0", features = ["cst"] }
 url = "2.5.8"
 serde_json = "1.0.152"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
+# The localhost CA and certificates that forwarded ports serve HTTPS with, and its date type
+# (ADR 0065).
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+time = "0.3.55"
+# TLS on forwarded ports, with the aws-lc-rs provider and the versions reqwest already uses.
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12", "logging"] }
 
 [target.'cfg(windows)'.dependencies]
 # `CREATE_NO_WINDOW` for the host tools fbkd runs; the version tokio uses.

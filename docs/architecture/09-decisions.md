@@ -64,3 +64,4 @@
 - [ADR 0062 - Trust the Mozilla roots upstream on Windows hosts](decisions/0062-trust-the-mozilla-roots-upstream-on-windows-hosts.md)
 - [ADR 0063 - Publish a Homebrew formula in a custom tap](decisions/0063-publish-a-homebrew-formula-in-a-custom-tap.md)
 - [ADR 0064 - Run the branch review from a skill](decisions/0064-run-the-branch-review-from-a-skill.md)
+- [ADR 0065 - Serve HTTPS on forwarded ports with a localhost CA](decisions/0065-serve-https-on-forwarded-ports-with-a-localhost-ca.md)

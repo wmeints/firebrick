@@ -12,9 +12,10 @@ mod win32;
 
 pub use atomic_file::write_atomic;
 pub use paths::{
-    HOME_VAR, NO_CONFIG_DIR, NO_DATA_DIR, NO_LOG_DIR, approvals_path, clipboard_socket_dir,
-    daemon_lock_path, log_dir, missing_dir, msb_home, netlog_socket_dir, network_log_dir,
-    secrets_path, socket_path, ssh_dir,
+    HOME_VAR, LOCALHOST_CA_CERT_FILE, LOCALHOST_CA_NAME, NO_CONFIG_DIR, NO_DATA_DIR, NO_LOG_DIR,
+    approvals_path, clipboard_socket_dir, daemon_lock_path, localhost_ca_dir, localhost_ca_path,
+    log_dir, missing_dir, msb_home, netlog_socket_dir, network_log_dir, secrets_path, socket_path,
+    ssh_dir,
 };
 #[cfg(unix)]
 pub use private_fs::create_private_dir;

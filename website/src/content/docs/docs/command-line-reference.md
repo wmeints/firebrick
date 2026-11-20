@@ -327,6 +327,22 @@ fbk port ls
 fbk port rm 8080
 ```
 
+## `fbk cert`
+
+Trusts the certificate authority that forwarded ports serve HTTPS with, in the
+trust stores of your host, or removes it. See
+[HTTPS dev servers](/docs/networking/#https-dev-servers).
+
+| Command          | Description                                                                                                                                                                     |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fbk cert trust` | Add the localhost CA to the system store and the Chrome and Firefox databases on Linux, the login keychain on macOS or the user's root store on Windows. Replaces earlier ones. |
+| `fbk cert clean` | Remove the localhost CA from those stores.                                                                                                                                      |
+
+```sh
+fbk cert trust
+fbk cert clean
+```
+
 ## `fbk ssh-proxy`
 
 A hidden command that the generated SSH config uses as the `ProxyCommand` of

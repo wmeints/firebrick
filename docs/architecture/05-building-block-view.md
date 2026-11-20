@@ -43,6 +43,7 @@ C4Component
         Component(specfile, "spec_file", "serde_yaml", "Spec file, validation, default spec")
         Component(network, "network", "Rust", "Network rules, activity log, presets")
         Component(port, "port", "Rust", "Port forwards")
+        Component(cert, "cert", "Rust", "Host trust stores")
         Component(secret, "secret", "Rust", "Secrets")
         Component(approval, "approval", "serde_yaml", "Approved spec settings")
         Component(remote, "remote", "crossterm", "Terminal sessions, SSH proxy")
@@ -57,6 +58,7 @@ C4Component
     Rel(main, specfile, "Validates and writes the spec")
     Rel(main, network, "Uses")
     Rel(main, port, "Uses")
+    Rel(main, cert, "Trusts or removes the localhost CA")
     Rel(main, secret, "Uses")
     Rel(main, remote, "Uses")
     Rel(sandbox, specfile, "Loads .firebrick.yml, names a sandbox")
@@ -83,18 +85,20 @@ C4Component
   `secret set`, `secret ls`, `secret rm`, `network allow`, `network deny`,
   `network policy enable`, `network policy disable`, `network enable`, `network
   disable`, `network log`, `network presets show`, `network presets apply`,
-  `port forward`, `port rm` and `port ls` commands, and the hidden `ssh-proxy`
-  command. The argument of `port forward` is parsed with `PortMapping`'s parser,
-  and that of `port rm` as a port from 1 to 65535. `validate`, `init`, `network
-  presets show` and `--version`, which prints the package version, run without
-  the daemon. `network presets apply` takes one or more preset names, which clap
-  checks against `presets::names`, and becomes a `network` allow change with the
-  rules of those presets. `start`, `run` and every `network` subcommand that
-  changes the network settings take `--yes`, which approves changed mounts and
-  network settings without asking; `network log` and `network presets show`
-  change nothing and don't take it. `run` takes the command and its arguments as
-  one trailing list, so options after the command, such as `--yes`, go to the
-  command.
+  `port forward`, `port rm`, `port ls`, `cert trust` and `cert clean` commands,
+  and the hidden `ssh-proxy` command. The argument of `port forward` is parsed
+  with `PortMapping`'s parser, and that of `port rm` as a port from 1 to 65535.
+  `validate`, `init`, `network presets show`, `cert clean` and `--version`,
+  which prints the package version, run without the daemon. `cert trust`
+  connects first, so the daemon has created the localhost CA, and fails when
+  `tls/ca.crt` isn't in the data directory. `network presets apply` takes one or
+  more preset names, which clap checks against `presets::names`, and becomes a
+  `network` allow change with the rules of those presets. `start`, `run` and
+  every `network` subcommand that changes the network settings take `--yes`,
+  which approves changed mounts and network settings without asking; `network
+  log` and `network presets show` change nothing and don't take it. `run` takes
+  the command and its arguments as one trailing list, so options after the
+  command, such as `--yes`, go to the command.
 - `client` - Connects to the daemon socket. When nobody listens, it removes a
   stale socket, spawns `fbkd` from next to the `fbk` binary (or from `PATH`) and
   waits at most 5 seconds for the socket. It then compares the daemon's
@@ -194,6 +198,24 @@ C4Component
   forward reaches, sorted by guest port, as a table or with `--format json`. It
   removes control characters from the guest's process names. See
   [Listing ports](06-runtime-view.md#listing-ports).
+- `cert` - Adds the daemon's localhost CA to the host's trust stores, or removes
+  it
+  ([ADR 0065](decisions/0065-serve-https-on-forwarded-ports-with-a-localhost-ca.md)).
+  `Host::detect` finds the platform, on Linux the first system anchor directory
+  that exists (Fedora, Debian, Arch, openSUSE), the NSS databases of Chrome and
+  the Firefox profiles that hold a `cert9.db` (in `~/.mozilla/firefox`,
+  `~/.config/mozilla/firefox`, the Snap and the Flatpak), the Firefox
+  directories it can't read, and whether `certutil` is on `PATH`. `plan` turns
+  that and the `Action` into the commands per store, and `execute` runs them on
+  a blocking thread, printing each store it changed. A store whose command fails
+  keeps the steps before it, the other stores are still changed, and the error
+  lists every failed store with the command's output. Earlier copies are removed
+  by the common name `Firebrick localhost CA` until the store's tool reports it
+  can't find one, at most 16 times; any other failure of the lookup fails the
+  store. A store it can't change, such as NSS without `certutil` or Firefox
+  profiles it can't read, becomes a note instead of an error. A test binary of
+  its own, `tests/cert_runner.rs`, runs plans of shell commands. See
+  [Trusting the localhost CA](06-runtime-view.md#trusting-the-localhost-ca).
 - `secret` - Sends a secret to the daemon with `SetSecret`. With `--from-stdin`,
   it reads the value from stdin and removes one trailing line ending. With
   `--scope sandbox`, `secret set` and `secret rm` send the name of the working
@@ -247,7 +269,7 @@ microsandbox. Resolution has a five-second timeout and errors never select a
 direct transport. The original hostname remains in the label for subsequent
 recreations; an already running sandbox keeps its selected IP address.
 
-The daemon has eight top-level modules. Each one hides its submodules behind a
+The daemon has nine top-level modules. Each one hides its submodules behind a
 narrow interface, such as `SandboxManager` for `sandboxes` and `sync` for
 `host_config`.
 
@@ -258,7 +280,8 @@ C4Component
         Component(server, "server", "Tonic server", "Control API adapter, attach sessions, SSH tunnels")
         Component(sandboxes, "sandboxes", "Rust", "Sandbox management and provisioning")
         Component(guest, "guest", "Rust", "URL relays, network logs, host clipboard, listening ports")
-        Component(forward, "forward", "russh", "Port forwards")
+        Component(forward, "forward", "russh, rustls", "Port forwards and their TLS bridge")
+        Component(certificate, "certificate", "rcgen", "Localhost CA and server certificate")
         Component(hostconfig, "host_config", "jsonc-parser", "SSH config and editor settings")
         Component(ssh, "ssh", "russh", "SSH keys and host names")
         Component(secrets, "secrets", "serde_yaml", "Secrets")
@@ -274,6 +297,8 @@ C4Component
 
     Rel(main, runtime, "Ensures runtime")
     Rel(main, ssh, "Ensures keys")
+    Rel(main, certificate, "Ensures CA, issues certificate")
+    Rel(certificate, utils, "Finds CA directory")
     Rel(main, secrets, "Protects microsandbox database")
     Rel(main, sandboxes, "Syncs SSH config")
     Rel(main, server, "Runs")
@@ -534,6 +559,18 @@ C4Component
     off when the policy isn't enforced, because Windows installs most roots only
     on demand
     ([ADR 0062](decisions/0062-trust-the-mozilla-roots-upstream-on-windows-hosts.md)).
+- `certificate` - Keeps the localhost CA in `tls/ca.crt` and `tls/ca.key` in the
+  data directory, private to the user, and issues the server certificate that
+  forwarded ports serve HTTPS with
+  ([ADR 0065](decisions/0065-serve-https-on-forwarded-ports-with-a-localhost-ca.md)).
+  `ensure` loads the CA, or creates it with a name constraint to `localhost`,
+  `127.0.0.0/8` and `::1`, and replaces it when a file is missing or doesn't
+  parse, or a client that trusts the CA rejects the certificate it issues. It
+  logs a warning with the reason to run `fbk cert trust` again then. Other
+  errors, such as a clock before 1970 or a file it can't write, fail with the
+  path instead of replacing the CA. The CA is valid for 20 years; the server
+  certificate, for `localhost`, `*.dev.localhost`, `127.0.0.1` and `::1`, for
+  825 days from each start, and lives in memory only.
 - `forward` - Forwards host loopback ports to a sandbox's loopback
   ([ADR 0019](decisions/0019-forward-ports-through-the-ssh-servers-direct-tcpip.md)).
   Its submodules hold the loopback listeners that both kinds of forwards share
@@ -555,8 +592,19 @@ C4Component
   runs microsandbox's SSH server over an in-memory pipe with keys generated for
   that session and no inactivity timeout, so forwards stay open while the
   sandbox runs. When nothing listens on the guest port, the host connection is
-  closed and logged at `debug`. `CallbackForwards` holds the on-demand forwards
-  of one sandbox that `open` uses for OAuth callback ports (see
+  closed and logged at `debug`. `Forwards::with_tls` gives the configured
+  forwards an optional `TlsBridge` (`tls`), which `main` creates from the server
+  certificate: per connection it waits for the first bytes of either side, and
+  when the client's first byte starts a TLS handshake record, it accepts the
+  handshake with the localhost certificate, connects to the guest with TLS,
+  offering the client's ALPN protocols and server name and accepting any guest
+  certificate, and finishes the client's handshake with only the protocol the
+  guest chose. Other connections, including those where the guest speaks first,
+  are relayed as they are. A failed guest handshake is logged at `info`, because
+  the browser only sees a closed connection
+  ([ADR 0065](decisions/0065-serve-https-on-forwarded-ports-with-a-localhost-ca.md)).
+  `CallbackForwards` holds the on-demand forwards of one sandbox that `open`
+  uses for OAuth callback ports (see
   [ADR 0030](decisions/0030-forward-oauth-callback-ports-when-opening-a-url.md)):
   `CallbackForwards::ensure(port)` forwards `localhost:<port>` to the same port
   in the sandbox through the same listeners and `Connector`, or reuses the open

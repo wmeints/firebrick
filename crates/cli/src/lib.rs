@@ -2,6 +2,7 @@
 //! keeps `.firebrick.yml` and the sandbox in sync, and connects the terminal to the sandbox.
 
 mod approval;
+pub mod cert;
 pub mod client;
 pub mod network;
 pub mod port;

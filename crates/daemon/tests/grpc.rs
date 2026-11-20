@@ -23,12 +23,13 @@ use firebrick_daemon::api::{
     UpgradeSandboxResponse, attach_request, attach_response, root_disk_notice,
     start_sandbox_response, upgrade_sandbox_response,
 };
+use firebrick_daemon::forward::TlsBridge;
 use firebrick_daemon::guest::clipboard::{self, Cause, Clipboards, HostClipboard, HostError, Kind};
 use firebrick_daemon::guest::netlog;
 use firebrick_daemon::guest::open::{self, Opener};
 use firebrick_daemon::sandboxes::provision::{env, mise};
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
-use firebrick_daemon::{sandboxes, server};
+use firebrick_daemon::{certificate, sandboxes, server};
 use firebrick_utils::ipc;
 use hyper_util::rt::TokioIo;
 use microsandbox::sandbox::{
@@ -37,6 +38,8 @@ use microsandbox::sandbox::{
 };
 use microsandbox::snapshot::{Snapshot, SnapshotHandle};
 use microsandbox::{MicrosandboxError, MicrosandboxResult, Sandbox};
+use rustls::pki_types::CertificateDer;
+use rustls::pki_types::pem::PemObject;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OnceCell, mpsc, oneshot};
@@ -141,10 +144,28 @@ impl HostClipboard for FakeClipboard {
     }
 }
 
+/// Returns a TLS bridge with a certificate from a new localhost CA, and that CA as the only root
+/// a client trusts.
+fn tls_bridge() -> (Arc<TlsBridge>, rustls::RootCertStore) {
+    let dir = tempfile::tempdir().expect("failed to create the CA directory");
+    let (certificate, _) = certificate::ensure_in(dir.path(), time::OffsetDateTime::now_utc())
+        .expect("failed to create the localhost CA");
+    let ca =
+        CertificateDer::from_pem_file(dir.path().join(firebrick_utils::LOCALHOST_CA_CERT_FILE))
+            .expect("failed to read the localhost CA");
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca).expect("failed to trust the localhost CA");
+    let bridge = TlsBridge::new(certificate).expect("failed to create the TLS bridge");
+
+    (Arc::new(bridge), roots)
+}
+
 struct TestDaemon {
     socket_path: PathBuf,
     opener: Arc<RecordingOpener>,
     clipboard: Arc<FakeClipboard>,
+    /// The localhost CA of the daemon's TLS bridge, which a test client trusts.
+    ca: rustls::RootCertStore,
     shutdown: Option<oneshot::Sender<()>>,
     handle: JoinHandle<Result<(), server::ServerError>>,
 }
@@ -190,7 +211,9 @@ impl TestDaemon {
             content: Mutex::new(FakeContent::Full),
             written: Mutex::new(Vec::new()),
         });
-        let service = server::FirebrickServer::new(secrets, opener.clone(), clipboard.clone());
+        let (tls, ca) = tls_bridge();
+        let service =
+            server::FirebrickServer::new(secrets, opener.clone(), clipboard.clone(), Some(tls));
 
         if restore_listeners {
             service.restore_listeners().await;
@@ -204,6 +227,7 @@ impl TestDaemon {
             socket_path,
             opener,
             clipboard,
+            ca,
             shutdown: Some(tx),
             handle,
         }
@@ -4557,6 +4581,116 @@ async fn forwards_host_port_to_sandbox_and_closes_removed_port() {
     assert!(started.failed_forwards.is_empty());
     assert!(restarted.forwards.is_empty());
     assert!(closed.is_err(), "localhost:{host} should be closed");
+}
+
+/// A TLS echo server on [`GUEST_PORT`] with the certificate and key in `/tmp/guest.pem`, which
+/// offers only HTTP/1.1, answers the first message of one connection in upper case and exits,
+/// so its session ends before the daemon stops.
+const TLS_ECHO_SERVER: &str = "
+import socket, ssl
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain('/tmp/guest.pem')
+context.set_alpn_protocols(['http/1.1'])
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(('127.0.0.1', 4000))
+server.listen()
+connection, _ = server.accept()
+tls = context.wrap_socket(connection, server_side=True)
+tls.sendall(tls.recv(100).upper())
+tls.close()
+";
+
+/// Writes a self-signed certificate and its key to `/tmp/guest.pem` in the sandbox, as a dev
+/// server's own certificate.
+async fn write_guest_certificate(name: &str) {
+    let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+        .expect("failed to generate the guest certificate");
+    let pem = format!(
+        "{}{}",
+        generated.cert.pem(),
+        generated.signing_key.serialize_pem()
+    );
+    let sb = Sandbox::get(name)
+        .await
+        .expect("failed to get the sandbox")
+        .connect()
+        .await
+        .expect("failed to connect to the sandbox");
+    let output = sb
+        .exec_with("sh", |exec| {
+            exec.args(["-c", "cat > /tmp/guest.pem"])
+                .stdin_bytes(pem.into_bytes())
+        })
+        .await
+        .expect("failed to write the guest certificate");
+
+    assert!(output.status().success, "{:?}", output.stderr());
+}
+
+/// How long a TLS handshake or reply through a forward may take.
+const TLS_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Connects to the host port with TLS, trusting only `roots` and offering HTTP/2 and HTTP/1.1,
+/// sends the message and returns the negotiated protocol and the reply.
+async fn tls_exchange(host: u16, roots: rustls::RootCertStore, message: &[u8]) -> (String, String) {
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+    let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+    let tcp = TcpStream::connect(("127.0.0.1", host)).await.unwrap();
+
+    let mut stream = tokio::time::timeout(TLS_TIMEOUT, connector.connect(name, tcp))
+        .await
+        .expect("the TLS handshake through the forward timed out")
+        .expect("the client should trust the forward's certificate");
+    let protocol = String::from_utf8_lossy(stream.get_ref().1.alpn_protocol().unwrap_or_default())
+        .into_owned();
+    stream.write_all(message).await.unwrap();
+    let mut reply = Vec::new();
+    let read = tokio::time::timeout(TLS_TIMEOUT, stream.read_to_end(&mut reply)).await;
+    assert!(
+        read.is_ok(),
+        "the reply through the forward timed out: {reply:?}"
+    );
+
+    (protocol, String::from_utf8_lossy(&reply).into_owned())
+}
+
+#[tokio::test]
+async fn forward_bridges_tls_to_an_https_server_in_the_sandbox() {
+    let name: &str = &sandbox_name("port-tls");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("port-tls").await;
+    let mut client = daemon.client().await;
+    let host = free_port().await;
+    let request = StartSandboxRequest {
+        image: PYTHON_IMAGE.to_string(),
+        ports: Some(forward_ports(host, GUEST_PORT)),
+        ..start_request(name)
+    };
+    start_with_ports(&mut client, request).await;
+    write_guest_certificate(name).await;
+    let _server = open_session(
+        &mut client,
+        attach_start(name, "python3", &["-c", TLS_ECHO_SERVER], DEFAULT_SIZE),
+    )
+    .await;
+    wait_for_listener(&mut client, name, GUEST_PORT).await;
+
+    let (protocol, reply) = tls_exchange(host, daemon.ca.clone(), b"secure").await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert_eq!(protocol, "http/1.1");
+    assert_eq!(reply, "SECURE");
 }
 
 /// Lists the ports of the sandbox.

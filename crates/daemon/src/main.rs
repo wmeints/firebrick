@@ -4,6 +4,7 @@ use std::fs::File;
 #[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -12,8 +13,9 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
+use firebrick_daemon::forward::TlsBridge;
 use firebrick_daemon::secrets::{self, SecretStore};
-use firebrick_daemon::{runtime, sandboxes, server, ssh};
+use firebrick_daemon::{certificate, runtime, sandboxes, server, ssh};
 
 /// The firebrick daemon. `fbk` starts it on demand, so it takes no arguments besides `--help`
 /// and `--version`.
@@ -110,12 +112,20 @@ async fn run(log_dir: &Path, secrets_path: PathBuf) -> Result<()> {
     secrets::protect_database(&msb_config.home())
         .context("failed to protect the microsandbox database")?;
     ssh::ensure_keys()?;
+    let certificate =
+        certificate::ensure().context("can't set up the localhost certificate authority")?;
+    let tls = TlsBridge::new(certificate).context("can't serve the localhost certificate")?;
     sandboxes::sync_ssh_config().await;
 
     tracing::info!(path = %log_dir.display(), "writing logs");
     tracing::info!(path = %msb_config.home().display(), "using microsandbox home");
     tracing::info!(path = %socket_path.display(), "listening");
-    Ok(server::run(&socket_path, SecretStore::new(secrets_path)).await?)
+    Ok(server::run(
+        &socket_path,
+        SecretStore::new(secrets_path),
+        Some(Arc::new(tls)),
+    )
+    .await?)
 }
 
 /// Logs to stdout and to a daily log file in `log_dir`. Logs are written until the returned guard

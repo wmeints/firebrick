@@ -24,6 +24,7 @@ use crate::api::{
     UpdateNetworkResponse, UpgradeSandboxRequest, UpgradeSandboxResponse, attach_request,
     ssh_tunnel_request, start_sandbox_response, upgrade_sandbox_response,
 };
+use crate::forward::TlsBridge;
 use crate::guest::clipboard::{HostClipboard, HostTools};
 use crate::guest::open::{HostOpener, Opener};
 use crate::sandboxes::{NewSecret, SandboxManager};
@@ -72,14 +73,16 @@ pub struct FirebrickServer {
 
 impl FirebrickServer {
     /// Creates a server that adds the secrets from `secrets` to sandboxes, opens the URLs from
-    /// sandboxes with `opener` and reads the host clipboard for them from `clipboard`.
+    /// sandboxes with `opener` and reads the host clipboard for them from `clipboard`. Its port
+    /// forwards bridge TLS connections through `tls` when there is one.
     pub fn new(
         secrets: SecretStore,
         opener: Arc<dyn Opener>,
         clipboard: Arc<dyn HostClipboard>,
+        tls: Option<Arc<TlsBridge>>,
     ) -> Self {
         Self {
-            sandboxes: Arc::new(SandboxManager::new(secrets, opener, clipboard)),
+            sandboxes: Arc::new(SandboxManager::new(secrets, opener, clipboard, tls)),
             sessions: Sessions::default(),
             shutdown: Arc::new(Notify::new()),
         }
@@ -537,16 +540,21 @@ const RECREATION_TIMEOUT: Duration = Duration::from_secs(60);
 /// Reopens the port forwards of the sandboxes that are running, listens for the network logs
 /// and clipboards of the sandboxes and removes the upgrade probes an earlier daemon left behind,
 /// then serves the gRPC API on the socket until SIGINT or SIGTERM is received or a client sends
-/// a `Shutdown` request, opening the URLs
-/// from sandboxes in the host's browser and reading the host clipboard with its desktop's
-/// tools. Afterwards, waits up to [`RECREATION_TIMEOUT`] for the updates and upgrades that are
+/// a `Shutdown` request, bridging TLS connections to forwarded ports through `tls` when there is
+/// one, opening the URLs from sandboxes in the host's browser and reading the host clipboard
+/// with its desktop's tools. Afterwards, waits up to [`RECREATION_TIMEOUT`] for the updates and upgrades that are
 /// still running and writes the network records a last time. The caller makes sure no other
 /// daemon serves on the socket, so it doesn't take that daemon's host ports.
-pub async fn run(socket_path: &Path, secrets: SecretStore) -> Result<(), ServerError> {
+pub async fn run(
+    socket_path: &Path,
+    secrets: SecretStore,
+    tls: Option<Arc<TlsBridge>>,
+) -> Result<(), ServerError> {
     let service = FirebrickServer::new(
         secrets,
         Arc::new(HostOpener),
         Arc::new(HostTools::from_env()),
+        tls,
     );
     let sandboxes = Arc::clone(&service.sandboxes);
     let requested = service.shutdown_requested();
@@ -596,6 +604,7 @@ mod tests {
                 unused_store(),
                 Arc::new(HostOpener),
                 Arc::new(HostTools::new(None, None)),
+                None,
             ),
             async {
                 let _ = stop.await;
@@ -645,7 +654,7 @@ mod tests {
         let path = test_endpoint("existing");
         let other = ipc::Listener::bind(&path).unwrap();
 
-        let result = run(&path, unused_store()).await;
+        let result = run(&path, unused_store(), None).await;
 
         drop(other);
         ipc::remove(&path).await.unwrap();
@@ -658,7 +667,7 @@ mod tests {
         let path = temp_path("stale.sock");
         std::fs::write(&path, b"").unwrap();
 
-        let result = run(&path, unused_store()).await;
+        let result = run(&path, unused_store(), None).await;
 
         std::fs::remove_file(&path).unwrap();
         assert!(matches!(result, Err(ServerError::SocketAlreadyInUse())));
@@ -829,7 +838,7 @@ mod tests {
     async fn run_fails_when_socket_directory_does_not_exist() {
         let path = temp_path("missing-dir").join("firebrick.sock");
 
-        let result = run(&path, unused_store()).await;
+        let result = run(&path, unused_store(), None).await;
 
         assert!(matches!(result, Err(ServerError::InvalidSocketPath(_))));
         assert!(!path.exists());
@@ -840,7 +849,7 @@ mod tests {
     async fn run_fails_for_a_pipe_name_that_is_too_long() {
         let path = test_endpoint(&"a".repeat(300));
 
-        let result = run(&path, unused_store()).await;
+        let result = run(&path, unused_store(), None).await;
 
         assert!(matches!(result, Err(ServerError::InvalidSocketPath(_))));
     }
@@ -853,6 +862,7 @@ mod tests {
             SecretStore::new(&path),
             Arc::new(HostOpener),
             Arc::new(HostTools::new(None, None)),
+            None,
         );
 
         let status = server
@@ -885,6 +895,7 @@ mod tests {
             store,
             Arc::new(HostOpener),
             Arc::new(HostTools::new(None, None)),
+            None,
         )
     }
 
@@ -933,6 +944,7 @@ mod tests {
             unused_store(),
             Arc::new(HostOpener),
             Arc::new(HostTools::new(None, None)),
+            None,
         );
 
         let status = server
@@ -957,6 +969,7 @@ mod tests {
             store,
             Arc::new(HostOpener),
             Arc::new(HostTools::new(None, None)),
+            None,
         );
 
         let status = server
@@ -1012,6 +1025,7 @@ mod tests {
             unused_store(),
             Arc::new(HostOpener),
             Arc::new(HostTools::new(None, None)),
+            None,
         )
     }
 
@@ -1191,6 +1205,7 @@ mod tests {
             unused_store(),
             Arc::new(HostOpener),
             Arc::new(HostTools::new(None, None)),
+            None,
         );
 
         let status = server
