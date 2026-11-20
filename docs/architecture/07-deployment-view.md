@@ -201,7 +201,7 @@ latest release. It then checks out the tag, its `check` job uploads
 and its `deploy` job deploys it with `actions/deploy-pages`. Pre-releases don't
 deploy the site. A release from a tag pushed by hand runs on the tag's ref, so
 the `github-pages` environment must allow `v*` tags besides `main` for it to
-deploy. See [ADR 0066](decisions/0066-publish-the-website-with-each-release.md).
+deploy. See [ADR 0067](decisions/0067-publish-the-website-with-each-release.md).
 The repository's Pages source must be set to "GitHub Actions" and its custom
 domain to `firebrick-sandbox.dev` before the first deployment. See
 [ADR 0032](decisions/0032-publish-the-website-on-github-pages.md).

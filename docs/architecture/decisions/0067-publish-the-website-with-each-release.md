@@ -1,4 +1,4 @@
-# 66. Publish the website with each release
+# 67. Publish the website with each release
 
 ## Status
 

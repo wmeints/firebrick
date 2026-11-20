@@ -236,7 +236,7 @@ These checks enforce the rules above, so don't try to bypass them:
   pushes to `main` that change `website/`, `mise.toml`, `mise.lock` or the
   workflow. It deploys to GitHub Pages only when `release.yaml` calls it with
   the release tag, so a website change goes online with the next release (ADR
-  0066).
+  0067).
 - `.github/workflows/image.yaml` builds the `firebrick-base` image for both
   platforms, without pushing it, on pull requests and pushes to `main` that
   change the `Dockerfile` or the files it copies from `image/`.

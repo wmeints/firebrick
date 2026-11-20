@@ -4,7 +4,7 @@
 
 Accepted. The site's URL is changed by
 [ADR 0034](0034-serve-the-website-from-firebrick-sandbox-dev.md), and
-[ADR 0066](0066-publish-the-website-with-each-release.md) deploys it with each
+[ADR 0067](0067-publish-the-website-with-each-release.md) deploys it with each
 release instead of on pushes to `main`.
 
 ## Context

@@ -178,9 +178,10 @@ updated the network rules of my-project
 
 ## Allowing coding agents and toolchains with presets
 
-Firebrick ships presets: groups of `allow` rules for coding agents, GitHub and
-the package registries and installers of common toolchains. Add the ones your
-project needs instead of working out every domain yourself:
+Firebrick ships presets: groups of `allow` rules for coding agents, GitHub, the
+extension marketplaces of IDEs, and the package registries and installers of
+common toolchains. Add the ones your project needs instead of working out every
+domain yourself:
 
 ```sh
 $ fbk network policy enable
@@ -194,20 +195,22 @@ with the rules of the named presets, so it asks for approval and takes `--yes`
 the same way. `fbk network presets apply all` adds every preset. Run `fbk
 network presets show` to list the presets and their rules:
 
-| Preset    | Rules                                                                                                                                        |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `claude`  | `*.anthropic.com`, `*.claude.ai`, `*.claude.com`                                                                                             |
-| `copilot` | `*.githubcopilot.com`, `copilot-proxy.githubusercontent.com`, `origin-tracker.githubusercontent.com`                                         |
-| `github`  | `*.github.com`, `*.githubusercontent.com`, `*.githubassets.com`, `ghcr.io`                                                                   |
-| `codex`   | `*.openai.com`, `*.chatgpt.com`                                                                                                              |
-| `node`    | `*.nodejs.org`, `*.npmjs.org`, `*.npmjs.com`, `*.yarnpkg.com`, `*.pnpm.io`, `*.bun.sh`                                                       |
-| `dotnet`  | `*.nuget.org`, `*.dot.net`, `builds.dotnet.microsoft.com`, `dotnetcli.azureedge.net`, `dotnetcli.blob.core.windows.net`                      |
-| `java`    | `*.maven.org`, `repo.maven.apache.org`, `*.gradle.org`, `*.adoptium.net`, `central.sonatype.com`, `oss.sonatype.org`, `s01.oss.sonatype.org` |
-| `rust`    | `*.crates.io`, `*.rust-lang.org`, `*.rustup.rs`, `docs.rs`                                                                                   |
-| `go`      | `*.golang.org`, `*.go.dev`, `dl.google.com`                                                                                                  |
-| `python`  | `*.pypi.org`, `*.pythonhosted.org`, `*.python.org`, `*.astral.sh`, `*.anaconda.org`, `repo.anaconda.com`                                     |
-| `mise`    | `*.jdx.dev`, `mise.run`                                                                                                                      |
-| `ruby`    | `*.rubygems.org`, `*.ruby-lang.org`                                                                                                          |
+| Preset      | Rules                                                                                                                                        |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude`    | `*.anthropic.com`, `*.claude.ai`, `*.claude.com`                                                                                             |
+| `copilot`   | `*.githubcopilot.com`, `copilot-proxy.githubusercontent.com`, `origin-tracker.githubusercontent.com`                                         |
+| `github`    | `*.github.com`, `*.githubusercontent.com`, `*.githubassets.com`, `ghcr.io`                                                                   |
+| `codex`     | `*.openai.com`, `*.chatgpt.com`                                                                                                              |
+| `vscode`    | `*.visualstudio.com`, `*.visualstudio.microsoft.com`, `*.vsassets.io`, `*.vscode-cdn.net`                                                    |
+| `jetbrains` | `*.jetbrains.com`                                                                                                                            |
+| `node`      | `*.nodejs.org`, `*.npmjs.org`, `*.npmjs.com`, `*.yarnpkg.com`, `*.pnpm.io`, `*.bun.sh`                                                       |
+| `dotnet`    | `*.nuget.org`, `*.dot.net`, `builds.dotnet.microsoft.com`, `dotnetcli.azureedge.net`, `dotnetcli.blob.core.windows.net`                      |
+| `java`      | `*.maven.org`, `repo.maven.apache.org`, `*.gradle.org`, `*.adoptium.net`, `central.sonatype.com`, `oss.sonatype.org`, `s01.oss.sonatype.org` |
+| `rust`      | `*.crates.io`, `*.rust-lang.org`, `*.rustup.rs`, `docs.rs`                                                                                   |
+| `go`        | `*.golang.org`, `*.go.dev`, `dl.google.com`                                                                                                  |
+| `python`    | `*.pypi.org`, `*.pythonhosted.org`, `*.python.org`, `*.astral.sh`, `*.anaconda.org`, `repo.anaconda.com`                                     |
+| `mise`      | `*.jdx.dev`, `mise.run`                                                                                                                      |
+| `ruby`      | `*.rubygems.org`, `*.ruby-lang.org`                                                                                                          |
 
 - The presets are built into `fbk`, so nobody can change them by editing a file.
 - `.firebrick.yml` gets the rules, not the preset names. Afterwards they're
@@ -217,6 +220,8 @@ network presets show` to list the presets and their rules:
 - Many tools download releases from GitHub, so add `github` along with the
   toolchain preset. Like every domain rule, the presets only allow HTTP and
   HTTPS, so cloning over SSH (`git@github.com:...`) stays blocked.
+- `vscode` and `jetbrains` let an IDE connected to the sandbox over SSH install
+  extensions and plugins from its marketplace in the sandbox.
 
 ## Reaching hosts on your local network
 
@@ -225,7 +230,9 @@ even when your host can. This is by design: by default a sandbox only reaches
 the public internet, and private address ranges are blocked, whether or not
 `enforce` is on. They include the RFC 1918 ranges `10.0.0.0/8`, `172.16.0.0/12`
 and `192.168.0.0/16`, IPv6 unique local addresses (`fc00::/7`) and carrier-grade
-NAT (`100.64.0.0/10`).
+NAT (`100.64.0.0/10`). DNS queries are the exception: the sandbox asks your
+host's DNS servers, which are often on your LAN, and can send DNS queries to any
+server (see [DNS servers](#dns-servers)).
 
 To reach a LAN host, turn on the policy and allow the host's IP address, or a
 CIDR range for the whole LAN:
@@ -268,6 +275,26 @@ When a LAN host isn't allowed, you see one of these:
   `firebrick blocked the connection to 192.168.68.122`.
 - A host name that resolves to a LAN address without an IP or CIDR rule doesn't
   resolve: `curl: (6) Could not resolve host: nas.example.lan`.
+
+## DNS servers
+
+`fbkd` points the sandbox's `/etc/resolv.conf` at your host's current DNS
+servers, followed by the sandbox's own resolver, and updates the file within a
+few seconds when your host's servers change, for example after it wakes from
+sleep or connects to a VPN. So name resolution in a running sandbox keeps
+working without a restart. Keep in mind that:
+
+- `fbkd` manages `/etc/resolv.conf`: edits you make in the sandbox are
+  overwritten when your host's DNS servers change.
+- The sandbox can send DNS queries to any DNS server, including servers on your
+  LAN, even with `enforce` on and with a `deny` rule for the server's address.
+  Domain `deny` rules still apply to those queries, so a denied name doesn't
+  resolve whichever server the sandbox asks.
+- The sandbox only gets IPv4 servers your host doesn't run itself: a host that
+  only uses a local resolver, such as systemd-resolved's `127.0.0.53`, leaves
+  the sandbox on its own resolver.
+- Sandboxes created before firebrick did this keep their DNS settings until
+  they're recreated, for example by `fbk network allow` or `fbk upgrade`.
 
 ## Recording network activity
 

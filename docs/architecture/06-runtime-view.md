@@ -286,14 +286,17 @@ and treats a start that loses a race with another start as a success.
 The daemon parses the `network` rules of every `StartSandbox` and rejects an
 invalid one with `INVALID_ARGUMENT` before it looks up the sandbox. When it
 creates a sandbox with `enforce: true`, it gives the sandbox a network policy
-that checks every outgoing connection in this order: the deny rules, the allow
-rules, then DNS to the sandbox's resolver, and denies the rest. microsandbox
-matches domain rules against DNS queries too, so a host denied by a domain rule
-doesn't resolve. TLS interception is on for port 443, so an HTTP or HTTPS
-request to a host that no rule matched gets `403 Forbidden` with `firebrick
-blocked the connection to <host>: ...`, as long as the policy has no domain deny
-rule; see [Risks and technical debt](11-risks-and-technical-debt.md) for the
-limits. Without enforcement the sandbox gets microsandbox's default policy
+that checks every outgoing connection in this order: the domain deny rules, DNS
+to any server, the IP and CIDR deny rules, the allow rules, then DNS to the
+sandbox's resolver, and denies the rest. microsandbox matches domain rules
+against DNS queries too, so a host denied by a domain rule doesn't resolve,
+whichever server the guest asks, while an IP or CIDR deny rule that covers the
+host's DNS server doesn't stop the guest from resolving through it. TLS
+interception is on for port 443, so an HTTP or HTTPS request to a host that no
+rule matched gets `403 Forbidden` with `firebrick blocked the connection to
+<host>: ...`, as long as the policy has no domain deny rule; see
+[Risks and technical debt](11-risks-and-technical-debt.md) for the limits.
+Without enforcement the sandbox gets microsandbox's default policy
 ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
 The proxy verifies upstream servers against the host's roots; on a Windows host
 the daemon also writes the Mozilla roots to `tls/upstream-roots.pem` in the
@@ -302,6 +305,21 @@ first time CryptoAPI needs them. A failure to write the file fails the create
 with an error that names the path
 ([ADR 0062](decisions/0062-trust-the-mozilla-roots-upstream-on-windows-hosts.md)).
 With enforcement on, `mise install` only reaches the hosts the rules allow.
+Without enforcement, the policy also allows DNS to any server.
+
+microsandbox reads the host's DNS servers only when the VM starts, so they go
+stale when the host wakes from sleep or changes networks. On Linux and macOS
+hosts, `fbkd` therefore points the guest's `/etc/resolv.conf` at the host's
+current DNS servers, at most two reachable IPv4 servers, followed by the sandbox
+gateway. It reads them from the dynamic store with `scutil` on macOS and from
+`/etc/resolv.conf` elsewhere. It writes them when it starts a sandbox through
+`fbk start` or `ssh`, and records them per sandbox. Every 5 seconds it reads the
+host's servers again and writes them into each running sandbox whose recorded
+servers differ, holding the sandbox's lock; a sandbox that fails or is busy is
+tried again at the next check, and one that was recreated or restarted gets them
+again. When the host's servers can't be read, the sandboxes keep theirs. It only
+touches sandboxes with the `firebrick.dns` label, whose policy allows DNS to any
+server ([ADR 0066](decisions/0066-point-the-guest-at-the-host-dns-servers.md)).
 
 With `enabled: false`, the daemon still validates the rules but creates the
 sandbox without a network device, through microsandbox's `disable_network()`.

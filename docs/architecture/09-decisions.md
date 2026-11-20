@@ -65,4 +65,5 @@
 - [ADR 0063 - Publish a Homebrew formula in a custom tap](decisions/0063-publish-a-homebrew-formula-in-a-custom-tap.md)
 - [ADR 0064 - Run the branch review from a skill](decisions/0064-run-the-branch-review-from-a-skill.md)
 - [ADR 0065 - Serve HTTPS on forwarded ports with a localhost CA](decisions/0065-serve-https-on-forwarded-ports-with-a-localhost-ca.md)
-- [ADR 0066 - Publish the website with each release](decisions/0066-publish-the-website-with-each-release.md)
+- [ADR 0066 - Point the guest at the host's DNS servers](decisions/0066-point-the-guest-at-the-host-dns-servers.md)
+- [ADR 0067 - Publish the website with each release](decisions/0067-publish-the-website-with-each-release.md)

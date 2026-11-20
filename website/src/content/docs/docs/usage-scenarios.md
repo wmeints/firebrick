@@ -216,12 +216,14 @@ works on the files in the sandbox instead of on your host.
    when it reads one from the environment. For GitHub Copilot:
 
    ```sh
-   fbk network presets apply copilot github
+   fbk network presets apply copilot github vscode
    gh auth token | fbk secret set COPILOT_GITHUB_TOKEN --from-stdin
    ```
 
-   `COPILOT_GITHUB_TOKEN` is allowed on GitHub and `*.githubcopilot.com` by
-   default. See [Allowed hosts](/docs/secrets/#allowed-hosts).
+   `vscode` lets VS Code install extensions in the sandbox; apply `jetbrains`
+   instead for a JetBrains IDE. `COPILOT_GITHUB_TOKEN` is allowed on GitHub and
+   `*.githubcopilot.com` by default. See
+   [Allowed hosts](/docs/secrets/#allowed-hosts).
 
 2. Start the sandbox. `fbk start` prints the commands that open the workspace:
 
