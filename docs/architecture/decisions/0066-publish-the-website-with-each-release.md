@@ -38,3 +38,6 @@ The site deploys only as part of a release:
 - A tag pushed by hand runs `release.yaml` on the tag's ref. The `github-pages`
   environment only allows deployments from `main` by default, so its deployment
   rules must also allow `v*` tags for such a release to deploy the site.
+- Unlike the `homebrew` job, the `website` job doesn't check that its tag is the
+  newest release. Re-running an older release's `website` job, or pushing a
+  patch tag for an older version by hand, publishes that release's docs.

@@ -50,8 +50,9 @@ The jobs run in this order: `package` for each target, then `image`, then
 `publish`, then `release`, which creates the GitHub release, then `homebrew` and
 `website`, which publishes the docs to GitHub Pages. A failed job stops the jobs
 after it, so the GitHub release only appears once crates.io has the version, and
-the tap only points at a published release. A failed `homebrew` job leaves the
-GitHub release and the crates as they are.
+the tap only points at a published release. A failed `homebrew` or `website` job
+leaves the GitHub release and the crates as they are; re-run it to update the
+tap or publish the docs.
 
 The `image`, `publish` and `homebrew` jobs run in the `release` environment,
 which waits for a required reviewer to approve each deployment in the Actions
@@ -308,6 +309,9 @@ maintainer with admin access applies them in this order:
    repository, and add it to the `release` environment of this repository as the
    `HOMEBREW_TAP_TOKEN` secret. Renew it before it expires; an expired token
    fails the `homebrew` job.
+6. Repository → Settings → Environments → `github-pages`: add `v*.*.*` tags to
+   the deployment branches and tags besides `main`, so a release from a tag
+   pushed by hand can deploy the website.
 
 The environment allows `main` because a release from `tag-release.yaml` runs on
 `main`, and `v*.*.*` tags because a tag pushed by hand runs on the tag. It
