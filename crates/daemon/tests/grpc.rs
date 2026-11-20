@@ -27,7 +27,7 @@ use firebrick_daemon::forward::TlsBridge;
 use firebrick_daemon::guest::clipboard::{self, Cause, Clipboards, HostClipboard, HostError, Kind};
 use firebrick_daemon::guest::netlog;
 use firebrick_daemon::guest::open::{self, Opener};
-use firebrick_daemon::sandboxes::provision::{env, mise};
+use firebrick_daemon::sandboxes::provision::{dns, env, mise};
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{certificate, sandboxes, server};
 use firebrick_utils::ipc;
@@ -2974,6 +2974,93 @@ async fn enforced_network_policy_denies_host_that_is_also_allowed() {
     // The allowed subdomain proves the rules apply, so the failure comes from the deny rule.
     assert!(!allowed.trim_end().ends_with("000"), "{allowed:?}");
     assert!(denied.trim_end().ends_with("000"), "{denied:?}");
+}
+
+/// Prints the guest's `resolv.conf`, then the exit code of `getent hosts` for each argument.
+/// The shell waits a second so the last line is read first, see [`fetch`].
+const RESOLVE_SCRIPT: &str = r#"cat /etc/resolv.conf
+for name in "$@"; do getent hosts "$name" >/dev/null; echo "$name $?"; done
+sleep 1"#;
+
+/// Prints the guest's `resolv.conf` file and its inode.
+const RESOLV_CONF_SCRIPT: &str = "cat /etc/resolv.conf; ls -i /etc/resolv.conf; sleep 1";
+
+#[tokio::test]
+async fn guest_resolves_through_host_dns_servers_under_the_network_policy() {
+    let name: &str = &sandbox_name("dns-host");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("dns-host").await;
+    let mut client = daemon.client().await;
+    // The deny rule covers the DNS server the guest queries, which must still answer.
+    let deny = ["example.org", "1.1.1.1"];
+    start_enforced_sandbox(&mut client, name, &["example.com"], &deny).await;
+
+    let resolv_conf = ["-c", RESOLV_CONF_SCRIPT];
+    let (at_start, _) = run_command(&mut client, name, "sh", &resolv_conf).await;
+    let sb = Sandbox::get(name).await.unwrap().connect().await.unwrap();
+    let args = [
+        "-c",
+        RESOLVE_SCRIPT,
+        "resolve",
+        "example.com",
+        "example.org",
+    ];
+    dns::apply(&sb, &[]).await.unwrap();
+    let (gateway_only, _) = run_command(&mut client, name, "sh", &args).await;
+    let host_server = "1.1.1.1".parse().unwrap();
+    dns::apply(&sb, &[host_server]).await.unwrap();
+    let (written, _) = run_command(&mut client, name, "sh", &resolv_conf).await;
+    dns::apply(&sb, &[host_server]).await.unwrap();
+    let (rewritten, _) = run_command(&mut client, name, "sh", &resolv_conf).await;
+    let (output, _) = run_command(&mut client, name, "sh", &args).await;
+    let port_53 = fetch(&mut client, name, "http://1.1.1.1:53/").await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    // fbkd wrote the guest's DNS servers when it started the sandbox.
+    assert!(
+        at_start.starts_with("# Written by firebrick"),
+        "{at_start:?}"
+    );
+
+    // Without host servers the guest resolves through the gateway it found.
+    let gateway_lines = lines_of(&gateway_only);
+    let gateway = nameservers_of(&gateway_lines);
+    assert_eq!(gateway.len(), 1, "{gateway_only:?}");
+    assert!(gateway_lines.contains(&"example.com 0"), "{gateway_only:?}");
+    assert!(gateway_lines.contains(&"example.org 2"), "{gateway_only:?}");
+
+    // Applying the same servers again leaves the file alone; a write would replace its inode.
+    assert_eq!(written, rewritten);
+
+    let lines = lines_of(&output);
+    assert_eq!(
+        nameservers_of(&lines),
+        ["1.1.1.1", gateway[0]],
+        "{output:?}"
+    );
+    // The query to 1.1.1.1 gets an answer, so glibc doesn't fall back to the gateway: the
+    // policy allows DNS to that server despite the deny rule, and its domain rules still apply.
+    assert!(lines.contains(&"example.com 0"), "{output:?}");
+    assert!(lines.contains(&"example.org 2"), "{output:?}");
+
+    // Port 53 only carries DNS: an HTTP request to it gets no HTTP response.
+    assert!(port_53.trim_end().ends_with("000"), "{port_53:?}");
+}
+
+/// Returns the lines of a terminal's output without their line endings.
+fn lines_of(output: &str) -> Vec<&str> {
+    output.lines().map(str::trim_end).collect()
+}
+
+/// Returns the servers of the `nameserver` lines.
+fn nameservers_of<'a>(lines: &[&'a str]) -> Vec<&'a str> {
+    lines
+        .iter()
+        .filter_map(|line| line.strip_prefix("nameserver "))
+        .collect()
 }
 
 /// The options fbkd gives the JVMs of a sandbox with TLS interception.

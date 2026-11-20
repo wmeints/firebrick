@@ -1,7 +1,8 @@
 //! Applies the parts of a sandbox's spec to the sandbox: its environment variables, the host's
-//! git identity, the Java trust store, the workspace's mise tools, the image pull and the
-//! network policy with the upstream roots that TLS interception trusts.
+//! DNS servers, the host's git identity, the Java trust store, the workspace's mise tools, the
+//! image pull and the network policy with the upstream roots that TLS interception trusts.
 
+pub mod dns;
 pub mod env;
 pub(crate) mod git;
 pub(crate) mod java;

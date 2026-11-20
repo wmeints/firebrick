@@ -78,6 +78,17 @@ and trust boundaries these risks belong to.
   connections; the network log records the attempts the guest makes, but not
   which ones the policy denied
   ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
+- **DNS reaches any server:** to work around microsandbox reading the host's DNS
+  servers only at VM start, every sandbox's policy allows UDP and TCP port 53 to
+  any address, and `fbkd` rewrites the guest's `/etc/resolv.conf`. microsandbox
+  answers those queries itself after the domain rules and rebind protection, but
+  it sends them to whichever server the guest names, so a guest can query DNS
+  servers on the host's LAN and send data straight to a DNS server it controls,
+  not only through the host's resolver, also when an IP or CIDR deny rule covers
+  that server. A sandbox created before the rule keeps stale servers until it
+  restarts. Per-domain DNS servers that a macOS VPN configures aren't followed.
+  Remove the workaround once microsandbox refreshes its upstream servers
+  ([ADR 0066](decisions/0066-point-the-guest-at-the-host-dns-servers.md)).
 - **The agent can tamper with the network record:** the logger that reports a
   sandbox's DNS lookups and connections runs inside the VM, and the `agent` user
   has passwordless `sudo`, so an agent can stop it, hide its traffic from it or
