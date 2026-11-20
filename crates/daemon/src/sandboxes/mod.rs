@@ -17,6 +17,7 @@ use crate::guest::clipboard::{self, Clipboards, HostClipboard};
 use crate::guest::netlog::{NetLogs, Record};
 use crate::guest::open::{Opener, Relays};
 use crate::host_config;
+use crate::sandboxes::provision::dns;
 use crate::sandboxes::provision::env;
 use crate::sandboxes::provision::git::{self, GitIdentity};
 use crate::sandboxes::provision::java;
@@ -635,6 +636,7 @@ impl SandboxManager {
         };
 
         self.relays.ensure(&sb).await;
+        dns::apply_host(&sb).await;
 
         if let Some(identity) = request.git_identity {
             git::apply(&sb, identity).await;

@@ -27,7 +27,7 @@ use firebrick_daemon::forward::TlsBridge;
 use firebrick_daemon::guest::clipboard::{self, Cause, Clipboards, HostClipboard, HostError, Kind};
 use firebrick_daemon::guest::netlog;
 use firebrick_daemon::guest::open::{self, Opener};
-use firebrick_daemon::sandboxes::provision::{env, mise};
+use firebrick_daemon::sandboxes::provision::{dns, env, mise};
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{certificate, sandboxes, server};
 use firebrick_utils::ipc;
@@ -2974,6 +2974,72 @@ async fn enforced_network_policy_denies_host_that_is_also_allowed() {
     // The allowed subdomain proves the rules apply, so the failure comes from the deny rule.
     assert!(!allowed.trim_end().ends_with("000"), "{allowed:?}");
     assert!(denied.trim_end().ends_with("000"), "{denied:?}");
+}
+
+/// Prints the guest's `resolv.conf`, then the exit code of `getent hosts` for each argument.
+/// The shell waits a second so the last line is read first, see [`fetch`].
+const RESOLVE_SCRIPT: &str = r#"cat /etc/resolv.conf
+for name in "$@"; do getent hosts "$name" >/dev/null; echo "$name $?"; done
+sleep 1"#;
+
+#[tokio::test]
+async fn guest_resolves_through_host_dns_servers_under_the_network_policy() {
+    let name: &str = &sandbox_name("dns-host");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("dns-host").await;
+    let mut client = daemon.client().await;
+    start_enforced_sandbox(&mut client, name, &["example.com"], &["example.org"]).await;
+
+    let sb = Sandbox::get(name).await.unwrap().connect().await.unwrap();
+    let args = [
+        "-c",
+        RESOLVE_SCRIPT,
+        "resolve",
+        "example.com",
+        "example.org",
+    ];
+    dns::apply(&sb, &[]).await.unwrap();
+    let (gateway_only, _) = run_command(&mut client, name, "sh", &args).await;
+    let host_server = "1.1.1.1".parse().unwrap();
+    dns::apply(&sb, &[host_server]).await.unwrap();
+    // Applying the same servers again leaves the file alone.
+    dns::apply(&sb, &[host_server]).await.unwrap();
+    let (output, _) = run_command(&mut client, name, "sh", &args).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    // Without host servers the guest resolves through the gateway it found.
+    let gateway_lines = lines_of(&gateway_only);
+    let gateway = nameservers_of(&gateway_lines);
+    assert_eq!(gateway.len(), 1, "{gateway_only:?}");
+    assert!(gateway_lines.contains(&"example.com 0"), "{gateway_only:?}");
+    assert!(gateway_lines.contains(&"example.org 2"), "{gateway_only:?}");
+
+    let lines = lines_of(&output);
+    assert_eq!(
+        nameservers_of(&lines),
+        ["1.1.1.1", gateway[0]],
+        "{output:?}"
+    );
+    // The query to 1.1.1.1 gets an answer, so glibc doesn't fall back to the gateway: the
+    // policy allows that server, and its domain rules still apply.
+    assert!(lines.contains(&"example.com 0"), "{output:?}");
+    assert!(lines.contains(&"example.org 2"), "{output:?}");
+}
+
+/// Returns the lines of a terminal's output without their line endings.
+fn lines_of(output: &str) -> Vec<&str> {
+    output.lines().map(str::trim_end).collect()
+}
+
+/// Returns the servers of the `nameserver` lines.
+fn nameservers_of<'a>(lines: &[&'a str]) -> Vec<&'a str> {
+    lines
+        .iter()
+        .filter_map(|line| line.strip_prefix("nameserver "))
+        .collect()
 }
 
 /// The options fbkd gives the JVMs of a sandbox with TLS interception.

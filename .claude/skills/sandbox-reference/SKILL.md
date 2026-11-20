@@ -279,6 +279,16 @@ exit race, were verified on 0.7.8 by running VMs and only checked against the
 - Domain rules also match DNS queries to the sandbox's resolver: a domain deny
   rule makes the name return NXDOMAIN. `Rule::allow_dns()` allows UDP/TCP 53 to
   the gateway; without it, a default-deny policy resolves nothing.
+- The netstack intercepts all guest UDP and TCP port 53 traffic, whatever the
+  destination. A query to the gateway goes to the host's DNS servers, which the
+  forwarder reads once when the VM starts (`read_host_dns_servers`, or the
+  system's DNS client per query on Windows) and never refreshes. A query to any
+  other address takes the "direct path": the policy must allow port 53 to that
+  address (otherwise NXDOMAIN), and the forwarder then opens a new client per
+  query, after the same domain rules, rebind protection and resolved-address
+  cache. The UDP clients open a new socket per query; the gateway path caches
+  its TCP client. `fbkd` uses the direct path to follow the host's DNS servers
+  (ADR 0066). Verified on 0.7.15.
 - `SandboxBuilder::disable_network()` removes the guest's network device
   (`spec.network.enabled = false`) and sets `NetworkPolicy::none()`. Nothing in
   the guest resolves or connects. `builder.secret(..)` afterwards only turns TLS

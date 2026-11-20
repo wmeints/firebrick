@@ -4,6 +4,7 @@
 //! host. On Windows hosts, TLS interception also trusts the public roots of
 //! [`upstream_roots`](super::upstream_roots) for upstream servers.
 
+use super::dns;
 use firebrick_spec::{NetworkRule, NetworkSpec, ProxyEndpoint, ProxySpec};
 use microsandbox::MicrosandboxError;
 use microsandbox::sandbox::{SandboxBuilder, SandboxSpec};
@@ -208,9 +209,13 @@ async fn add_with_roots(
     network: &NetworkSpec,
     roots: Option<&Path>,
 ) -> Result<SandboxBuilder, MicrosandboxError> {
-    let builder = with_proxy(builder, network.proxy.as_ref()).await?;
+    let builder = with_proxy(builder, network.proxy.as_ref())
+        .await?
+        .label(dns::LABEL, dns::FOLLOWS_HOST);
 
     if !network.enforce {
+        let builder = builder.network(|n| n.policy(open_policy()));
+
         return Ok(match roots {
             Some(roots) => builder.network(|n| n.tls(|t| t.enabled(false).upstream_ca_cert(roots))),
             None => builder,
@@ -308,11 +313,20 @@ fn select_proxy_address(proxy: &ProxySpec, addresses: Vec<SocketAddr>) -> Option
         .min_by_key(|address| address.is_ipv6())
 }
 
+/// Returns microsandbox's default policy, which allows DNS and the public internet, plus DNS
+/// to the host's servers (see [`dns`]).
+fn open_policy() -> NetworkPolicy {
+    let mut policy = NetworkPolicy::default();
+    policy.rules.push(dns::rule());
+
+    policy
+}
+
 /// Returns the policy that enforces the rules: all deny rules, then all allow rules, then DNS
-/// to the sandbox's resolver, and deny for any other egress. Rules match first-come, so a deny
-/// rule wins over an allow rule regardless of where either is written. microsandbox also
-/// matches domain rules against DNS queries, so a host denied by a domain rule doesn't
-/// resolve, while every other name does.
+/// to the sandbox's resolver and to the host's servers (see [`dns`]), and deny for any other
+/// egress. Rules match first-come, so a deny rule wins over an allow rule regardless of where
+/// either is written. microsandbox also matches domain rules against DNS queries, so a host
+/// denied by a domain rule doesn't resolve, while every other name does.
 pub fn policy(network: &NetworkSpec) -> Result<NetworkPolicy, MicrosandboxError> {
     let mut policy = NetworkPolicy::builder()
         .default_egress(Action::Deny)
@@ -328,6 +342,7 @@ pub fn policy(network: &NetworkSpec) -> Result<NetworkPolicy, MicrosandboxError>
         .build()?;
 
     policy.rules.push(Rule::allow_dns());
+    policy.rules.push(dns::rule());
 
     Ok(policy)
 }
@@ -761,14 +776,31 @@ mod tests {
     }
 
     #[test]
-    fn policy_allows_dns_last() {
+    fn policy_allows_dns_to_the_gateway_and_the_host_servers_last() {
         let policy = policy(&enforced(&["github.com"], &["gist.github.com"])).unwrap();
 
-        assert_eq!(policy.rules.len(), 3);
+        assert_eq!(policy.rules.len(), 4);
         assert_eq!(
-            format!("{:?}", policy.rules[2]),
-            format!("{:?}", Rule::allow_dns())
+            format!("{:?}", &policy.rules[2..]),
+            format!("{:?}", [Rule::allow_dns(), dns::rule()])
         );
+    }
+
+    #[tokio::test]
+    async fn every_enabled_network_lets_the_guest_follow_the_host_dns_servers() {
+        let open = config_with(&NetworkSpec::default(), &[]).await;
+        let enforced = config_with(&enforced(&["github.com"], &[]), &[]).await;
+        let off = config_with(&disabled(NetworkSpec::default()), &[]).await;
+
+        let mut expected = NetworkPolicy::default();
+        expected.rules.push(dns::rule());
+        assert_eq!(
+            serde_json::to_value(&open.spec.network.policy).unwrap(),
+            serde_json::to_value(Some(expected)).unwrap()
+        );
+        assert!(dns::follows_host(&open.spec));
+        assert!(dns::follows_host(&enforced.spec));
+        assert!(!dns::follows_host(&off.spec));
     }
 
     #[test]
@@ -779,7 +811,7 @@ mod tests {
         ))
         .unwrap();
 
-        let (_dns, rules) = policy.rules.split_last().unwrap();
+        let rules = &policy.rules[..policy.rules.len() - 2];
         let described: Vec<String> = rules.iter().map(describe).collect();
 
         assert_eq!(
@@ -807,7 +839,7 @@ mod tests {
         ))
         .unwrap();
 
-        let (_dns, rules) = policy.rules.split_last().unwrap();
+        let rules = &policy.rules[..policy.rules.len() - 2];
         let described: Vec<String> = rules.iter().map(describe).collect();
 
         assert_eq!(

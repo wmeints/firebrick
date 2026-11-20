@@ -27,6 +27,7 @@ use crate::api::{
 use crate::forward::TlsBridge;
 use crate::guest::clipboard::{HostClipboard, HostTools};
 use crate::guest::open::{HostOpener, Opener};
+use crate::sandboxes::provision::dns;
 use crate::sandboxes::{NewSecret, SandboxManager};
 use crate::secrets::SecretStore;
 use anyhow::Result;
@@ -539,7 +540,8 @@ const RECREATION_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Reopens the port forwards of the sandboxes that are running, listens for the network logs
 /// and clipboards of the sandboxes and removes the upgrade probes an earlier daemon left behind,
-/// then serves the gRPC API on the socket until SIGINT or SIGTERM is received or a client sends
+/// then serves the gRPC API on the socket, keeping the sandboxes' DNS servers in step with the
+/// host's ([`dns::keep_in_sync`]), until SIGINT or SIGTERM is received or a client sends
 /// a `Shutdown` request, bridging TLS connections to forwarded ports through `tls` when there is
 /// one, opening the URLs from sandboxes in the host's browser and reading the host clipboard
 /// with its desktop's tools. Afterwards, waits up to [`RECREATION_TIMEOUT`] for the updates and upgrades that are
@@ -561,8 +563,10 @@ pub async fn run(
     sandboxes.restore_forwards().await;
     sandboxes.restore_listeners().await;
     sandboxes.remove_stale_probes().await;
+    let dns_sync = tokio::spawn(dns::keep_in_sync());
 
     let served = serve(socket_path, service, shutdown_or(requested)).await;
+    dns_sync.abort();
 
     if !sandboxes.finish_recreations(RECREATION_TIMEOUT).await {
         tracing::warn!("stopped while a sandbox was still being updated or upgraded");
