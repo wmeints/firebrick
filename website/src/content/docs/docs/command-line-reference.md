@@ -193,7 +193,10 @@ fbk init [--force]
 ```
 
 Writes a `.firebrick.yml` with the default settings to the working directory,
-named after the directory.
+named after the directory. When the directory already has a sandbox, for example
+because you ran `fbk start` without a `.firebrick.yml`, the file keeps that
+sandbox's name, so `fbk start` goes on using it. `fbk init` starts the daemon to
+look up that sandbox.
 
 | Flag      | Description                             | Default |
 | --------- | --------------------------------------- | ------- |

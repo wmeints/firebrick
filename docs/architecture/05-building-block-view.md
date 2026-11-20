@@ -88,17 +88,18 @@ C4Component
   `port forward`, `port rm`, `port ls`, `cert trust` and `cert clean` commands,
   and the hidden `ssh-proxy` command. The argument of `port forward` is parsed
   with `PortMapping`'s parser, and that of `port rm` as a port from 1 to 65535.
-  `validate`, `init`, `network presets show`, `cert clean` and `--version`,
-  which prints the package version, run without the daemon. `cert trust`
-  connects first, so the daemon has created the localhost CA, and fails when
-  `tls/ca.crt` isn't in the data directory. `network presets apply` takes one or
-  more preset names, which clap checks against `presets::names`, and becomes a
-  `network` allow change with the rules of those presets. `start`, `run` and
-  every `network` subcommand that changes the network settings take `--yes`,
-  which approves changed mounts and network settings without asking; `network
-  log` and `network presets show` change nothing and don't take it. `run` takes
-  the command and its arguments as one trailing list, so options after the
-  command, such as `--yes`, go to the command.
+  `validate`, `network presets show`, `cert clean` and `--version`, which prints
+  the package version, run without the daemon. `init` connects only after it
+  checked that it may write `.firebrick.yml`. `cert trust` connects first, so
+  the daemon has created the localhost CA, and fails when `tls/ca.crt` isn't in
+  the data directory. `network presets apply` takes one or more preset names,
+  which clap checks against `presets::names`, and becomes a `network` allow
+  change with the rules of those presets. `start`, `run` and every `network`
+  subcommand that changes the network settings take `--yes`, which approves
+  changed mounts and network settings without asking; `network log` and `network
+  presets show` change nothing and don't take it. `run` takes the command and
+  its arguments as one trailing list, so options after the command, such as
+  `--yes`, go to the command.
 - `client` - Connects to the daemon socket. When nobody listens, it removes a
   stale socket, spawns `fbkd` from next to the `fbk` binary (or from `PATH`) and
   waits at most 5 seconds for the socket. It then compares the daemon's
@@ -140,10 +141,20 @@ C4Component
   - `validate` - Checks `.firebrick.yml` and reports problems as
     `file:line:column: error: message`.
   - `init` - Writes `firebrick_spec::default_spec` as YAML to `.firebrick.yml`
-    in the working directory, named after the working directory's leaf with
-    `firebrick_utils::sanitize_label`, the rule that also makes the SSH host
-    names, and cut to the 128 bytes a sandbox name may have. It refuses to
-    replace an existing file unless `--force` is passed.
+    in the working directory. It refuses to replace an existing file unless
+    `--force` is passed, and checks that before it connects to the daemon. It
+    then asks the daemon whether the workspace already has a sandbox: the one
+    named in the spec being replaced, or the one `resolve_spec` names for a
+    workspace without a spec (the hashed or legacy name). When that sandbox
+    exists and `check_workspace_owner` passes, the spec keeps its name, so `fbk
+    start` goes on using it instead of creating a second sandbox; a sandbox of
+    another workspace fails the command without writing a file. A spec-less
+    sandbox always has the defaults, so the default spec is its configuration;
+    the spec leaves out `image` so `fbk upgrade` can still move it. Without such
+    a sandbox, or when the replaced spec doesn't load, the spec is named after
+    the working directory's leaf with `firebrick_utils::sanitize_label`, the
+    rule that also makes the SSH host names, and cut to the 128 bytes a sandbox
+    name may have. It fails without writing when the daemon can't be reached.
 - `network` - Keeps the network settings in `.firebrick.yml` and the sandbox in
   sync. `update` changes them and `log` shows the recorded activity. It
   validates the rules, applies the change to the network section of the spec in
