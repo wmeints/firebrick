@@ -42,36 +42,8 @@ const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const APPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Writes `nameserver` lines for the arguments and then for the gateway of the default route
-/// into `/etc/resolv.conf`, when that changes the file. `/proc/net/route` holds the gateway as
-/// the hex digits of a little-endian IPv4 address. Writes a new file and moves it into place,
-/// so the file is never half written, and copies it instead when `/etc/resolv.conf` is a mount
-/// point that can't be replaced.
-const APPLY_SCRIPT: &str = r##"set -e
-route=
-while read -r _ destination gateway _; do
-  if [ "$destination" = 00000000 ] && [ "$gateway" != 00000000 ]; then
-    route=$gateway
-    break
-  fi
-done < /proc/net/route
-[ -n "$route" ] || { echo "the guest has no default route" >&2; exit 1; }
-b1=${route#??????}
-b2=${route#????}; b2=${b2%??}
-b3=${route#??}; b3=${b3%????}
-b4=${route%??????}
-gateway=$(printf '%d.%d.%d.%d' "0x$b1" "0x$b2" "0x$b3" "0x$b4")
-content="# Written by firebrick: the host's DNS servers, then the sandbox gateway."
-for server in "$@"; do
-  content="$content
-nameserver $server"
-done
-content="$content
-nameserver $gateway"
-[ "$(cat /etc/resolv.conf 2>/dev/null)" = "$content" ] && exit 0
-new=/etc/resolv.conf.firebrick
-printf '%s\n' "$content" > "$new"
-mv -f "$new" /etc/resolv.conf 2>/dev/null || { cat "$new" > /etc/resolv.conf; rm -f "$new"; }
-"##;
+/// into `/etc/resolv.conf`, when that changes the file.
+const APPLY_SCRIPT: &str = include_str!("firebrick-dns.sh");
 
 /// Errors of writing the DNS servers into a sandbox.
 #[derive(Error, Debug)]
