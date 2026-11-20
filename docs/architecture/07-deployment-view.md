@@ -47,10 +47,11 @@ exists already. Pushing a tag by hand runs `release.yaml` as well.
   [ADR 0063](decisions/0063-publish-a-homebrew-formula-in-a-custom-tap.md).
 
 The jobs run in this order: `package` for each target, then `image`, then
-`publish`, then `release`, which creates the GitHub release, then `homebrew`. A
-failed job stops the jobs after it, so the GitHub release only appears once
-crates.io has the version, and the tap only points at a published release. A
-failed `homebrew` job leaves the GitHub release and the crates as they are.
+`publish`, then `release`, which creates the GitHub release, then `homebrew` and
+`website`, which publishes the docs to GitHub Pages. A failed job stops the jobs
+after it, so the GitHub release only appears once crates.io has the version, and
+the tap only points at a published release. A failed `homebrew` job leaves the
+GitHub release and the crates as they are.
 
 The `image`, `publish` and `homebrew` jobs run in the `release` environment,
 which waits for a required reviewer to approve each deployment in the Actions
@@ -191,13 +192,17 @@ Open Graph and Twitter tags; the docs pages get theirs from Starlight, and the
 `head` setting in `website/astro.config.mjs` adds the image. Open Graph needs an
 absolute image URL, so both build it from the `site` setting.
 
-`.github/workflows/website.yaml` publishes the site to GitHub Pages on pushes to
-`main` that change `website/`, `mise.toml`, `mise.lock` or the workflow, and on
-manual runs from `main`. Its `check` job uploads `website/dist` as a Pages
-artifact once the checks and end-to-end tests pass, and its `deploy` job deploys
-it with `actions/deploy-pages`. Pull requests only check the site. The
-repository's Pages source must be set to "GitHub Actions" and its custom domain
-to `firebrick-sandbox.dev` before the first deployment. See
+`.github/workflows/website.yaml` checks the site on pull requests, pushes to
+`main` and manual runs, and publishes it to GitHub Pages only when the `website`
+job of `release.yaml` calls it with the release tag, so the docs match the
+latest release. It then checks out the tag, its `check` job uploads
+`website/dist` as a Pages artifact once the checks and end-to-end tests pass,
+and its `deploy` job deploys it with `actions/deploy-pages`. Pre-releases don't
+deploy the site. A release from a tag pushed by hand runs on the tag's ref, so
+the `github-pages` environment must allow `v*` tags besides `main` for it to
+deploy. See [ADR 0066](decisions/0066-publish-the-website-with-each-release.md).
+The repository's Pages source must be set to "GitHub Actions" and its custom
+domain to `firebrick-sandbox.dev` before the first deployment. See
 [ADR 0032](decisions/0032-publish-the-website-on-github-pages.md).
 
 ## Continuous integration

@@ -1,7 +1,8 @@
 name: Website
 
 # Check the website when it, the pinned Node and pnpm versions, or this workflow
-# change, and deploy it to GitHub Pages from main.
+# change. Only the release workflow deploys it to GitHub Pages, by calling this
+# workflow with the release tag, so the published docs match the latest release.
 on:
   push:
     branches: [main]
@@ -10,6 +11,12 @@ on:
     branches: [main]
     paths: [website/**, mise.toml, mise.lock, .github/workflows/website.yaml]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to check out and deploy, such as v0.4.0
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -27,7 +34,10 @@ jobs:
     name: Lint, test and build the website
     runs-on: ubuntu-latest
     steps:
+      # A release checks out its tag; other runs check out the triggering ref.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
 
       # Installs only the Node and pnpm versions pinned in mise.toml.
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
@@ -65,17 +75,17 @@ jobs:
 
       # The deploy job publishes this build, so it isn't built twice.
       - name: Upload the site for GitHub Pages
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: inputs.tag
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: website/dist
 
-  # Publishes the site checked above on pushes to main, or when run by hand on
-  # main. GitHub Pages must use "GitHub Actions" as its source in the repository
+  # Publishes the site checked above when the release workflow calls this one.
+  # GitHub Pages must use "GitHub Actions" as its source in the repository
   # settings.
   deploy:
     name: Deploy the website to GitHub Pages
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: inputs.tag
     needs: check
     runs-on: ubuntu-latest
     permissions:
