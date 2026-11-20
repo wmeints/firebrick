@@ -51,6 +51,10 @@ jobs:
     uses: ./.github/workflows/release.yaml
     with:
       tag: ${{ needs.tag.outputs.tag }}
+    # Pass the tap token by name: without it, the homebrew job's environment secret resolves to an empty string.
+    # The secret exists only in the release environment, and only release.yaml's jobs in that environment get its value.
+    secrets:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     # A called workflow gets no more permissions than these. release.yaml's publish job needs id-token, and its
     # website job needs pages and id-token to deploy GitHub Pages.
     permissions:

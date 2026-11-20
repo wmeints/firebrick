@@ -86,10 +86,12 @@ to authenticate and publishes nothing.
 The `homebrew` job pushes to the tap with the `HOMEBREW_TAP_TOKEN` secret of the
 `release` environment: a fine-grained token with only `contents: write` on
 `wmeints/homebrew-tap`. The workflow's own `GITHUB_TOKEN` stays at `contents:
-read` in that job. A called workflow's job reads the secrets of its environment
-itself, so `tag-release.yaml` doesn't pass it. Before the first release with
-this job, create the public `wmeints/homebrew-tap` repository with a `main`
-branch and add the secret to the `release` environment.
+read` in that job. A called workflow gets an environment secret only when the
+caller passes it, even in a job that declares the environment; otherwise it is
+an empty string. So `tag-release.yaml` passes `HOMEBREW_TAP_TOKEN` by name, and
+`release.yaml` declares it as a required `workflow_call` secret. Before the
+first release with this job, create the public `wmeints/homebrew-tap` repository
+with a `main` branch and add the secret to the `release` environment.
 
 Tags with a suffix, such as `v0.2.0-rc.1`, publish a pre-release, on GitHub and
 on crates.io. The `homebrew` job skips them, so the tap keeps the latest

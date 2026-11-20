@@ -11,6 +11,12 @@ on:
         description: The release tag, such as v0.4.0
         required: true
         type: string
+    # A called workflow sees an environment secret only when the caller passes it, even in a job that declares the
+    # environment; otherwise it resolves to an empty string without an error. required fails a caller that forgets it.
+    secrets:
+      HOMEBREW_TAP_TOKEN:
+        description: The token that pushes the formula to wmeints/homebrew-tap, a secret of the release environment
+        required: true
 
 permissions:
   contents: read
@@ -245,7 +251,7 @@ jobs:
     # Pre-releases don't go to the tap. The env context isn't available in a job's if.
     if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
     # The tap token writes outside this repository, so pushing with it waits for approval, like image and publish.
-    # It's a secret of the release environment, which a called workflow's job reads without the caller passing it.
+    # It's a secret of the release environment; tag-release.yaml passes it by name, and the job gets its value.
     environment: release
     runs-on: ubuntu-latest
     permissions:
