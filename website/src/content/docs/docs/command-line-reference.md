@@ -300,9 +300,9 @@ can tamper with it; see
 
 `fbk network presets show` reads neither `.firebrick.yml` nor the daemon. `fbk
 network presets apply` needs at least one `PRESET`: `claude`, `copilot`,
-`github`, `codex`, `node`, `dotnet`, `java`, `rust`, `go`, `python`, `mise`,
-`ruby`, or `all` for every preset. It fails on any other name without changing
-`.firebrick.yml`. See
+`github`, `codex`, `vscode`, `jetbrains`, `node`, `dotnet`, `java`, `rust`,
+`go`, `python`, `mise`, `ruby`, or `all` for every preset. It fails on any other
+name without changing `.firebrick.yml`. See
 [Allowing coding agents and toolchains with presets](/docs/networking/#allowing-coding-agents-and-toolchains-with-presets).
 
 ```sh

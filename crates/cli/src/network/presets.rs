@@ -1,5 +1,5 @@
-//! Network presets: groups of `allow` rules for well-known coding agents, toolchains and package
-//! registries, compiled into `fbk` so nobody can change them by editing a file (see ADR 0040).
+//! Network presets: groups of `allow` rules for well-known coding agents, IDEs, toolchains and
+//! package registries, compiled into `fbk` so nobody can change them by editing a file (see ADR 0040).
 //! `fbk network presets apply` copies the rules of the named presets into the spec as ordinary
 //! `allow` rules.
 
@@ -46,6 +46,19 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         name: "codex",
         rules: &["*.openai.com", "*.chatgpt.com"],
+    },
+    Preset {
+        name: "vscode",
+        rules: &[
+            "*.visualstudio.com",
+            "*.visualstudio.microsoft.com",
+            "*.vsassets.io",
+            "*.vscode-cdn.net",
+        ],
+    },
+    Preset {
+        name: "jetbrains",
+        rules: &["*.jetbrains.com"],
     },
     Preset {
         name: "node",
@@ -200,8 +213,21 @@ mod tests {
         assert_eq!(
             names,
             [
-                "all", "claude", "copilot", "github", "codex", "node", "dotnet", "java", "rust",
-                "go", "python", "mise", "ruby",
+                "all",
+                "claude",
+                "copilot",
+                "github",
+                "codex",
+                "vscode",
+                "jetbrains",
+                "node",
+                "dotnet",
+                "java",
+                "rust",
+                "go",
+                "python",
+                "mise",
+                "ruby",
             ]
         );
     }
@@ -220,6 +246,20 @@ mod tests {
         ] {
             assert_eq!(rule_strings(names), expected, "{names:?}");
         }
+    }
+
+    #[test]
+    fn the_ide_presets_allow_their_extension_marketplaces() {
+        assert_eq!(
+            rule_strings(&["vscode", "jetbrains"]),
+            [
+                "*.visualstudio.com",
+                "*.visualstudio.microsoft.com",
+                "*.vsassets.io",
+                "*.vscode-cdn.net",
+                "*.jetbrains.com",
+            ]
+        );
     }
 
     #[test]
