@@ -16,10 +16,12 @@
 //! asks the system's DNS client for every query.
 
 use super::{ExitError, check_exit};
-use microsandbox::sandbox::SandboxSpec;
+use microsandbox::sandbox::{SandboxHandle, SandboxSpec, SandboxStatus};
 use microsandbox::{MicrosandboxError, Sandbox};
 use microsandbox_network::policy::{Action, Destination, Direction, PortRange, Protocol, Rule};
-use std::net::{IpAddr, Ipv4Addr};
+use std::collections::{HashMap, HashSet};
+use std::net::Ipv4Addr;
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -33,19 +35,17 @@ pub const FOLLOWS_HOST: &str = "host";
 /// the gateway.
 const MAX_SERVERS: usize = 2;
 
-/// How often fbkd checks whether the host's DNS servers changed.
+/// How often fbkd checks the host's DNS servers and retries the sandboxes it couldn't update.
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 
 /// How long writing the servers gets in the guest.
 const APPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The host's resolver configuration, which macOS keeps up to date with its primary DNS
-/// servers.
-const HOST_RESOLV_CONF: &str = "/etc/resolv.conf";
-
 /// Writes `nameserver` lines for the arguments and then for the gateway of the default route
 /// into `/etc/resolv.conf`, when that changes the file. `/proc/net/route` holds the gateway as
-/// the hex digits of a little-endian IPv4 address. Uses only shell built-ins and `cat`.
+/// the hex digits of a little-endian IPv4 address. Writes a new file and moves it into place,
+/// so the file is never half written, and copies it instead when `/etc/resolv.conf` is a mount
+/// point that can't be replaced.
 const APPLY_SCRIPT: &str = r##"set -e
 route=
 while read -r _ destination gateway _; do
@@ -68,7 +68,9 @@ done
 content="$content
 nameserver $gateway"
 [ "$(cat /etc/resolv.conf 2>/dev/null)" = "$content" ] && exit 0
-printf '%s\n' "$content" > /etc/resolv.conf
+new=/etc/resolv.conf.firebrick
+printf '%s\n' "$content" > "$new"
+mv -f "$new" /etc/resolv.conf 2>/dev/null || { cat "$new" > /etc/resolv.conf; rm -f "$new"; }
 "##;
 
 /// Errors of writing the DNS servers into a sandbox.
@@ -100,19 +102,40 @@ pub fn follows_host(spec: &SandboxSpec) -> bool {
     spec.labels.get(LABEL).map(String::as_str) == Some(FOLLOWS_HOST)
 }
 
-/// Returns the DNS servers of a `resolv.conf` that the guest can reach: at most
-/// [`MAX_SERVERS`] IPv4 addresses that aren't loopback, link-local or unspecified. The guest
-/// can't reach the host's loopback, such as systemd-resolved's `127.0.0.53`, and sandboxes from
-/// `firebrick-base` have no IPv6.
-pub fn nameservers(resolv_conf: &str) -> Vec<Ipv4Addr> {
-    resolv_conf
+/// Returns the servers of the `nameserver` lines of a `resolv.conf` that the guest can reach,
+/// see [`reachable`].
+#[cfg(any(not(target_os = "macos"), test))]
+pub fn resolv_conf_servers(resolv_conf: &str) -> Vec<Ipv4Addr> {
+    reachable(
+        resolv_conf
+            .lines()
+            .filter_map(|line| line.strip_prefix("nameserver"))
+            .filter_map(|rest| rest.split_whitespace().next()),
+    )
+}
+
+/// Returns the servers of the `ServerAddresses` array in the output of `scutil` for
+/// `show State:/Network/Global/DNS` that the guest can reach, see [`reachable`]. The array's
+/// entries are lines such as `0 : 192.168.1.1`.
+#[cfg(any(target_os = "macos", test))]
+pub fn scutil_servers(output: &str) -> Vec<Ipv4Addr> {
+    let entries = output
         .lines()
-        .filter_map(|line| line.strip_prefix("nameserver"))
-        .filter_map(|rest| rest.split_whitespace().next()?.parse().ok())
-        .filter_map(|address: IpAddr| match address {
-            IpAddr::V4(address) => Some(address),
-            IpAddr::V6(_) => None,
-        })
+        .skip_while(|line| !line.trim_start().starts_with("ServerAddresses :"))
+        .skip(1)
+        .take_while(|line| line.trim() != "}")
+        .filter_map(|line| Some(line.split_once(" : ")?.1.trim()));
+
+    reachable(entries)
+}
+
+/// Returns at most [`MAX_SERVERS`] of the addresses that are IPv4 and not loopback, link-local
+/// or unspecified. The guest can't reach the host's loopback, such as systemd-resolved's
+/// `127.0.0.53`, and sandboxes from `firebrick-base` have no IPv6, so other addresses, such as
+/// IPv6 ones, are skipped.
+fn reachable<'a>(addresses: impl Iterator<Item = &'a str>) -> Vec<Ipv4Addr> {
+    addresses
+        .filter_map(|address| address.parse::<Ipv4Addr>().ok())
         .filter(|address| {
             !address.is_loopback() && !address.is_link_local() && !address.is_unspecified()
         })
@@ -120,16 +143,45 @@ pub fn nameservers(resolv_conf: &str) -> Vec<Ipv4Addr> {
         .collect()
 }
 
-/// Returns the host's DNS servers that the guest can reach, see [`nameservers`]. Empty when the
-/// host's `resolv.conf` can't be read.
-async fn host_nameservers() -> Vec<Ipv4Addr> {
-    match tokio::fs::read_to_string(HOST_RESOLV_CONF).await {
-        Ok(resolv_conf) => nameservers(&resolv_conf),
-        Err(err) => {
-            tracing::debug!("can't read the host's DNS servers from {HOST_RESOLV_CONF}: {err}");
-            vec![]
-        }
+/// Reads the host's DNS servers that the guest can reach from `/etc/resolv.conf`.
+#[cfg(not(target_os = "macos"))]
+async fn host_servers() -> std::io::Result<Vec<Ipv4Addr>> {
+    let resolv_conf = tokio::fs::read_to_string("/etc/resolv.conf").await?;
+
+    Ok(resolv_conf_servers(&resolv_conf))
+}
+
+/// Reads the host's primary DNS servers that the guest can reach from the dynamic store, where
+/// macOS keeps them. `/etc/resolv.conf` can miss or lag behind them with a VPN. Asks `scutil`,
+/// which reads the store without the `unsafe` calls of the SystemConfiguration bindings.
+#[cfg(target_os = "macos")]
+async fn host_servers() -> std::io::Result<Vec<Ipv4Addr>> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+
+    let mut child = tokio::process::Command::new("/usr/sbin/scutil")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(b"show State:/Network/Global/DNS\n").await?;
     }
+
+    let output = tokio::time::timeout(APPLY_TIMEOUT, child.wait_with_output())
+        .await
+        .map_err(|_| std::io::Error::other("scutil didn't answer in time"))??;
+
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "scutil exited with {}",
+            output.status
+        )));
+    }
+
+    Ok(scutil_servers(&String::from_utf8_lossy(&output.stdout)))
 }
 
 /// Points the guest's DNS at the servers, followed by the sandbox gateway, so names resolve
@@ -151,51 +203,132 @@ pub async fn apply(sb: &Sandbox, servers: &[Ipv4Addr]) -> Result<(), ApplyError>
     Ok(check_exit(&output)?)
 }
 
-/// Points the DNS of a sandbox that follows the host at the host's current servers, logging a
-/// warning when that fails. Does nothing on Windows hosts.
-pub async fn apply_host(sb: &Sandbox) {
+/// The DNS servers fbkd last wrote into each running sandbox that follows the host.
+#[derive(Default)]
+pub struct Applied(Mutex<HashMap<String, Vec<Ipv4Addr>>>);
+
+impl Applied {
+    /// Whether the sandbox doesn't have the servers yet, as far as fbkd knows.
+    pub fn needs(&self, name: &str, servers: &[Ipv4Addr]) -> bool {
+        self.map().get(name).map(Vec::as_slice) != Some(servers)
+    }
+
+    /// Records that the sandbox has the servers.
+    pub fn record(&self, name: &str, servers: &[Ipv4Addr]) {
+        self.map().insert(name.to_string(), servers.to_vec());
+    }
+
+    /// Forgets the servers of the sandbox, so the next check writes them again.
+    pub fn forget(&self, name: &str) {
+        self.map().remove(name);
+    }
+
+    /// Forgets the sandboxes that aren't in `running`, so a sandbox that restarts gets the
+    /// servers again.
+    pub fn retain(&self, running: &HashSet<String>) {
+        self.map().retain(|name, _| running.contains(name));
+    }
+
+    /// Returns the map. It stays consistent when a thread panics while holding it, so a
+    /// poisoned lock is safe to use.
+    fn map(&self) -> std::sync::MutexGuard<'_, HashMap<String, Vec<Ipv4Addr>>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Points the DNS of a sandbox that follows the host at the host's current servers and records
+/// them, logging a warning when that fails. Leaves the sandbox alone when the host's servers
+/// can't be read, and does nothing on Windows hosts.
+pub async fn apply_host(sb: &Sandbox, applied: &Applied) {
     if cfg!(windows) || !follows_host(&sb.config().spec) {
         return;
     }
 
-    apply_logged(sb, &host_nameservers().await).await;
-}
+    applied.forget(sb.name());
 
-/// Applies the servers, logging a warning when that fails.
-async fn apply_logged(sb: &Sandbox, servers: &[Ipv4Addr]) {
-    if let Err(err) = apply(sb, servers).await {
-        tracing::warn!(
-            "failed to point the DNS of sandbox {} at the host's DNS servers: {err}",
+    match host_servers().await {
+        Ok(servers) => apply_and_record(sb, &servers, applied).await,
+        Err(err) => tracing::warn!(
+            "can't read the host's DNS servers, so sandbox {} keeps the ones it has: {err}",
             sb.name()
-        );
+        ),
     }
 }
 
-/// Checks the host's DNS servers every [`SYNC_INTERVAL`], and points the running sandboxes
-/// that follow the host at them at the first check and whenever they changed. Never returns,
-/// except at once on Windows hosts.
-pub async fn keep_in_sync() {
+/// Applies the servers and records them, or logs a warning when that fails.
+async fn apply_and_record(sb: &Sandbox, servers: &[Ipv4Addr], applied: &Applied) {
+    match apply(sb, servers).await {
+        Ok(()) => applied.record(sb.name(), servers),
+        Err(err) => tracing::warn!(
+            "failed to point the DNS of sandbox {} at the host's DNS servers: {err}",
+            sb.name()
+        ),
+    }
+}
+
+/// Every [`SYNC_INTERVAL`], reads the host's DNS servers and writes them into the running
+/// sandboxes that follow the host and don't have them yet. A sandbox that fails or whose lock
+/// `try_lock` can't take now is tried again at the next check. Never returns, except at once on
+/// Windows hosts.
+pub async fn keep_in_sync<G>(applied: &Applied, try_lock: impl Fn(&str) -> Option<G>) {
     if cfg!(windows) {
         return;
     }
 
     let mut ticks = tokio::time::interval(SYNC_INTERVAL);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut applied = None;
+    let mut host = HostServers::default();
 
     loop {
         ticks.tick().await;
-        let servers = host_nameservers().await;
 
-        if applied.as_ref() != Some(&servers) {
-            apply_to_running(&servers).await;
-            applied = Some(servers);
+        if let Some(servers) = host.read().await {
+            apply_to_running(&servers, applied, &try_lock).await;
         }
     }
 }
 
-/// Points every running sandbox that follows the host at the servers.
-async fn apply_to_running(servers: &[Ipv4Addr]) {
+/// Reads the host's DNS servers and logs when what it reads changes.
+#[derive(Default)]
+struct HostServers {
+    last: Option<Result<Vec<Ipv4Addr>, String>>,
+}
+
+impl HostServers {
+    /// Returns the host's DNS servers, or `None` when they can't be read.
+    async fn read(&mut self) -> Option<Vec<Ipv4Addr>> {
+        let result = host_servers().await.map_err(|err| err.to_string());
+
+        if self.last.as_ref() != Some(&result) {
+            log_host_servers(&result);
+        }
+
+        self.last = Some(result.clone());
+        result.ok()
+    }
+}
+
+/// Logs the host's DNS servers that the sandboxes follow from now on.
+fn log_host_servers(result: &Result<Vec<Ipv4Addr>, String>) {
+    match result {
+        Ok(servers) if servers.is_empty() => tracing::info!(
+            "the host has no DNS server the sandboxes can reach, so they use the sandbox gateway \
+             only"
+        ),
+        Ok(servers) => tracing::info!("sandboxes follow the host's DNS servers {servers:?}"),
+        Err(err) => tracing::warn!(
+            "can't read the host's DNS servers, so the sandboxes keep the ones they have: {err}"
+        ),
+    }
+}
+
+/// Writes the servers into every running sandbox that follows the host and doesn't have them
+/// yet, holding the sandbox's lock.
+async fn apply_to_running<G>(
+    servers: &[Ipv4Addr],
+    applied: &Applied,
+    try_lock: impl Fn(&str) -> Option<G>,
+) {
     let sandboxes = match crate::sandboxes::list_all().await {
         Ok(sandboxes) => sandboxes,
         Err(err) => {
@@ -204,21 +337,44 @@ async fn apply_to_running(servers: &[Ipv4Addr]) {
         }
     };
 
-    for handle in sandboxes {
-        let follows = handle
-            .config()
-            .is_ok_and(|config| follows_host(&config.spec));
+    let running: Vec<SandboxHandle> = sandboxes.into_iter().filter(follows_and_runs).collect();
+    applied.retain(&running.iter().map(|sb| sb.name().to_string()).collect());
 
-        if !follows || handle.status_snapshot() != microsandbox::sandbox::SandboxStatus::Running {
+    for handle in running {
+        if !applied.needs(handle.name(), servers) {
             continue;
         }
 
+        // A sandbox that is busy, such as one that is starting, is tried at the next check.
+        let Some(_guard) = try_lock(handle.name()) else {
+            continue;
+        };
+
         match handle.connect().await {
-            Ok(sb) => apply_logged(&sb, servers).await,
+            Ok(sb) => apply_and_record(&sb, servers, applied).await,
             Err(err) => tracing::warn!(
                 "failed to connect to sandbox {} to update its DNS servers: {err}",
                 handle.name()
             ),
+        }
+    }
+}
+
+/// Whether the sandbox runs and follows the host's DNS servers. Logs a warning when its config
+/// can't be read.
+fn follows_and_runs(handle: &SandboxHandle) -> bool {
+    if handle.status_snapshot() != SandboxStatus::Running {
+        return false;
+    }
+
+    match handle.config() {
+        Ok(config) => follows_host(&config.spec),
+        Err(err) => {
+            tracing::warn!(
+                "failed to read the config of sandbox {} to update its DNS servers: {err}",
+                handle.name()
+            );
+            false
         }
     }
 }
@@ -228,7 +384,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nameservers_keeps_the_first_two_reachable_ipv4_servers() {
+    fn resolv_conf_servers_keeps_the_first_two_reachable_ipv4_servers() {
         let resolv_conf = "# macOS\n\
              search lan\n\
              nameserver 127.0.0.53\n\
@@ -241,14 +397,58 @@ mod tests {
              nameserver not-an-address\n";
 
         assert_eq!(
-            nameservers(resolv_conf),
+            resolv_conf_servers(resolv_conf),
             [Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(10, 0, 0, 53)]
         );
     }
 
     #[test]
-    fn nameservers_is_empty_for_systemd_resolved() {
-        assert!(nameservers("nameserver 127.0.0.53\noptions edns0 trust-ad\n").is_empty());
+    fn resolv_conf_servers_is_empty_for_systemd_resolved() {
+        assert!(resolv_conf_servers("nameserver 127.0.0.53\noptions edns0 trust-ad\n").is_empty());
+    }
+
+    #[test]
+    fn scutil_servers_reads_only_the_server_addresses() {
+        let output = "<dictionary> {\n\
+             \x20 SearchDomains : <array> {\n\
+             \x20   0 : lan\n\
+             \x20 }\n\
+             \x20 ServerAddresses : <array> {\n\
+             \x20   0 : fe80::1%en0\n\
+             \x20   1 : 10.8.0.1\n\
+             \x20   2 : 192.168.1.1\n\
+             \x20 }\n\
+             \x20 __CONFIGURATION_ID__ : Default: 0\n\
+             }\n";
+
+        assert_eq!(
+            scutil_servers(output),
+            [Ipv4Addr::new(10, 8, 0, 1), Ipv4Addr::new(192, 168, 1, 1)]
+        );
+    }
+
+    #[test]
+    fn scutil_servers_is_empty_without_the_key() {
+        assert!(scutil_servers("  No such key\n").is_empty());
+    }
+
+    #[test]
+    fn applied_needs_the_servers_until_they_are_recorded_and_after_a_restart() {
+        let applied = Applied::default();
+        let old = [Ipv4Addr::new(10, 0, 0, 1)];
+        let new = [Ipv4Addr::new(10, 0, 0, 2)];
+
+        assert!(applied.needs("a", &old));
+        applied.record("a", &old);
+        assert!(!applied.needs("a", &old));
+        assert!(applied.needs("a", &new));
+
+        applied.retain(&HashSet::new());
+        assert!(applied.needs("a", &old));
+
+        applied.record("a", &old);
+        applied.forget("a");
+        assert!(applied.needs("a", &old));
     }
 
     #[test]

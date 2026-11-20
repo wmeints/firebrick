@@ -322,16 +322,21 @@ fn open_policy() -> NetworkPolicy {
     policy
 }
 
-/// Returns the policy that enforces the rules: all deny rules, then all allow rules, then DNS
-/// to the sandbox's resolver and to the host's servers (see [`dns`]), and deny for any other
-/// egress. Rules match first-come, so a deny rule wins over an allow rule regardless of where
-/// either is written. microsandbox also matches domain rules against DNS queries, so a host
-/// denied by a domain rule doesn't resolve, while every other name does.
+/// Returns the policy that enforces the rules: the domain deny rules, DNS to any server (see
+/// [`dns`]), the IP and CIDR deny rules, all allow rules, then DNS to the sandbox's resolver,
+/// and deny for any other egress. Rules match first-come, so a deny rule wins over an allow
+/// rule regardless of where either is written. microsandbox also matches domain rules against
+/// DNS queries, so a host denied by a domain rule doesn't resolve, while every other name does.
+/// DNS comes before the IP and CIDR denies, so a deny rule that covers the host's DNS server
+/// doesn't stop the guest from resolving through it; microsandbox answers those queries itself.
 pub fn policy(network: &NetworkSpec) -> Result<NetworkPolicy, MicrosandboxError> {
+    let (domain_denies, address_denies): (Vec<_>, Vec<_>) =
+        network.deny.iter().partition(|rule| is_domain(rule));
+
     let mut policy = NetworkPolicy::builder()
         .default_egress(Action::Deny)
         .egress(|r| {
-            for rule in &network.deny {
+            for rule in domain_denies.iter().chain(&address_denies) {
                 add_rule(r.deny(), rule);
             }
             for rule in &network.allow {
@@ -341,10 +346,15 @@ pub fn policy(network: &NetworkSpec) -> Result<NetworkPolicy, MicrosandboxError>
         })
         .build()?;
 
+    policy.rules.insert(domain_denies.len(), dns::rule());
     policy.rules.push(Rule::allow_dns());
-    policy.rules.push(dns::rule());
 
     Ok(policy)
+}
+
+/// Whether the rule's destination is a domain name.
+fn is_domain(rule: &NetworkRule) -> bool {
+    matches!(rule, NetworkRule::Domain(_) | NetworkRule::DomainSuffix(_))
 }
 
 /// Commits a rule with the destination of the spec's rule.
@@ -776,13 +786,28 @@ mod tests {
     }
 
     #[test]
-    fn policy_allows_dns_to_the_gateway_and_the_host_servers_last() {
-        let policy = policy(&enforced(&["github.com"], &["gist.github.com"])).unwrap();
+    fn policy_allows_dns_to_any_server_before_address_denies_and_to_the_gateway_last() {
+        let policy = policy(&enforced(&["github.com"], &["10.1.2.3", "gist.github.com"])).unwrap();
 
-        assert_eq!(policy.rules.len(), 4);
+        let described: Vec<String> = policy.rules.iter().map(describe).collect();
+
         assert_eq!(
-            format!("{:?}", &policy.rules[2..]),
-            format!("{:?}", [Rule::allow_dns(), dns::rule()])
+            described,
+            [
+                "deny domain gist.github.com",
+                "allow Any",
+                "deny cidr 10.1.2.3/32",
+                "allow domain github.com",
+                "allow Group(Host)",
+            ]
+        );
+        assert_eq!(
+            format!("{:?}", policy.rules[1]),
+            format!("{:?}", dns::rule())
+        );
+        assert_eq!(
+            format!("{:?}", policy.rules[4]),
+            format!("{:?}", Rule::allow_dns())
         );
     }
 
@@ -811,16 +836,17 @@ mod tests {
         ))
         .unwrap();
 
-        let rules = &policy.rules[..policy.rules.len() - 2];
-        let described: Vec<String> = rules.iter().map(describe).collect();
+        let described: Vec<String> = policy.rules.iter().map(describe).collect();
 
         assert_eq!(
             described,
             [
                 "deny domain gist.github.com",
+                "allow Any",
                 "deny cidr 10.1.2.3/32",
                 "allow suffix github.com",
                 "allow cidr 10.0.0.0/8",
+                "allow Group(Host)",
             ]
         );
     }
@@ -839,7 +865,8 @@ mod tests {
         ))
         .unwrap();
 
-        let rules = &policy.rules[..policy.rules.len() - 2];
+        // Without domain denies, DNS to any server comes first and DNS to the gateway last.
+        let rules = &policy.rules[1..policy.rules.len() - 1];
         let described: Vec<String> = rules.iter().map(describe).collect();
 
         assert_eq!(

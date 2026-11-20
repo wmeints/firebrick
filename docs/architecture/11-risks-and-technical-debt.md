@@ -84,9 +84,10 @@ and trust boundaries these risks belong to.
   answers those queries itself after the domain rules and rebind protection, but
   it sends them to whichever server the guest names, so a guest can query DNS
   servers on the host's LAN and send data straight to a DNS server it controls,
-  not only through the host's resolver. A sandbox created before the rule keeps
-  stale servers until it restarts. Remove the workaround once microsandbox
-  refreshes its upstream servers
+  not only through the host's resolver, also when an IP or CIDR deny rule covers
+  that server. A sandbox created before the rule keeps stale servers until it
+  restarts. Per-domain DNS servers that a macOS VPN configures aren't followed.
+  Remove the workaround once microsandbox refreshes its upstream servers
   ([ADR 0066](decisions/0066-point-the-guest-at-the-host-dns-servers.md)).
 - **The agent can tamper with the network record:** the logger that reports a
   sandbox's DNS lookups and connections runs inside the VM, and the `agent` user

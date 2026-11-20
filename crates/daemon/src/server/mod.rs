@@ -27,7 +27,6 @@ use crate::api::{
 use crate::forward::TlsBridge;
 use crate::guest::clipboard::{HostClipboard, HostTools};
 use crate::guest::open::{HostOpener, Opener};
-use crate::sandboxes::provision::dns;
 use crate::sandboxes::{NewSecret, SandboxManager};
 use crate::secrets::SecretStore;
 use anyhow::Result;
@@ -541,7 +540,7 @@ const RECREATION_TIMEOUT: Duration = Duration::from_secs(60);
 /// Reopens the port forwards of the sandboxes that are running, listens for the network logs
 /// and clipboards of the sandboxes and removes the upgrade probes an earlier daemon left behind,
 /// then serves the gRPC API on the socket, keeping the sandboxes' DNS servers in step with the
-/// host's ([`dns::keep_in_sync`]), until SIGINT or SIGTERM is received or a client sends
+/// host's ([`SandboxManager::keep_dns_in_sync`]), until SIGINT or SIGTERM is received or a client sends
 /// a `Shutdown` request, bridging TLS connections to forwarded ports through `tls` when there is
 /// one, opening the URLs from sandboxes in the host's browser and reading the host clipboard
 /// with its desktop's tools. Afterwards, waits up to [`RECREATION_TIMEOUT`] for the updates and upgrades that are
@@ -563,10 +562,13 @@ pub async fn run(
     sandboxes.restore_forwards().await;
     sandboxes.restore_listeners().await;
     sandboxes.remove_stale_probes().await;
-    let dns_sync = tokio::spawn(dns::keep_in_sync());
+    let dns_sync = tokio::spawn({
+        let sandboxes = Arc::clone(&sandboxes);
+        async move { sandboxes.keep_dns_in_sync().await }
+    });
 
     let served = serve(socket_path, service, shutdown_or(requested)).await;
-    dns_sync.abort();
+    stop_dns_sync(dns_sync).await;
 
     if !sandboxes.finish_recreations(RECREATION_TIMEOUT).await {
         tracing::warn!("stopped while a sandbox was still being updated or upgraded");
@@ -575,6 +577,18 @@ pub async fn run(
     sandboxes.close_listeners().await;
 
     served
+}
+
+/// Stops the task that keeps the sandboxes' DNS servers in step with the host's, and logs an
+/// error when it had stopped early because it panicked.
+async fn stop_dns_sync(task: tokio::task::JoinHandle<()>) {
+    task.abort();
+
+    if let Err(err) = task.await
+        && err.is_panic()
+    {
+        tracing::error!("the task that updates the sandboxes' DNS servers panicked: {err}");
+    }
 }
 
 #[cfg(test)]

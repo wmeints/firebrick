@@ -258,6 +258,8 @@ pub struct SandboxManager {
     // Held for reading while a sandbox is updated or upgraded, and for writing when the daemon
     // shuts down, so it waits for a recreate instead of leaving the sandbox removed.
     recreations: tokio::sync::RwLock<()>,
+    // The DNS servers fbkd last wrote into each running sandbox that follows the host's.
+    dns: dns::Applied,
 }
 
 /// The locks of the sandboxes that are in use, by sandbox name.
@@ -312,6 +314,7 @@ impl SandboxManager {
             sandbox_locks: std::sync::Mutex::new(HashMap::new()),
             ports_lock: tokio::sync::Mutex::new(()),
             recreations: tokio::sync::RwLock::new(()),
+            dns: dns::Applied::default(),
         }
     }
     /// Waits for and takes the lock of the sandbox with the name.
@@ -332,6 +335,32 @@ impl SandboxManager {
             name: name.to_string(),
             guard: Some(lock.lock_owned().await),
         }
+    }
+    /// Takes the lock of the sandbox with the name when no other task holds it.
+    fn try_lock_sandbox(&self, name: &str) -> Option<SandboxGuard<'_>> {
+        // The map stays consistent when a thread panics while holding it, so a poisoned lock
+        // is safe to use.
+        let mut locks = self
+            .sandbox_locks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let guard = locks
+            .entry(name.to_string())
+            .or_default()
+            .clone()
+            .try_lock_owned()
+            .ok()?;
+
+        Some(SandboxGuard {
+            locks: &self.sandbox_locks,
+            name: name.to_string(),
+            guard: Some(guard),
+        })
+    }
+    /// Keeps the DNS servers of the running sandboxes in step with the host's, see
+    /// [`dns::keep_in_sync`]. Never returns, except at once on Windows hosts.
+    pub async fn keep_dns_in_sync(&self) {
+        dns::keep_in_sync(&self.dns, |name| self.try_lock_sandbox(name)).await;
     }
     /// Starts an existing sandbox or creates a new one when it doesn't exist, installs the
     /// workspace's mise tools when it started, then syncs the SSH config and the editor
@@ -596,6 +625,7 @@ impl SandboxManager {
 
         self.open_forwards(sb.name(), None).await;
         self.relays.ensure(&sb).await;
+        dns::apply_host(&sb, &self.dns).await;
 
         Ok(sb)
     }
@@ -609,6 +639,8 @@ impl SandboxManager {
         if running {
             self.open_forwards(name, None).await;
             self.start_relay(name).await;
+            // The recreated sandbox gets the host's DNS servers at the next check.
+            self.dns.forget(name);
         }
     }
     /// Connects to the running sandbox and starts its URL relay unless it has one, logging a
@@ -636,7 +668,7 @@ impl SandboxManager {
         };
 
         self.relays.ensure(&sb).await;
-        dns::apply_host(&sb).await;
+        dns::apply_host(&sb, &self.dns).await;
 
         if let Some(identity) = request.git_identity {
             git::apply(&sb, identity).await;
