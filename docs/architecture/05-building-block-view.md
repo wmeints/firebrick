@@ -145,16 +145,20 @@ C4Component
     `--force` is passed, and checks that before it connects to the daemon. It
     then asks the daemon whether the workspace already has a sandbox: the one
     named in the spec being replaced, or the one `resolve_spec` names for a
-    workspace without a spec (the hashed or legacy name). When that sandbox
-    exists and `check_workspace_owner` passes, the spec keeps its name, so `fbk
-    start` goes on using it instead of creating a second sandbox; a sandbox of
-    another workspace fails the command without writing a file. A spec-less
-    sandbox always has the defaults, so the default spec is its configuration;
-    the spec leaves out `image` so `fbk upgrade` can still move it. Without such
-    a sandbox, or when the replaced spec doesn't load, the spec is named after
-    the working directory's leaf with `firebrick_utils::sanitize_label`, the
-    rule that also makes the SSH host names, and cut to the 128 bytes a sandbox
-    name may have. It fails without writing when the daemon can't be reached.
+    workspace without a spec (the hashed or legacy name). It reads only the
+    `name` of the replaced spec from the YAML, so a spec this version rejects,
+    for example over an unknown field, still keeps its sandbox. When that
+    sandbox exists and `check_workspace_owner` passes, the spec keeps its name,
+    so `fbk start` goes on using it instead of creating a second sandbox; a
+    sandbox of another workspace fails the command without writing a file. A
+    spec-less sandbox always has the defaults, so the default spec is its
+    configuration; the spec leaves out `image` so `fbk upgrade` can still move
+    it. Without such a sandbox, or when the replaced spec isn't YAML or has no
+    string `name`, the spec is named after the working directory's leaf with
+    `firebrick_utils::sanitize_label`, the rule that also makes the SSH host
+    names, and cut to the 128 bytes a sandbox name may have. It fails without
+    writing when the daemon can't be reached, except when the replaced spec
+    names no sandbox: then it doesn't connect.
 - `network` - Keeps the network settings in `.firebrick.yml` and the sandbox in
   sync. `update` changes them and `log` shows the recorded activity. It
   validates the rules, applies the change to the network section of the spec in

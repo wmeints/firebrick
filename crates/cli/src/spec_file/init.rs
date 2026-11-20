@@ -5,7 +5,7 @@ use tonic::transport::Channel;
 
 use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use crate::sandbox;
-use crate::spec_file::{self, SPEC_FILE_NAME};
+use crate::spec_file::SPEC_FILE_NAME;
 
 /// A client of the daemon's gRPC API.
 type Client = SandboxManagementServiceClient<Channel>;
@@ -38,9 +38,10 @@ pub async fn init_spec(
         );
     }
 
-    let existing_sandbox = match current_name(working_dir, &spec_path, exists, connect).await? {
-        Some((name, mut client)) => existing_sandbox(name, working_dir, &mut client).await?,
-        None => None,
+    let existing_sandbox = if exists {
+        sandbox_of_spec(&spec_path, working_dir, connect).await?
+    } else {
+        sandbox_without_spec(working_dir, connect).await?
     };
     let name = existing_sandbox
         .clone()
@@ -56,34 +57,55 @@ pub async fn init_spec(
     })
 }
 
-/// Returns the name the workspace's sandbox has now, with the connection to the daemon to look
-/// it up: the existing spec's name, or the name `fbk start` gives a workspace without a spec.
-/// Returns `None` without connecting for a spec that doesn't load, which names no sandbox.
-async fn current_name(
-    working_dir: &Path,
+/// Returns the sandbox the spec being replaced names, when it exists and belongs to the working
+/// directory. A spec without a readable name names no sandbox, so replacing it doesn't need the
+/// daemon.
+async fn sandbox_of_spec(
     spec_path: &Path,
-    exists: bool,
+    working_dir: &Path,
     connect: impl Future<Output = Result<Client>>,
-) -> Result<Option<(String, Client)>> {
-    let spec_name = if exists {
-        // A spec that doesn't load names no sandbox, so `--force` replaces it with the default.
-        match spec_file::load_spec(spec_path) {
-            Ok(Some(spec)) => Some(spec.name),
-            Ok(None) | Err(_) => return Ok(None),
-        }
-    } else {
-        None
+) -> Result<Option<String>> {
+    let Some(name) = name_in_spec(spec_path)? else {
+        return Ok(None);
     };
+    let mut client = connect_to_daemon(connect).await?;
 
-    let mut client = connect
+    existing_sandbox(name, working_dir, &mut client).await
+}
+
+/// Returns the sandbox `fbk start` uses for a workspace without a spec, when it exists and
+/// belongs to the working directory.
+async fn sandbox_without_spec(
+    working_dir: &Path,
+    connect: impl Future<Output = Result<Client>>,
+) -> Result<Option<String>> {
+    let mut client = connect_to_daemon(connect).await?;
+    let name = sandbox::resolve_spec(working_dir, &mut client).await?.name;
+
+    existing_sandbox(name, working_dir, &mut client).await
+}
+
+/// Awaits the connection to the daemon.
+async fn connect_to_daemon(connect: impl Future<Output = Result<Client>>) -> Result<Client> {
+    connect
         .await
-        .context("failed to connect to the daemon to check for an existing sandbox")?;
-    let name = match spec_name {
-        Some(name) => name,
-        None => sandbox::resolve_spec(working_dir, &mut client).await?.name,
+        .context("failed to connect to the daemon to check for an existing sandbox")
+}
+
+/// Reads the `name` of the spec file without validating the rest, so a spec this version of
+/// `fbk` rejects still keeps its sandbox. Returns `None` when the file has no string `name`.
+fn name_in_spec(spec_path: &Path) -> Result<Option<String>> {
+    let text = firebrick_spec::read_text(spec_path)?.unwrap_or_default();
+
+    // YAML that doesn't parse names no sandbox, so `--force` replaces it with the default.
+    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&text) else {
+        return Ok(None);
     };
 
-    Ok(Some((name, client)))
+    Ok(value
+        .get("name")
+        .and_then(serde_yaml::Value::as_str)
+        .map(str::to_string))
 }
 
 /// Returns `name` when that sandbox exists and belongs to the working directory, and `None`
@@ -174,6 +196,10 @@ mod tests {
         let expected = serde_yaml::to_string(&firebrick_spec::default_spec(name.to_string()));
 
         assert_eq!(fs::read_to_string(spec_path).unwrap(), expected.unwrap());
+        assert_eq!(
+            firebrick_spec::from_file(spec_path).unwrap().unwrap().image,
+            None
+        );
         assert!(
             crate::spec_file::validate::validate_spec(spec_path.parent().unwrap()).unwrap(),
             "{name}"
@@ -202,6 +228,8 @@ mod tests {
     #[tokio::test]
     async fn keeps_the_name_of_the_workspace_sandbox() {
         let (_root, dir) = project_dir("project");
+        // The names `fbk start` gives a workspace without a spec; the tests in `spec_file`
+        // check them against literal names.
         let hashed = default_name(&dir, false);
         let legacy = legacy_name(&dir).unwrap();
 
@@ -290,18 +318,30 @@ mod tests {
 
     #[tokio::test]
     async fn force_overwrites_existing_spec() {
-        assert_force_writes_leaf_name(PINNED_SPEC).await;
-        assert_force_writes_leaf_name("name: [unclosed\n").await;
+        let (_root, dir) = project_dir("project");
+        let spec_path = dir.join(SPEC_FILE_NAME);
+        fs::write(&spec_path, PINNED_SPEC).unwrap();
+
+        let created = init_without_sandboxes(&dir, true).await.unwrap();
+
+        assert_eq!(created.existing_sandbox, None);
+        assert_default_spec(&spec_path, "project");
     }
 
-    /// Asserts that `init_spec --force` replaces a spec with `content` by the default spec
-    /// named after the directory when no sandbox has the spec's name.
-    async fn assert_force_writes_leaf_name(content: &str) {
+    #[tokio::test]
+    async fn force_replaces_a_spec_without_a_name_without_the_daemon() {
+        assert_force_replaces_unnamed("name: [unclosed\n").await;
+        assert_force_replaces_unnamed("image: ubuntu:24.04\n").await;
+    }
+
+    /// Asserts that `init_spec --force` replaces a spec with `content`, which names no sandbox,
+    /// by the default spec named after the directory without connecting to the daemon.
+    async fn assert_force_replaces_unnamed(content: &str) {
         let (_root, dir) = project_dir("project");
         let spec_path = dir.join(SPEC_FILE_NAME);
         fs::write(&spec_path, content).unwrap();
 
-        let created = init_without_sandboxes(&dir, true).await.unwrap();
+        let created = init_without_daemon(&dir, true).await.unwrap();
 
         assert_eq!(created.existing_sandbox, None, "{content}");
         assert_default_spec(&spec_path, "project");
@@ -309,14 +349,45 @@ mod tests {
 
     #[tokio::test]
     async fn force_keeps_the_name_of_the_spec_sandbox() {
+        assert_force_keeps_name(PINNED_SPEC).await;
+        // A spec this version rejects still names its sandbox.
+        assert_force_keeps_name("name: mine\nunknown: true\n").await;
+    }
+
+    /// Asserts that `init_spec --force` replaces a spec with `content`, which names the
+    /// workspace's sandbox `mine`, by the default spec named `mine`.
+    async fn assert_force_keeps_name(content: &str) {
+        let (_root, dir) = project_dir("project");
+        let spec_path = dir.join(SPEC_FILE_NAME);
+        fs::write(&spec_path, content).unwrap();
+
+        let created = init_with_sandbox(&dir, true, "mine", &dir).await.unwrap();
+
+        assert_eq!(
+            created.existing_sandbox.as_deref(),
+            Some("mine"),
+            "{content}"
+        );
+        assert_default_spec(&spec_path, "mine");
+    }
+
+    #[tokio::test]
+    async fn force_refuses_the_spec_sandbox_of_another_workspace() {
         let (_root, dir) = project_dir("project");
         let spec_path = dir.join(SPEC_FILE_NAME);
         fs::write(&spec_path, PINNED_SPEC).unwrap();
 
-        let created = init_with_sandbox(&dir, true, "mine", &dir).await.unwrap();
+        let error = init_with_sandbox(&dir, true, "mine", Path::new(OTHER_WORKSPACE))
+            .await
+            .unwrap_err();
 
-        assert_eq!(created.existing_sandbox.as_deref(), Some("mine"));
-        assert_default_spec(&spec_path, "mine");
+        assert!(
+            error
+                .to_string()
+                .starts_with(&format!("sandbox mine belongs to {OTHER_WORKSPACE};")),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(&spec_path).unwrap(), PINNED_SPEC);
     }
 
     #[tokio::test]

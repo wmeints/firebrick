@@ -34,7 +34,9 @@ whether the directory already has a sandbox. If it has, for example because you
 ran `fbk start` before there was a `.firebrick.yml`, the file keeps that
 sandbox's name instead of the directory's, and `fbk start` goes on using the
 same sandbox. `fbk init --force` likewise keeps the name of the file it replaces
-when that sandbox exists.
+when that sandbox exists, also when the rest of the file is invalid. Only when
+the file it replaces has no readable `name` does `fbk init --force` skip the
+daemon and name the new file after the directory.
 
 | Field               | Description                                                                                                           | Default                                     |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
