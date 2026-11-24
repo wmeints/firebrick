@@ -189,9 +189,9 @@ C4Component
   how to turn it on.
   - `presets` - Holds the network presets: named groups of `allow` rules for
     coding agents (`claude`, `copilot`, `codex`), GitHub, the extension
-    marketplaces of IDEs (`vscode`, `jetbrains`) and the package registries and
-    installers of toolchains (`node`, `dotnet`, `java`, `rust`, `go`, `python`,
-    `mise`, `ruby`), compiled in as constants (see
+    marketplaces and server downloads of IDEs (`vscode`, `jetbrains`) and the
+    package registries and installers of toolchains (`node`, `dotnet`, `java`,
+    `rust`, `go`, `python`, `mise`, `ruby`), compiled in as constants (see
     [ADR 0040](decisions/0040-compile-the-network-presets-into-fbk.md)). `names`
     lists `all` and every preset, `rules` returns the rules of the named
     presets, or of every preset for `all`, each rule once and in the order of
