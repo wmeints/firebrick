@@ -598,9 +598,11 @@ with the same arguments:
    mounted bundle. A variable the image or `docker run -e` sets keeps its value;
    the script writes the file it names, followed by `/.msb/tls/ca.pem`, to
    `firebrick-ca-<n>.pem` in the container's bundle directory and mounts that
-   read-only over the file. When the file doesn't exist, or a symlink leads out
-   of the container's root filesystem, the variable points at the mounted bundle
-   instead.
+   read-only over the file. It resolves the symlinks in the path as the
+   container sees them, inside the container's root filesystem, so a link never
+   leads to a file of the VM, and a file that two variables name is merged once.
+   When the container has no such file, for example because it's missing or
+   lives in a volume, the variable points at the mounted bundle instead.
 3. When fbkd has built the Java trust store, it mounts it read-only at
    `/etc/firebrick/firebrick.p12` and adds
    `-Djavax.net.ssl.trustStore=/etc/firebrick/firebrick.p12

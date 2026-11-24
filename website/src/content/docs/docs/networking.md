@@ -62,16 +62,21 @@ Keep in mind that:
   store. A `JAVA_TOOL_OPTIONS` from the image is hidden, so set it in `env`
   instead. A custom image needs OpenSSL 3.2 or newer to build the store; without
   it, `fbk start` prints a warning.
-- Docker containers in the sandbox trust that certificate authority too. In the
-  `firebrick-base` image, Docker mounts it into every container at
-  `/etc/firebrick/ca-certificates.crt` and points `SSL_CERT_FILE`,
-  `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and
-  `JAVA_TOOL_OPTIONS` at it, so upstream images and Testcontainers work without
-  changes. When the image or `docker run -e` sets one of these variables to its
-  own bundle, that bundle gets the certificate authority added. `docker exec`
-  sessions don't get the variables, and `docker build` `RUN` steps don't trust
-  the certificate authority. A sandbox created from an older image gets this
-  with `fbk upgrade`.
+- Docker containers in the sandbox trust that certificate authority too, so
+  upstream images and Testcontainers work without changes. In the
+  `firebrick-base` image, Docker mounts the sandbox's certificate bundle into
+  every container at `/etc/firebrick/ca-certificates.crt` and points
+  `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` and
+  `NODE_EXTRA_CA_CERTS` at it. When the image or `docker run -e` sets one of
+  these variables to a bundle in the image, that bundle gets the certificate
+  authority added; when the file isn't in the image, the variable points at
+  Firebrick's bundle instead. When the sandbox has the Java trust store, Docker
+  mounts it at `/etc/firebrick/firebrick.p12` and adds it to
+  `JAVA_TOOL_OPTIONS`, unless the container sets a `-Djavax.net.ssl.trustStore=`
+  of its own. `docker exec` sessions don't get the variables, and `docker build`
+  `RUN` steps don't trust the certificate authority. A sandbox on an older
+  `firebrick-base` image gets this with `fbk upgrade`, which removes its Docker
+  images and containers.
 - A secret's allowed hosts must be allowed by the network rules too. See
   [Secrets](/docs/secrets/).
 - `mise install` downloads its tools when the sandbox starts, so allow the hosts

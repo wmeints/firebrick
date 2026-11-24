@@ -43,9 +43,10 @@ before it runs `/usr/bin/runc` with the same arguments:
   images such as `curlimages/curl` point it at their own bundle and other CAs in
   it, for example for TLS between containers, should keep working. The script
   writes a copy of that file with the CA appended into the container's bundle
-  directory and mounts it read-only over the file. When the file doesn't exist,
-  or a symlink leads out of the container's root filesystem, the variable points
-  at the guest's bundle instead.
+  directory and mounts it read-only over the file. It resolves symlinks inside
+  the container's root filesystem, as the container sees them, so it never reads
+  a file of the VM. When the container has no such file, the variable points at
+  the guest's bundle instead.
 - It adds the trust store options to `JAVA_TOOL_OPTIONS`, after the container's
   own options, unless they set `-Djavax.net.ssl.trustStore=` themselves.
 

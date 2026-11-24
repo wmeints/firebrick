@@ -26,6 +26,7 @@ CONTAINER_BUNDLE = "/etc/firebrick/ca-certificates.crt"
 CONTAINER_STORE = "/etc/firebrick/firebrick.p12"
 BUNDLE_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS")
 JAVA_VAR = "JAVA_TOOL_OPTIONS"
+MAX_LINKS = 40
 TRUST_STORE_PROPERTY = "-Djavax.net.ssl.trustStore="
 TRUST_STORE_OPTIONS = (
     f"{TRUST_STORE_PROPERTY}{CONTAINER_STORE} -Djavax.net.ssl.trustStorePassword=changeit"
@@ -61,41 +62,60 @@ def with_java_options(value):
 
 
 def container_file(rootfs, path):
-    """Returns where the container's file at the absolute `path` is in the VM, or None when it
-    isn't a regular file in the root filesystem, for example because a symlink leads out of
-    it."""
+    """Returns the path of the container's regular file at the absolute `path`, with its
+    symlinks resolved as the container sees them: an absolute target starts at the root
+    filesystem, and `..` stops there. Returns None when there is no such file."""
     if not os.path.isabs(path):
         return None
-    resolved = os.path.realpath(os.path.join(rootfs, path.lstrip("/")))
-    inside = resolved.startswith(os.path.realpath(rootfs) + os.sep)
-    return resolved if inside and os.path.isfile(resolved) else None
+    parts = path.split("/")
+    resolved = []
+    links = 0
+    while parts:
+        part = parts.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            resolved = resolved[:-1]
+            continue
+        current = os.path.join(rootfs, *resolved, part)
+        if not os.path.islink(current):
+            resolved.append(part)
+            continue
+        links += 1
+        if links > MAX_LINKS:
+            return None
+        target = os.readlink(current)
+        resolved = [] if target.startswith("/") else resolved
+        parts = target.split("/") + parts
+    file = "/" + "/".join(resolved)
+    return file if os.path.isfile(os.path.join(rootfs, *resolved)) else None
 
 
 def merged_bundle(bundle, rootfs, path, mounts):
     """Mounts a copy of the container's bundle at `path` with the CA appended over it, and
-    returns whether it could. A path that is mounted already is merged only once."""
-    if any(mount["destination"] == path for mount in mounts):
-        return True
-    source = container_file(rootfs, path)
-    if source is None:
+    returns whether it could. A file that is mounted already is merged only once."""
+    file = container_file(rootfs, path)
+    if file is None:
         return False
-    with open(source, "rb") as file:
-        own = file.read()
-    with open(CA, "rb") as file:
-        ca = file.read()
+    if any(mount["destination"] == file for mount in mounts):
+        return True
+    with open(os.path.join(rootfs, file.lstrip("/")), "rb") as source:
+        own = source.read()
+    with open(CA, "rb") as source:
+        ca = source.read()
     merged = os.path.join(bundle, f"firebrick-ca-{len(mounts)}.pem")
-    with open(merged, "wb") as file:
-        file.write(own if own.endswith(b"\n") or not own else own + b"\n")
-        file.write(ca)
+    with open(merged, "wb") as target:
+        target.write(own if own.endswith(b"\n") or not own else own + b"\n")
+        target.write(ca)
     os.chmod(merged, 0o644)
-    mounts.append(mount(merged, path))
+    mounts.append(mount(merged, file))
     return True
 
 
 def trust_ca(config, bundle):
     """Adds the mounts and variables that let the container trust the interception CA. A CA
     variable the container sets keeps its value, and the file it names gets the CA appended;
-    when that file can't be read, the variable points at the guest's bundle instead."""
+    when the container has no such file, the variable points at the guest's bundle instead."""
     mounts = config.setdefault("mounts", [])
     process = config.setdefault("process", {})
     env = process.setdefault("env", [])

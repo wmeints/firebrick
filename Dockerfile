@@ -321,7 +321,7 @@ RUN ln -s /usr/local/bin/firebrick-clipboard /usr/local/bin/wl-paste \
 # that the guest trusts, and every HTTPS request in them would fail. firebrick-runc runs in
 # place of runc as Docker's default runtime and, in a sandbox with TLS interception, mounts the
 # guest's CA bundle and Java trust store into each container and points the usual CA variables
-# and JAVA_TOOL_OPTIONS at them (ADR 0068).
+# and JAVA_TOOL_OPTIONS at them (ADR 0068). The build fails when dockerd can't use the config.
 COPY --chmod=755 image/firebrick-runc /usr/local/sbin/firebrick-runc
 COPY <<EOF /etc/docker/daemon.json
 {
@@ -329,6 +329,7 @@ COPY <<EOF /etc/docker/daemon.json
   "default-runtime": "firebrick"
 }
 EOF
+RUN dockerd --validate --config-file /etc/docker/daemon.json
 
 # git over HTTPS to github.com authenticates with GH_TOKEN, or GITHUB_TOKEN when GH_TOKEN is
 # unset or empty. In a sandbox the variable holds a microsandbox placeholder, which the TLS
