@@ -218,7 +218,7 @@ network presets show` to list the presets and their rules:
 | `copilot`   | `*.githubcopilot.com`, `copilot-proxy.githubusercontent.com`, `origin-tracker.githubusercontent.com`                                         |
 | `github`    | `*.github.com`, `*.githubusercontent.com`, `*.githubassets.com`, `ghcr.io`                                                                   |
 | `codex`     | `*.openai.com`, `*.chatgpt.com`                                                                                                              |
-| `vscode`    | `*.visualstudio.com`, `*.visualstudio.microsoft.com`, `*.vsassets.io`, `*.vscode-cdn.net`                                                    |
+| `vscode`    | `*.visualstudio.com`, `*.visualstudio.microsoft.com`, `*.vsassets.io`, `*.vscode-cdn.net`, `vscode.download.prss.microsoft.com`              |
 | `jetbrains` | `*.jetbrains.com`                                                                                                                            |
 | `node`      | `*.nodejs.org`, `*.npmjs.org`, `*.npmjs.com`, `*.yarnpkg.com`, `*.pnpm.io`, `*.bun.sh`                                                       |
 | `dotnet`    | `*.nuget.org`, `*.dot.net`, `builds.dotnet.microsoft.com`, `dotnetcli.azureedge.net`, `dotnetcli.blob.core.windows.net`                      |

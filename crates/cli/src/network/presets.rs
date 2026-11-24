@@ -54,6 +54,7 @@ pub const PRESETS: &[Preset] = &[
             "*.visualstudio.microsoft.com",
             "*.vsassets.io",
             "*.vscode-cdn.net",
+            "vscode.download.prss.microsoft.com",
         ],
     },
     Preset {
@@ -249,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ide_presets_allow_their_extension_marketplaces() {
+    fn the_ide_presets_allow_their_extension_marketplaces_and_downloads() {
         assert_eq!(
             rule_strings(&["vscode", "jetbrains"]),
             [
@@ -257,6 +258,7 @@ mod tests {
                 "*.visualstudio.microsoft.com",
                 "*.vsassets.io",
                 "*.vscode-cdn.net",
+                "vscode.download.prss.microsoft.com",
                 "*.jetbrains.com",
             ]
         );
