@@ -317,6 +317,23 @@ RUN ln -s /usr/local/bin/firebrick-clipboard /usr/local/bin/wl-paste \
     && ln -s /usr/local/bin/firebrick-clipboard /usr/local/bin/wl-copy \
     && ln -s /usr/local/bin/firebrick-clipboard /usr/local/bin/xclip
 
+# Containers have their own files and environment, so they don't trust the TLS interception CA
+# that the guest trusts, and every HTTPS request in them would fail. firebrick-runc runs in
+# place of runc as Docker's default runtime and, in a sandbox with TLS interception, mounts the
+# guest's CA bundle and Java trust store into each container and points the usual CA variables
+# and JAVA_TOOL_OPTIONS at them (ADR 0068). BuildKit runs `docker build` steps with the `runc` on
+# dockerd's PATH instead of the default runtime, so the script is also /usr/local/sbin/runc,
+# which comes before /usr/bin/runc. The build fails when dockerd can't use the config.
+COPY --chmod=755 image/firebrick-runc /usr/local/sbin/firebrick-runc
+RUN ln -s firebrick-runc /usr/local/sbin/runc
+COPY <<EOF /etc/docker/daemon.json
+{
+  "runtimes": { "firebrick": { "path": "/usr/local/sbin/firebrick-runc" } },
+  "default-runtime": "firebrick"
+}
+EOF
+RUN dockerd --validate --config-file /etc/docker/daemon.json
+
 # git over HTTPS to github.com authenticates with GH_TOKEN, or GITHUB_TOKEN when GH_TOKEN is
 # unset or empty. In a sandbox the variable holds a microsandbox placeholder, which the TLS
 # proxy replaces in the Basic Authorization header for the secret's allowed hosts. Without a

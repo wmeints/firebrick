@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""Stands in for runc as Docker's default runtime, so containers trust the TLS interception CA.
+
+In a sandbox with TLS interception, microsandbox writes its CA to /.msb/tls/ca.pem and adds it
+to the guest's system bundle, but a container has its own files and environment, so every HTTPS
+request in it would fail the certificate check. Docker runs containers through this script as
+its default runtime, and BuildKit runs `docker build` steps through it as the `runc` on dockerd's
+PATH. On `create` and `run`, while /.msb/tls/ca.pem exists, this edits the container's
+config.json before it runs runc with the same arguments:
+
+- It mounts a bundle read-only at /etc/firebrick/ca-certificates.crt: the image's own system
+  bundle with the CA appended, or the guest's system bundle when the image has none. It points
+  SSL_CERT_FILE, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE and NODE_EXTRA_CA_CERTS at it when the
+  container doesn't set them.
+- A CA variable the image or `docker run -e` sets keeps its value, and a copy of the file it
+  names, from the image or from a mount, with the CA appended is mounted read-only over that
+  file. When the container has no such file, the variable points at /etc/firebrick instead.
+- It mounts the Java trust store fbkd builds, when it exists, at /etc/firebrick/firebrick.p12
+  and adds it to JAVA_TOOL_OPTIONS, unless that sets a store of its own.
+
+A foreground `run`, which BuildKit uses for build steps, runs runc as a child and then removes
+the empty files and directories runc created to mount at, so they don't end up in the image. A
+failed edit is reported on stderr, which ends up in /var/log/dockerd.log or the build output,
+and the container starts without the CA (ADR 0068).
+"""
+
+import json
+import os
+import signal
+import subprocess
+import sys
+
+RUNC = "/usr/bin/runc"
+CA = "/.msb/tls/ca.pem"
+BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
+STORE = "/etc/ssl/certs/java/firebrick.p12"
+CONTAINER_BUNDLE = "/etc/firebrick/ca-certificates.crt"
+CONTAINER_STORE = "/etc/firebrick/firebrick.p12"
+# Where Debian, Ubuntu and Alpine, RHEL and Fedora, and SUSE keep their system bundle.
+SYSTEM_BUNDLES = (
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
+)
+BUNDLE_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS")
+JAVA_VAR = "JAVA_TOOL_OPTIONS"
+MAX_LINKS = 40
+TRUST_STORE_PROPERTY = "-Djavax.net.ssl.trustStore="
+TRUST_STORE_OPTIONS = (
+    f"{TRUST_STORE_PROPERTY}{CONTAINER_STORE} -Djavax.net.ssl.trustStorePassword=changeit"
+)
+
+
+def command_of(args):
+    """Returns the runc command, `create` or `run`, that starts a container from a bundle,
+    with the arguments after it, or None for other commands."""
+    command = next((arg for arg in args if arg in ("create", "run")), None)
+    return None if command is None else (command, args[args.index(command) + 1:])
+
+
+def bundle_dir(rest):
+    """Returns the bundle directory in the arguments of `create` or `run`."""
+    for i, arg in enumerate(rest):
+        if arg in ("--bundle", "-b") and i + 1 < len(rest):
+            return rest[i + 1]
+        for prefix in ("--bundle=", "-b="):
+            if arg.startswith(prefix):
+                return arg[len(prefix):]
+    return "."
+
+
+def stubs_of(rootfs, destination):
+    """Returns the paths in the VM of the directories and the file runc creates in the root
+    filesystem to mount at `destination`, parents first, or no paths when a part of it is a
+    symlink, which runc resolves inside the root filesystem but removing them wouldn't."""
+    stubs = []
+    path = rootfs
+    for part in destination.strip("/").split("/"):
+        path = os.path.join(path, part)
+        if os.path.islink(path):
+            return []
+        if not os.path.lexists(path):
+            stubs.append(path)
+    return stubs
+
+
+def mount(source, destination):
+    return {"destination": destination, "type": "bind", "source": source,
+            "options": ["rbind", "ro", "nosuid", "nodev"]}
+
+
+def with_java_options(value):
+    """Returns the value with the trust store options at its end, unless it sets a store."""
+    if not value.strip():
+        return TRUST_STORE_OPTIONS
+    if TRUST_STORE_PROPERTY in value:
+        return value
+    return f"{value.strip()} {TRUST_STORE_OPTIONS}"
+
+
+def rootfs_file(rootfs, path):
+    """Returns the container path of the image's regular file at the absolute `path`, with its
+    symlinks resolved as the container sees them: an absolute target starts at the root
+    filesystem, and `..` stops there. Returns None when there is no such file."""
+    parts = path.split("/")
+    resolved = []
+    links = 0
+    while parts:
+        part = parts.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            resolved = resolved[:-1]
+            continue
+        current = os.path.join(rootfs, *resolved, part)
+        if not os.path.islink(current):
+            resolved.append(part)
+            continue
+        links += 1
+        if links > MAX_LINKS:
+            return None
+        target = os.readlink(current)
+        resolved = [] if target.startswith("/") else resolved
+        parts = target.split("/") + parts
+    file = "/" + "/".join(resolved)
+    return file if os.path.isfile(os.path.join(rootfs, *resolved)) else None
+
+
+def covering_mount(mounts, path):
+    """Returns the innermost of Docker's mounts that holds the container path `path`, or
+    None when the path is in the image."""
+    covering = None
+    for entry in mounts:
+        destination = os.path.normpath(entry.get("destination") or "/")
+        inside = path == destination or path.startswith(destination.rstrip("/") + "/")
+        if inside and (covering is None or len(destination) > len(covering[0])):
+            covering = (destination, entry)
+    return covering
+
+
+def mounted_file(destination, entry, path):
+    """Returns where the file at `path` in a bind mount at `destination` is in the VM, when
+    it's a regular file without symlinks below the mount's source, or None otherwise."""
+    if entry.get("type") != "bind" or not entry.get("source"):
+        return None
+    root = os.path.realpath(entry["source"])
+    source = os.path.normpath(os.path.join(root, os.path.relpath(path, destination)))
+    return source if os.path.realpath(source) == source and os.path.isfile(source) else None
+
+
+def vm_file(config, rootfs, path):
+    """Returns the container path the file at `path` is at, and where it is in the VM, from
+    Docker's mounts or the image, or None when the container has no such regular file."""
+    if not os.path.isabs(path):
+        return None
+    path = os.path.normpath(path)
+    covering = covering_mount(config["mounts"], path)
+    if covering is not None:
+        source = mounted_file(*covering, path)
+        return None if source is None else (path, source)
+    file = rootfs_file(rootfs, path)
+    return None if file is None else (file, os.path.join(rootfs, file.lstrip("/")))
+
+
+class Merger:
+    """Writes copies of the container's bundles with the CA appended into the bundle directory
+    and mounts them, each file once."""
+
+    def __init__(self, config, bundle):
+        self.config = config
+        self.bundle = bundle
+        self.rootfs = os.path.join(bundle, config.get("root", {}).get("path", "rootfs"))
+        with open(CA, "rb") as file:
+            self.ca = file.read()
+        self.merged = set()
+        self.mounts = []
+
+    def merge(self, path, destination=None):
+        """Mounts the merged copy of the file at `path` over that file, or at `destination`,
+        and returns whether the container has that file."""
+        found = vm_file(self.config, self.rootfs, path)
+        if found is None:
+            return False
+        file, source = found
+        destination = destination or file
+        if destination in self.merged:
+            return True
+        with open(source, "rb") as own_file:
+            own = own_file.read()
+        merged = os.path.join(self.bundle, f"firebrick-ca-{len(self.merged)}.pem")
+        with open(merged, "wb") as target:
+            target.write(own if own.endswith(b"\n") or not own else own + b"\n")
+            target.write(self.ca)
+        os.chmod(merged, 0o644)
+        self.merged.add(destination)
+        self.mounts.append(mount(merged, destination))
+        return True
+
+
+def trust_ca(config, bundle):
+    """Adds the mounts and variables that let the container trust the interception CA, and
+    returns the paths runc creates in the root filesystem to mount them at."""
+    config.setdefault("mounts", [])
+    env = config.setdefault("process", {}).setdefault("env", [])
+    names = {var.partition("=")[0]: i for i, var in enumerate(env)}
+    merger = Merger(config, bundle)
+
+    if not any(merger.merge(path, CONTAINER_BUNDLE) for path in SYSTEM_BUNDLES):
+        merger.mounts.append(mount(BUNDLE, CONTAINER_BUNDLE))
+    for name in BUNDLE_VARS:
+        if name not in names:
+            env.append(f"{name}={CONTAINER_BUNDLE}")
+            continue
+        path = env[names[name]].partition("=")[2]
+        if path != CONTAINER_BUNDLE and not merger.merge(path):
+            env[names[name]] = f"{name}={CONTAINER_BUNDLE}"
+
+    if os.path.isfile(STORE):
+        merger.mounts.append(mount(STORE, CONTAINER_STORE))
+        if JAVA_VAR in names:
+            i = names[JAVA_VAR]
+            env[i] = f"{JAVA_VAR}={with_java_options(env[i].partition('=')[2])}"
+        else:
+            env.append(f"{JAVA_VAR}={with_java_options('')}")
+
+    config["mounts"].extend(merger.mounts)
+    stubs = (stubs_of(merger.rootfs, entry["destination"]) for entry in merger.mounts)
+    return list(dict.fromkeys(stub for paths in stubs for stub in paths))
+
+
+def edit(bundle):
+    """Edits the bundle's config.json in place, by replacing it with an edited copy, and
+    returns the paths runc creates in the root filesystem for the new mounts."""
+    path = os.path.join(bundle, "config.json")
+    with open(path) as file:
+        config = json.load(file)
+    stubs = trust_ca(config, bundle)
+    with open(path + ".firebrick", "w") as file:
+        json.dump(config, file)
+    os.replace(path + ".firebrick", path)
+    return stubs
+
+
+def remove_stubs(stubs):
+    """Removes the empty files and directories runc created to mount at, children first, so a
+    `docker build` step doesn't leave them in the image's layer."""
+    for stub in reversed(stubs):
+        try:
+            if os.path.isdir(stub) and not os.path.islink(stub):
+                os.rmdir(stub)
+            elif os.path.isfile(stub) and not os.path.islink(stub) and os.path.getsize(stub) == 0:
+                os.unlink(stub)
+        except OSError:
+            pass
+
+
+def run_and_clean(args, stubs):
+    """Runs runc until the container exits, passing on the signals the wrapper gets, removes
+    the stubs and returns runc's exit code."""
+    child = subprocess.Popen([RUNC] + args)
+    for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(number, lambda received, _: child.send_signal(received))
+    code = child.wait()
+    remove_stubs(stubs)
+    return code if code >= 0 else 128 - code
+
+
+def main():
+    args = sys.argv[1:]
+    command = command_of(args)
+    stubs = []
+    if command is not None and os.path.isfile(CA) and os.path.isfile(BUNDLE):
+        # Whatever goes wrong, the container starts as it would without the wrapper.
+        try:
+            stubs = edit(bundle_dir(command[1]))
+        except Exception as err:
+            print(f"firebrick-runc: the container doesn't trust the TLS interception CA: {err}",
+                  file=sys.stderr)
+    # BuildKit runs each `docker build` step with a foreground `runc run` and saves the root
+    # filesystem as the step's layer after it returns, so the stubs go before that.
+    if stubs and command[0] == "run" and not {"-d", "--detach"} & set(command[1]):
+        sys.exit(run_and_clean(args, stubs))
+    os.execv(RUNC, [RUNC] + args)
+
+
+main()

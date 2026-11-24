@@ -579,6 +579,68 @@ its well-known password protects nothing secret and the store widens no trust
   `UpgradeSandbox` fbkd only logs the reason, because the change itself
   succeeded; the next `fbk start` or `fbk run` reports it.
 
+### Trusting the interception CA in Docker containers
+
+Containers that Docker or Testcontainers starts in a sandbox with TLS
+interception have their own files and environment, but their HTTPS still leaves
+through the VM's network and is intercepted. The base image registers
+`/usr/local/sbin/firebrick-runc` as Docker's default runtime in
+`/etc/docker/daemon.json`, and `containerd-shim-runc-v2` calls it with runc's
+arguments once the container's `config.json` and root filesystem are ready (ADR
+0068). The BuildKit builder in `dockerd` runs `docker build` steps with `runc
+run` itself, using the `runc` on its `PATH`, so the image also links the script
+as `/usr/local/sbin/runc`, which comes before `/usr/bin/runc`. On `create` and
+`run`, while `/.msb/tls/ca.pem` exists, which microsandbox writes only with TLS
+interception, it edits `config.json` and then runs `/usr/bin/runc` with the same
+arguments:
+
+1. It mounts Firebrick's bundle read-only at
+   `/etc/firebrick/ca-certificates.crt`. When the image has a system bundle, the
+   first of `/etc/ssl/certs/ca-certificates.crt`,
+   `/etc/pki/tls/certs/ca-bundle.crt` and `/etc/ssl/ca-bundle.pem`, the script
+   writes it, followed by `/.msb/tls/ca.pem`, to `firebrick-ca-<n>.pem` in the
+   container's bundle directory and mounts that, so CAs the image added itself
+   keep working; otherwise it mounts the guest's
+   `/etc/ssl/certs/ca-certificates.crt`. It leaves the image's system bundle
+   alone, so a container that rebuilds it still can.
+2. For each of `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` and
+   `NODE_EXTRA_CA_CERTS`: a variable the container doesn't set points at
+   Firebrick's bundle. A variable the image or `docker run -e` sets keeps its
+   value; the script writes the file it names, followed by the CA, to another
+   `firebrick-ca-<n>.pem` and mounts that read-only over the file, and a file
+   that two variables name is merged once. It reads the file from the innermost
+   of Docker's bind mounts that holds the path, as a regular file without
+   symlinks below the mount's source, or, when no mount holds it, from the
+   image, resolving its symlinks as the container sees them: an absolute target
+   starts at the container's root filesystem and `..` stops there, so a link
+   never leads to a file of the VM. When the container has no such file, or the
+   variable has no value, it points at Firebrick's bundle instead.
+3. When fbkd has built the Java trust store, it mounts it read-only at
+   `/etc/firebrick/firebrick.p12` and adds
+   `-Djavax.net.ssl.trustStore=/etc/firebrick/firebrick.p12
+   -Djavax.net.ssl.trustStorePassword=changeit` to `JAVA_TOOL_OPTIONS`, after
+   the container's own options, unless those set a trust store.
+
+For a foreground `run`, the script runs runc as a child process, passes on the
+signals it gets and runc's exit code, and then removes the empty files and
+directories runc created in the root filesystem to mount at, such as
+`/etc/firebrick`, so BuildKit doesn't save them in the step's layer. It skips a
+path when part of it is a symlink. For `create` and a detached `run` it replaces
+itself with runc, and the mount points stay in the container's writable layer.
+
+Without TLS interception, and for every other runc command, the script passes
+the arguments on unchanged. The network policy still applies to the containers'
+connections, so a host the policy doesn't allow gets the same `403` or reset as
+in the VM.
+
+- The edit fails for any reason, for example because `config.json` isn't JSON:
+  the script writes `firebrick-runc: the container doesn't trust the TLS
+  interception CA: <reason>` to stderr, which ends up in `/var/log/dockerd.log`,
+  and the container starts without the CA.
+- `docker exec` sessions get the mounts, but not the variables. A builder of
+  another driver, such as `docker buildx create --driver docker-container`, runs
+  its own runc, so its build steps don't trust the CA.
+
 ### Setting environment variables
 
 The `env` map in `.firebrick.yml` gives every process in the sandbox plain

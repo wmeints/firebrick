@@ -56,3 +56,6 @@ socket without `sudo`.
   downloads from `download.docker.com`.
 - Images and containers live on the sandbox's data disk, so they survive `fbk
   stop` and `fbk start`.
+- With TLS interception, containers trust the interception CA through the runc
+  wrapper that `daemon.json` makes Docker's default runtime (see
+  [ADR 0068](0068-trust-the-interception-ca-in-docker-containers-through-a-runc-wrapper.md)).
