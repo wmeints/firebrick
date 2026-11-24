@@ -21,17 +21,23 @@ Docker has no daemon-wide setting that adds mounts or environment variables to
 every container. It does let `daemon.json` name another OCI runtime as the
 default, which `containerd-shim-runc-v2` calls instead of `runc` with the same
 arguments, after it has written the container's `config.json` and mounted its
-root filesystem.
+root filesystem. The BuildKit builder in `dockerd` doesn't use that runtime for
+`docker build` steps: it runs `runc --log ... run --bundle <dir> --keep <id>`
+itself, with the `runc` it finds on its `PATH`, and saves the step's root
+filesystem as a layer once `runc run` returns.
 
 ## Decision
 
 The base image installs `/usr/local/sbin/firebrick-runc`, a Python script, and
 registers it as Docker's default runtime `firebrick` in
-`/etc/docker/daemon.json`. It's always on; there's no setting.
+`/etc/docker/daemon.json`. It also links it as `/usr/local/sbin/runc`, which
+comes before `/usr/bin/runc` on `dockerd`'s `PATH`, so BuildKit runs build steps
+through it too. It's always on; there's no setting.
 
-On `create`, while `/.msb/tls/ca.pem` exists, which microsandbox writes only for
-a sandbox with TLS interception, the script edits the container's `config.json`
-before it runs `/usr/bin/runc` with the same arguments:
+On `create` and `run`, while `/.msb/tls/ca.pem` exists, which microsandbox
+writes only for a sandbox with TLS interception, the script edits the
+container's `config.json` before it runs `/usr/bin/runc` with the same
+arguments:
 
 - It mounts a bundle read-only at `/etc/firebrick/ca-certificates.crt`: the
   image's own system bundle (`/etc/ssl/certs/ca-certificates.crt`,
@@ -55,6 +61,13 @@ before it runs `/usr/bin/runc` with the same arguments:
   built it, and adds it to `JAVA_TOOL_OPTIONS`, after the container's own
   options, unless they set `-Djavax.net.ssl.trustStore=` themselves.
 
+runc creates the files and directories it mounts at, such as `/etc/firebrick`,
+in the root filesystem. For a foreground `run`, which BuildKit uses, the script
+runs runc as a child process, passes on the signals it gets and runc's exit
+code, and removes the empty mount points it caused before it returns, so they
+don't end up in the step's layer. For `create` and a detached `run` it replaces
+itself with runc.
+
 When the edit fails for any reason, the script writes the reason to stderr,
 which ends up in `/var/log/dockerd.log`, and the container starts without the
 CA. All other runc commands, and every command without TLS interception, pass
@@ -68,8 +81,12 @@ through unchanged.
   already does.
 - `docker exec` sessions get the mounts but not the variables, because Docker
   builds their environment from its own container config.
-- `docker build` `RUN` steps don't go through the default runtime, so they don't
-  trust the CA.
+- `docker build` `RUN` steps trust the CA while they run, and the image keeps
+  neither the mounts nor the variables. A builder of another driver, such as
+  `docker buildx create --driver docker-container`, runs its own runc and
+  doesn't.
+- A container that Docker starts keeps the empty mount points in its writable
+  layer, so `docker diff` lists `/etc/firebrick` and `docker commit` saves it.
 - Programs with a built-in CA store, or that read only the image's system bundle
   and ignore the variables, still fail.
 - Every container start runs a Python script in front of runc, also without TLS

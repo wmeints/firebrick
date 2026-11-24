@@ -321,8 +321,11 @@ RUN ln -s /usr/local/bin/firebrick-clipboard /usr/local/bin/wl-paste \
 # that the guest trusts, and every HTTPS request in them would fail. firebrick-runc runs in
 # place of runc as Docker's default runtime and, in a sandbox with TLS interception, mounts the
 # guest's CA bundle and Java trust store into each container and points the usual CA variables
-# and JAVA_TOOL_OPTIONS at them (ADR 0068). The build fails when dockerd can't use the config.
+# and JAVA_TOOL_OPTIONS at them (ADR 0068). BuildKit runs `docker build` steps with the `runc` on
+# dockerd's PATH instead of the default runtime, so the script is also /usr/local/sbin/runc,
+# which comes before /usr/bin/runc. The build fails when dockerd can't use the config.
 COPY --chmod=755 image/firebrick-runc /usr/local/sbin/firebrick-runc
+RUN ln -s firebrick-runc /usr/local/sbin/runc
 COPY <<EOF /etc/docker/daemon.json
 {
   "runtimes": { "firebrick": { "path": "/usr/local/sbin/firebrick-runc" } },

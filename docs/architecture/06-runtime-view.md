@@ -587,9 +587,12 @@ through the VM's network and is intercepted. The base image registers
 `/usr/local/sbin/firebrick-runc` as Docker's default runtime in
 `/etc/docker/daemon.json`, and `containerd-shim-runc-v2` calls it with runc's
 arguments once the container's `config.json` and root filesystem are ready (ADR
-0068). On `create`, while `/.msb/tls/ca.pem` exists, which microsandbox writes
-only with TLS interception, it edits `config.json` and then runs `/usr/bin/runc`
-with the same arguments:
+0068). The BuildKit builder in `dockerd` runs `docker build` steps with `runc
+run` itself, using the `runc` on its `PATH`, so the image also links the script
+as `/usr/local/sbin/runc`, which comes before `/usr/bin/runc`. On `create` and
+`run`, while `/.msb/tls/ca.pem` exists, which microsandbox writes only with TLS
+interception, it edits `config.json` and then runs `/usr/bin/runc` with the same
+arguments:
 
 1. It mounts Firebrick's bundle read-only at
    `/etc/firebrick/ca-certificates.crt`. When the image has a system bundle, the
@@ -618,6 +621,13 @@ with the same arguments:
    -Djavax.net.ssl.trustStorePassword=changeit` to `JAVA_TOOL_OPTIONS`, after
    the container's own options, unless those set a trust store.
 
+For a foreground `run`, the script runs runc as a child process, passes on the
+signals it gets and runc's exit code, and then removes the empty files and
+directories runc created in the root filesystem to mount at, such as
+`/etc/firebrick`, so BuildKit doesn't save them in the step's layer. It skips a
+path when part of it is a symlink. For `create` and a detached `run` it replaces
+itself with runc, and the mount points stay in the container's writable layer.
+
 Without TLS interception, and for every other runc command, the script passes
 the arguments on unchanged. The network policy still applies to the containers'
 connections, so a host the policy doesn't allow gets the same `403` or reset as
@@ -627,8 +637,9 @@ in the VM.
   the script writes `firebrick-runc: the container doesn't trust the TLS
   interception CA: <reason>` to stderr, which ends up in `/var/log/dockerd.log`,
   and the container starts without the CA.
-- `docker exec` sessions get the mounts, but not the variables, and `docker
-  build` `RUN` steps don't use the default runtime, so they don't trust the CA.
+- `docker exec` sessions get the mounts, but not the variables. A builder of
+  another driver, such as `docker buildx create --driver docker-container`, runs
+  its own runc, so its build steps don't trust the CA.
 
 ### Setting environment variables
 

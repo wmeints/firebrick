@@ -3,8 +3,10 @@
 
 In a sandbox with TLS interception, microsandbox writes its CA to /.msb/tls/ca.pem and adds it
 to the guest's system bundle, but a container has its own files and environment, so every HTTPS
-request in it would fail the certificate check. On `create`, while /.msb/tls/ca.pem exists, this
-edits the container's config.json before it runs runc with the same arguments:
+request in it would fail the certificate check. Docker runs containers through this script as
+its default runtime, and BuildKit runs `docker build` steps through it as the `runc` on dockerd's
+PATH. On `create` and `run`, while /.msb/tls/ca.pem exists, this edits the container's
+config.json before it runs runc with the same arguments:
 
 - It mounts a bundle read-only at /etc/firebrick/ca-certificates.crt: the image's own system
   bundle with the CA appended, or the guest's system bundle when the image has none. It points
@@ -16,12 +18,16 @@ edits the container's config.json before it runs runc with the same arguments:
 - It mounts the Java trust store fbkd builds, when it exists, at /etc/firebrick/firebrick.p12
   and adds it to JAVA_TOOL_OPTIONS, unless that sets a store of its own.
 
-A failed edit is reported on stderr, which ends up in /var/log/dockerd.log, and the container
-starts without the CA (ADR 0068).
+A foreground `run`, which BuildKit uses for build steps, runs runc as a child and then removes
+the empty files and directories runc created to mount at, so they don't end up in the image. A
+failed edit is reported on stderr, which ends up in /var/log/dockerd.log or the build output,
+and the container starts without the CA (ADR 0068).
 """
 
 import json
 import os
+import signal
+import subprocess
 import sys
 
 RUNC = "/usr/bin/runc"
@@ -45,11 +51,15 @@ TRUST_STORE_OPTIONS = (
 )
 
 
-def bundle_dir(args):
-    """Returns the bundle directory of a `create` command, or None for other commands."""
-    if "create" not in args:
-        return None
-    rest = args[args.index("create") + 1:]
+def command_of(args):
+    """Returns the runc command, `create` or `run`, that starts a container from a bundle,
+    with the arguments after it, or None for other commands."""
+    command = next((arg for arg in args if arg in ("create", "run")), None)
+    return None if command is None else (command, args[args.index(command) + 1:])
+
+
+def bundle_dir(rest):
+    """Returns the bundle directory in the arguments of `create` or `run`."""
     for i, arg in enumerate(rest):
         if arg in ("--bundle", "-b") and i + 1 < len(rest):
             return rest[i + 1]
@@ -57,6 +67,21 @@ def bundle_dir(args):
             if arg.startswith(prefix):
                 return arg[len(prefix):]
     return "."
+
+
+def stubs_of(rootfs, destination):
+    """Returns the paths in the VM of the directories and the file runc creates in the root
+    filesystem to mount at `destination`, parents first, or no paths when a part of it is a
+    symlink, which runc resolves inside the root filesystem but removing them wouldn't."""
+    stubs = []
+    path = rootfs
+    for part in destination.strip("/").split("/"):
+        path = os.path.join(path, part)
+        if os.path.islink(path):
+            return []
+        if not os.path.lexists(path):
+            stubs.append(path)
+    return stubs
 
 
 def mount(source, destination):
@@ -173,7 +198,8 @@ class Merger:
 
 
 def trust_ca(config, bundle):
-    """Adds the mounts and variables that let the container trust the interception CA."""
+    """Adds the mounts and variables that let the container trust the interception CA, and
+    returns the paths runc creates in the root filesystem to mount them at."""
     config.setdefault("mounts", [])
     env = config.setdefault("process", {}).setdefault("env", [])
     names = {var.partition("=")[0]: i for i, var in enumerate(env)}
@@ -198,29 +224,62 @@ def trust_ca(config, bundle):
             env.append(f"{JAVA_VAR}={with_java_options('')}")
 
     config["mounts"].extend(merger.mounts)
+    stubs = (stubs_of(merger.rootfs, entry["destination"]) for entry in merger.mounts)
+    return list(dict.fromkeys(stub for paths in stubs for stub in paths))
 
 
 def edit(bundle):
-    """Edits the bundle's config.json in place, by replacing it with an edited copy."""
+    """Edits the bundle's config.json in place, by replacing it with an edited copy, and
+    returns the paths runc creates in the root filesystem for the new mounts."""
     path = os.path.join(bundle, "config.json")
     with open(path) as file:
         config = json.load(file)
-    trust_ca(config, bundle)
+    stubs = trust_ca(config, bundle)
     with open(path + ".firebrick", "w") as file:
         json.dump(config, file)
     os.replace(path + ".firebrick", path)
+    return stubs
+
+
+def remove_stubs(stubs):
+    """Removes the empty files and directories runc created to mount at, children first, so a
+    `docker build` step doesn't leave them in the image's layer."""
+    for stub in reversed(stubs):
+        try:
+            if os.path.isdir(stub) and not os.path.islink(stub):
+                os.rmdir(stub)
+            elif os.path.isfile(stub) and not os.path.islink(stub) and os.path.getsize(stub) == 0:
+                os.unlink(stub)
+        except OSError:
+            pass
+
+
+def run_and_clean(args, stubs):
+    """Runs runc until the container exits, passing on the signals the wrapper gets, removes
+    the stubs and returns runc's exit code."""
+    child = subprocess.Popen([RUNC] + args)
+    for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(number, lambda received, _: child.send_signal(received))
+    code = child.wait()
+    remove_stubs(stubs)
+    return code if code >= 0 else 128 - code
 
 
 def main():
     args = sys.argv[1:]
-    bundle = bundle_dir(args)
-    if bundle is not None and os.path.isfile(CA) and os.path.isfile(BUNDLE):
+    command = command_of(args)
+    stubs = []
+    if command is not None and os.path.isfile(CA) and os.path.isfile(BUNDLE):
         # Whatever goes wrong, the container starts as it would without the wrapper.
         try:
-            edit(bundle)
+            stubs = edit(bundle_dir(command[1]))
         except Exception as err:
             print(f"firebrick-runc: the container doesn't trust the TLS interception CA: {err}",
                   file=sys.stderr)
+    # BuildKit runs each `docker build` step with a foreground `runc run` and saves the root
+    # filesystem as the step's layer after it returns, so the stubs go before that.
+    if stubs and command[0] == "run" and not {"-d", "--detach"} & set(command[1]):
+        sys.exit(run_and_clean(args, stubs))
     os.execv(RUNC, [RUNC] + args)
 
 

@@ -5914,14 +5914,24 @@ const RUNC_WRAPPER: &[u8] = include_bytes!("../../../image/firebrick-runc");
 /// to it at `/link.pem`, and a relative symlink at `/escape.pem` that climbs to `/etc/hostname`,
 /// which only the VM has; with the `system` flag in `$3` it also has a system bundle. A volume
 /// with a CA bundle sits at `/tmp/volume`. The Java trust store exists unless `$3` has the
-/// `nostore` flag. Prints the arguments runc got, then the container's variables and mounts, or
-/// the file itself when it isn't JSON anymore, and what each merged bundle holds before the CA.
+/// `nostore` flag. Like the real runc, the fake creates the mount points in `/etc/firebrick` on
+/// `run`, and then it exits with 3. Prints the arguments runc got and its exit code unless it's
+/// 0, then the container's variables and mounts, or the file itself when it isn't JSON
+/// anymore, what each merged bundle holds before the CA, and `stubs left` when the mount
+/// points are still there.
 const RUNC_CREATE_SCRIPT: &str = r#"set -e
 cat > /usr/local/sbin/firebrick-runc
 chmod 755 /usr/local/sbin/firebrick-runc
 cat > /usr/bin/runc <<'RUNC'
 #!/bin/sh
 echo "$*" > /tmp/runc-args
+case " $* " in
+  *" run "*)
+    mkdir -p /tmp/bundle/rootfs/etc/firebrick
+    : > /tmp/bundle/rootfs/etc/firebrick/ca-certificates.crt
+    : > /tmp/bundle/rootfs/etc/firebrick/firebrick.p12
+    exit 3 ;;
+esac
 RUNC
 chmod 755 /usr/bin/runc
 store=/etc/ssl/certs/java/firebrick.p12
@@ -5941,8 +5951,10 @@ case " $3 " in
     printf 'SYSTEM CA' > /tmp/bundle/rootfs/etc/ssl/certs/ca-certificates.crt ;;
 esac
 printf '%s' "$1" > /tmp/bundle/config.json
-/usr/local/sbin/firebrick-runc --root /run/runc $2 ctr
+code=0
+/usr/local/sbin/firebrick-runc --root /run/runc $2 ctr || code=$?
 cat /tmp/runc-args
+[ "$code" = 0 ] || echo "exit $code"
 python3 - <<'PY'
 import json
 import os
@@ -5961,6 +5973,7 @@ for mount in config.get("mounts", []):
         own = content[: -len(ca)].strip() if ca and content.endswith(ca) else "without the CA"
         print("merged:", own)
 PY
+[ ! -e /tmp/bundle/rootfs/etc/firebrick ] || echo "stubs left"
 "#;
 
 /// A container's config with its own `JAVA_TOOL_OPTIONS`, `CURL_CA_BUNDLE` and `SSL_CERT_FILE`
@@ -6063,6 +6076,8 @@ async fn runc_wrapper_lets_containers_trust_the_tls_interception_ca() {
         (OWN_STORE_CONFIG, "create -b=/tmp/bundle", ""),
         (VOLUME_CONFIG, "create -b /tmp/bundle", "nostore"),
         (CONTAINER_CONFIG, "start --bundle /tmp/bundle", ""),
+        (CONTAINER_CONFIG, "run --bundle /tmp/bundle", "system"),
+        (CONTAINER_CONFIG, "run -d --bundle /tmp/bundle", "system"),
     ];
     let outputs = runc_create(name, true, &cases).await;
 
@@ -6130,6 +6145,14 @@ async fn runc_wrapper_lets_containers_trust_the_tls_interception_ca() {
     // Other runc commands leave the config alone.
     let start = runc_args("start --bundle /tmp/bundle");
     assert_eq!(lines_of(&outputs[4].0), unchanged_container(&start));
+    // A foreground `run`, as BuildKit runs build steps, gets the same edits, passes on runc's
+    // exit code and removes the mount points runc created before the step's layer is saved.
+    let mut ran = trusting.to_vec();
+    ran[0] = runc_args("run --bundle /tmp/bundle");
+    ran.insert(1, "exit 3".to_string());
+    assert_eq!(lines_of(&outputs[5].0), ran);
+    // A detached container still uses them.
+    assert_eq!(lines_of(&outputs[6].0).last(), Some(&"stubs left"));
 }
 
 #[tokio::test]

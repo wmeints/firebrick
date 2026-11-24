@@ -74,10 +74,11 @@ Keep in mind that:
   instead. When the sandbox has the Java trust store, Docker mounts it at
   `/etc/firebrick/firebrick.p12` and adds it to `JAVA_TOOL_OPTIONS`, unless the
   container sets a `-Djavax.net.ssl.trustStore=` of its own. `docker exec`
-  sessions don't get the variables, `docker build` `RUN` steps don't trust the
-  certificate authority, and programs that read only the image's system bundle
-  don't either. A sandbox on an older `firebrick-base` image gets this with `fbk
-  upgrade`, which removes its Docker images and containers.
+  `docker build` `RUN` steps trust it too, and the built image keeps none of
+  this. `docker exec` sessions don't get the variables, and programs that read
+  only the image's system bundle don't trust the certificate authority. A
+  sandbox on an older `firebrick-base` image gets this with `fbk upgrade`, which
+  removes its Docker images and containers.
 - A secret's allowed hosts must be allowed by the network rules too. See
   [Secrets](/docs/secrets/).
 - `mise install` downloads its tools when the sandbox starts, so allow the hosts
