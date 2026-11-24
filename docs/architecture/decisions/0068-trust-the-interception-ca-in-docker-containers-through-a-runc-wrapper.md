@@ -33,26 +33,32 @@ On `create`, while `/.msb/tls/ca.pem` exists, which microsandbox writes only for
 a sandbox with TLS interception, the script edits the container's `config.json`
 before it runs `/usr/bin/runc` with the same arguments:
 
-- It mounts the guest's `/etc/ssl/certs/ca-certificates.crt` read-only at
-  `/etc/firebrick/ca-certificates.crt`, and the Java trust store at
-  `/etc/firebrick/firebrick.p12` when fbkd has built it.
+- It mounts a bundle read-only at `/etc/firebrick/ca-certificates.crt`: the
+  image's own system bundle (`/etc/ssl/certs/ca-certificates.crt`,
+  `/etc/pki/tls/certs/ca-bundle.crt` or `/etc/ssl/ca-bundle.pem`) with the CA
+  appended, so CAs the image added with `update-ca-certificates` keep working,
+  or the guest's system bundle when the image has none. It doesn't mount over
+  the image's system bundle itself, so a container that rebuilds it still can.
 - It sets `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` and
-  `NODE_EXTRA_CA_CERTS` to the mounted bundle when the container doesn't set
-  them.
+  `NODE_EXTRA_CA_CERTS` to that bundle when the container doesn't set them.
 - A CA variable that the image or `docker run -e` sets keeps its value, because
   images such as `curlimages/curl` point it at their own bundle and other CAs in
   it, for example for TLS between containers, should keep working. The script
   writes a copy of that file with the CA appended into the container's bundle
-  directory and mounts it read-only over the file. It resolves symlinks inside
-  the container's root filesystem, as the container sees them, so it never reads
-  a file of the VM. When the container has no such file, the variable points at
-  the guest's bundle instead.
-- It adds the trust store options to `JAVA_TOOL_OPTIONS`, after the container's
-  own options, unless they set `-Djavax.net.ssl.trustStore=` themselves.
+  directory and mounts it read-only over the file. It reads the file from the
+  bind mount or volume that holds it, when one does, and otherwise from the
+  image, resolving symlinks inside the container's root filesystem as the
+  container sees them, so it never reads a file of the VM the container doesn't
+  have. When the container has no such file, the variable points at
+  `/etc/firebrick/ca-certificates.crt` instead.
+- It mounts the Java trust store at `/etc/firebrick/firebrick.p12` when fbkd has
+  built it, and adds it to `JAVA_TOOL_OPTIONS`, after the container's own
+  options, unless they set `-Djavax.net.ssl.trustStore=` themselves.
 
-When the edit fails, the script writes the reason to stderr, which ends up in
-`/var/log/dockerd.log`, and the container starts without the CA. All other runc
-commands, and every command without TLS interception, pass through unchanged.
+When the edit fails for any reason, the script writes the reason to stderr,
+which ends up in `/var/log/dockerd.log`, and the container starts without the
+CA. All other runc commands, and every command without TLS interception, pass
+through unchanged.
 
 ## Consequences
 
@@ -64,9 +70,14 @@ commands, and every command without TLS interception, pass through unchanged.
   builds their environment from its own container config.
 - `docker build` `RUN` steps don't go through the default runtime, so they don't
   trust the CA.
-- Programs with a built-in CA store, or that read only a system bundle at a path
-  the variables don't cover, still fail.
+- Programs with a built-in CA store, or that read only the image's system bundle
+  and ignore the variables, still fail.
 - Every container start runs a Python script in front of runc, also without TLS
   interception.
-- A sandbox created from an older image gets the wrapper with `fbk upgrade`.
+- A sandbox on an older default `firebrick-base` image gets the wrapper with
+  `fbk upgrade`, which also removes its Docker images and containers. A sandbox
+  whose spec pins an older `image` keeps that image and doesn't get it.
+- A CA file in the image's system bundle path, read by a program that ignores
+  the variables, doesn't get the CA, because mounting over it would break
+  containers that rebuild it.
 - Custom images that don't install the wrapper keep the old behavior.

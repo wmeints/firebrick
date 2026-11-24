@@ -4,14 +4,20 @@
 In a sandbox with TLS interception, microsandbox writes its CA to /.msb/tls/ca.pem and adds it
 to the guest's system bundle, but a container has its own files and environment, so every HTTPS
 request in it would fail the certificate check. On `create`, while /.msb/tls/ca.pem exists, this
-edits the container's config.json: it mounts the guest's system bundle, and the Java trust store
-fbkd builds when it exists, read-only into /etc/firebrick, points SSL_CERT_FILE,
-REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE and NODE_EXTRA_CA_CERTS at the bundle when the container
-doesn't set them, and adds the trust store to JAVA_TOOL_OPTIONS unless that sets a store of its
-own. A CA variable the image or `docker run -e` sets keeps its value, and a copy of the file it
-names with the CA appended is mounted read-only over that file. It then runs runc with the same
-arguments. A failed edit is reported on stderr, which ends up in /var/log/dockerd.log, and the
-container starts without the CA (ADR 0068).
+edits the container's config.json before it runs runc with the same arguments:
+
+- It mounts a bundle read-only at /etc/firebrick/ca-certificates.crt: the image's own system
+  bundle with the CA appended, or the guest's system bundle when the image has none. It points
+  SSL_CERT_FILE, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE and NODE_EXTRA_CA_CERTS at it when the
+  container doesn't set them.
+- A CA variable the image or `docker run -e` sets keeps its value, and a copy of the file it
+  names, from the image or from a mount, with the CA appended is mounted read-only over that
+  file. When the container has no such file, the variable points at /etc/firebrick instead.
+- It mounts the Java trust store fbkd builds, when it exists, at /etc/firebrick/firebrick.p12
+  and adds it to JAVA_TOOL_OPTIONS, unless that sets a store of its own.
+
+A failed edit is reported on stderr, which ends up in /var/log/dockerd.log, and the container
+starts without the CA (ADR 0068).
 """
 
 import json
@@ -24,6 +30,12 @@ BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
 STORE = "/etc/ssl/certs/java/firebrick.p12"
 CONTAINER_BUNDLE = "/etc/firebrick/ca-certificates.crt"
 CONTAINER_STORE = "/etc/firebrick/firebrick.p12"
+# Where Debian, Ubuntu and Alpine, RHEL and Fedora, and SUSE keep their system bundle.
+SYSTEM_BUNDLES = (
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
+)
 BUNDLE_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS")
 JAVA_VAR = "JAVA_TOOL_OPTIONS"
 MAX_LINKS = 40
@@ -54,19 +66,17 @@ def mount(source, destination):
 
 def with_java_options(value):
     """Returns the value with the trust store options at its end, unless it sets a store."""
-    if value is None or not value.strip():
+    if not value.strip():
         return TRUST_STORE_OPTIONS
     if TRUST_STORE_PROPERTY in value:
         return value
     return f"{value.strip()} {TRUST_STORE_OPTIONS}"
 
 
-def container_file(rootfs, path):
-    """Returns the path of the container's regular file at the absolute `path`, with its
+def rootfs_file(rootfs, path):
+    """Returns the container path of the image's regular file at the absolute `path`, with its
     symlinks resolved as the container sees them: an absolute target starts at the root
     filesystem, and `..` stops there. Returns None when there is no such file."""
-    if not os.path.isabs(path):
-        return None
     parts = path.split("/")
     resolved = []
     links = 0
@@ -91,53 +101,103 @@ def container_file(rootfs, path):
     return file if os.path.isfile(os.path.join(rootfs, *resolved)) else None
 
 
-def merged_bundle(bundle, rootfs, path, mounts):
-    """Mounts a copy of the container's bundle at `path` with the CA appended over it, and
-    returns whether it could. A file that is mounted already is merged only once."""
-    file = container_file(rootfs, path)
-    if file is None:
-        return False
-    if any(mount["destination"] == file for mount in mounts):
+def covering_mount(mounts, path):
+    """Returns the innermost of Docker's mounts that holds the container path `path`, or
+    None when the path is in the image."""
+    covering = None
+    for entry in mounts:
+        destination = os.path.normpath(entry.get("destination") or "/")
+        inside = path == destination or path.startswith(destination.rstrip("/") + "/")
+        if inside and (covering is None or len(destination) > len(covering[0])):
+            covering = (destination, entry)
+    return covering
+
+
+def mounted_file(destination, entry, path):
+    """Returns where the file at `path` in a bind mount at `destination` is in the VM, when
+    it's a regular file without symlinks below the mount's source, or None otherwise."""
+    if entry.get("type") != "bind" or not entry.get("source"):
+        return None
+    root = os.path.realpath(entry["source"])
+    source = os.path.normpath(os.path.join(root, os.path.relpath(path, destination)))
+    return source if os.path.realpath(source) == source and os.path.isfile(source) else None
+
+
+def vm_file(config, rootfs, path):
+    """Returns the container path the file at `path` is at, and where it is in the VM, from
+    Docker's mounts or the image, or None when the container has no such regular file."""
+    if not os.path.isabs(path):
+        return None
+    path = os.path.normpath(path)
+    covering = covering_mount(config["mounts"], path)
+    if covering is not None:
+        source = mounted_file(*covering, path)
+        return None if source is None else (path, source)
+    file = rootfs_file(rootfs, path)
+    return None if file is None else (file, os.path.join(rootfs, file.lstrip("/")))
+
+
+class Merger:
+    """Writes copies of the container's bundles with the CA appended into the bundle directory
+    and mounts them, each file once."""
+
+    def __init__(self, config, bundle):
+        self.config = config
+        self.bundle = bundle
+        self.rootfs = os.path.join(bundle, config.get("root", {}).get("path", "rootfs"))
+        with open(CA, "rb") as file:
+            self.ca = file.read()
+        self.merged = set()
+        self.mounts = []
+
+    def merge(self, path, destination=None):
+        """Mounts the merged copy of the file at `path` over that file, or at `destination`,
+        and returns whether the container has that file."""
+        found = vm_file(self.config, self.rootfs, path)
+        if found is None:
+            return False
+        file, source = found
+        destination = destination or file
+        if destination in self.merged:
+            return True
+        with open(source, "rb") as own_file:
+            own = own_file.read()
+        merged = os.path.join(self.bundle, f"firebrick-ca-{len(self.merged)}.pem")
+        with open(merged, "wb") as target:
+            target.write(own if own.endswith(b"\n") or not own else own + b"\n")
+            target.write(self.ca)
+        os.chmod(merged, 0o644)
+        self.merged.add(destination)
+        self.mounts.append(mount(merged, destination))
         return True
-    with open(os.path.join(rootfs, file.lstrip("/")), "rb") as source:
-        own = source.read()
-    with open(CA, "rb") as source:
-        ca = source.read()
-    merged = os.path.join(bundle, f"firebrick-ca-{len(mounts)}.pem")
-    with open(merged, "wb") as target:
-        target.write(own if own.endswith(b"\n") or not own else own + b"\n")
-        target.write(ca)
-    os.chmod(merged, 0o644)
-    mounts.append(mount(merged, file))
-    return True
 
 
 def trust_ca(config, bundle):
-    """Adds the mounts and variables that let the container trust the interception CA. A CA
-    variable the container sets keeps its value, and the file it names gets the CA appended;
-    when the container has no such file, the variable points at the guest's bundle instead."""
-    mounts = config.setdefault("mounts", [])
-    process = config.setdefault("process", {})
-    env = process.setdefault("env", [])
-    rootfs = os.path.join(bundle, config.get("root", {}).get("path", "rootfs"))
-    names = {var.split("=", 1)[0]: i for i, var in enumerate(env)}
+    """Adds the mounts and variables that let the container trust the interception CA."""
+    config.setdefault("mounts", [])
+    env = config.setdefault("process", {}).setdefault("env", [])
+    names = {var.partition("=")[0]: i for i, var in enumerate(env)}
+    merger = Merger(config, bundle)
 
-    mounts.append(mount(BUNDLE, CONTAINER_BUNDLE))
+    if not any(merger.merge(path, CONTAINER_BUNDLE) for path in SYSTEM_BUNDLES):
+        merger.mounts.append(mount(BUNDLE, CONTAINER_BUNDLE))
     for name in BUNDLE_VARS:
         if name not in names:
             env.append(f"{name}={CONTAINER_BUNDLE}")
             continue
-        path = env[names[name]].split("=", 1)[1]
-        if path != CONTAINER_BUNDLE and not merged_bundle(bundle, rootfs, path, mounts):
+        path = env[names[name]].partition("=")[2]
+        if path != CONTAINER_BUNDLE and not merger.merge(path):
             env[names[name]] = f"{name}={CONTAINER_BUNDLE}"
 
     if os.path.isfile(STORE):
-        mounts.append(mount(STORE, CONTAINER_STORE))
+        merger.mounts.append(mount(STORE, CONTAINER_STORE))
         if JAVA_VAR in names:
             i = names[JAVA_VAR]
-            env[i] = f"{JAVA_VAR}={with_java_options(env[i].split('=', 1)[1])}"
+            env[i] = f"{JAVA_VAR}={with_java_options(env[i].partition('=')[2])}"
         else:
-            env.append(f"{JAVA_VAR}={with_java_options(None)}")
+            env.append(f"{JAVA_VAR}={with_java_options('')}")
+
+    config["mounts"].extend(merger.mounts)
 
 
 def edit(bundle):
@@ -155,9 +215,10 @@ def main():
     args = sys.argv[1:]
     bundle = bundle_dir(args)
     if bundle is not None and os.path.isfile(CA) and os.path.isfile(BUNDLE):
+        # Whatever goes wrong, the container starts as it would without the wrapper.
         try:
             edit(bundle)
-        except (OSError, ValueError, AttributeError, TypeError) as err:
+        except Exception as err:
             print(f"firebrick-runc: the container doesn't trust the TLS interception CA: {err}",
                   file=sys.stderr)
     os.execv(RUNC, [RUNC] + args)

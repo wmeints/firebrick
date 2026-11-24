@@ -1071,9 +1071,10 @@ adds:
 - `/usr/local/sbin/firebrick-runc` and `/etc/docker/daemon.json` - a wrapper
   around `/usr/bin/runc`, from `image/firebrick-runc`, that `daemon.json` makes
   Docker's default runtime. It's a Python script that, in a sandbox with TLS
-  interception, mounts the guest's CA bundle and Java trust store into each
-  container it creates and points the CA variables and `JAVA_TOOL_OPTIONS` at
-  them. See
+  interception, mounts a CA bundle with the interception CA and the Java trust
+  store into each container it creates, adds the CA to bundles the container's
+  CA variables name, and points the other CA variables and `JAVA_TOOL_OPTIONS`
+  at them. See
   [Trusting the interception CA in Docker containers](06-runtime-view.md#trusting-the-interception-ca-in-docker-containers)
   and
   [ADR 0068](decisions/0068-trust-the-interception-ca-in-docker-containers-through-a-runc-wrapper.md).

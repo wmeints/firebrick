@@ -591,18 +591,27 @@ arguments once the container's `config.json` and root filesystem are ready (ADR
 only with TLS interception, it edits `config.json` and then runs `/usr/bin/runc`
 with the same arguments:
 
-1. It mounts the guest's `/etc/ssl/certs/ca-certificates.crt` read-only at
-   `/etc/firebrick/ca-certificates.crt`.
+1. It mounts Firebrick's bundle read-only at
+   `/etc/firebrick/ca-certificates.crt`. When the image has a system bundle, the
+   first of `/etc/ssl/certs/ca-certificates.crt`,
+   `/etc/pki/tls/certs/ca-bundle.crt` and `/etc/ssl/ca-bundle.pem`, the script
+   writes it, followed by `/.msb/tls/ca.pem`, to `firebrick-ca-<n>.pem` in the
+   container's bundle directory and mounts that, so CAs the image added itself
+   keep working; otherwise it mounts the guest's
+   `/etc/ssl/certs/ca-certificates.crt`. It leaves the image's system bundle
+   alone, so a container that rebuilds it still can.
 2. For each of `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` and
-   `NODE_EXTRA_CA_CERTS`: a variable the container doesn't set points at the
-   mounted bundle. A variable the image or `docker run -e` sets keeps its value;
-   the script writes the file it names, followed by `/.msb/tls/ca.pem`, to
-   `firebrick-ca-<n>.pem` in the container's bundle directory and mounts that
-   read-only over the file. It resolves the symlinks in the path as the
-   container sees them, inside the container's root filesystem, so a link never
-   leads to a file of the VM, and a file that two variables name is merged once.
-   When the container has no such file, for example because it's missing or
-   lives in a volume, the variable points at the mounted bundle instead.
+   `NODE_EXTRA_CA_CERTS`: a variable the container doesn't set points at
+   Firebrick's bundle. A variable the image or `docker run -e` sets keeps its
+   value; the script writes the file it names, followed by the CA, to another
+   `firebrick-ca-<n>.pem` and mounts that read-only over the file, and a file
+   that two variables name is merged once. It reads the file from the innermost
+   of Docker's bind mounts that holds the path, as a regular file without
+   symlinks below the mount's source, or, when no mount holds it, from the
+   image, resolving its symlinks as the container sees them: an absolute target
+   starts at the container's root filesystem and `..` stops there, so a link
+   never leads to a file of the VM. When the container has no such file, or the
+   variable has no value, it points at Firebrick's bundle instead.
 3. When fbkd has built the Java trust store, it mounts it read-only at
    `/etc/firebrick/firebrick.p12` and adds
    `-Djavax.net.ssl.trustStore=/etc/firebrick/firebrick.p12
@@ -614,8 +623,8 @@ the arguments on unchanged. The network policy still applies to the containers'
 connections, so a host the policy doesn't allow gets the same `403` or reset as
 in the VM.
 
-- `config.json` can't be read or written, for example because it isn't JSON: the
-  script writes `firebrick-runc: the container doesn't trust the TLS
+- The edit fails for any reason, for example because `config.json` isn't JSON:
+  the script writes `firebrick-runc: the container doesn't trust the TLS
   interception CA: <reason>` to stderr, which ends up in `/var/log/dockerd.log`,
   and the container starts without the CA.
 - `docker exec` sessions get the mounts, but not the variables, and `docker
