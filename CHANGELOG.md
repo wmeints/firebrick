@@ -6,6 +6,27 @@ request, and the release workflow copies the section into the GitHub release,
 above the generated list of pull requests. Each section starts with a `##
 vX.Y.Z - YYYY-MM-DD` heading.
 
+## v0.16.0 - 2026-11-24
+
+This release lets Docker containers in a sandbox trust the TLS interception CA,
+and lets the `vscode` network preset download the VS Code server.
+
+### Features
+
+- Containers that Docker or Testcontainers starts in a sandbox, and `docker
+  build` steps, now trust the CA that firebrick uses to intercept HTTPS when the
+  network policy is enforced or secrets are set. Upstream images reach allowed
+  hosts over HTTPS without `self-signed certificate` or `PKIX path building
+  failed` errors, with TLS verification and the allowlist still on. Run `fbk
+  upgrade` to get the new base image in an existing sandbox; it drops the
+  sandbox's Docker data. (#310)
+
+### Fixes
+
+- `fbk network presets apply vscode` now also allows
+  `vscode.download.prss.microsoft.com`, so VS Code Remote-SSH can download its
+  server into a sandbox with `network.enforce: true`. (#311)
+
 ## v0.15.0 - 2026-11-20
 
 This release serves trusted HTTPS on forwarded ports, adds network presets for
