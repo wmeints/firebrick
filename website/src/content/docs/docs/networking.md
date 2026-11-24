@@ -196,9 +196,9 @@ updated the network rules of my-project
 ## Allowing coding agents and toolchains with presets
 
 Firebrick ships presets: groups of `allow` rules for coding agents, GitHub, the
-extension marketplaces of IDEs, and the package registries and installers of
-common toolchains. Add the ones your project needs instead of working out every
-domain yourself:
+extension marketplaces and server downloads of IDEs, and the package registries
+and installers of common toolchains. Add the ones your project needs instead of
+working out every domain yourself:
 
 ```sh
 $ fbk network policy enable
@@ -237,8 +237,9 @@ network presets show` to list the presets and their rules:
 - Many tools download releases from GitHub, so add `github` along with the
   toolchain preset. Like every domain rule, the presets only allow HTTP and
   HTTPS, so cloning over SSH (`git@github.com:...`) stays blocked.
-- `vscode` and `jetbrains` let an IDE connected to the sandbox over SSH install
-  extensions and plugins from its marketplace in the sandbox.
+- `vscode` lets VS Code connected to the sandbox over SSH download its server
+  into the sandbox and install extensions from its marketplace; `jetbrains` lets
+  JetBrains IDEs install plugins from theirs.
 
 ## Reaching hosts on your local network
 
