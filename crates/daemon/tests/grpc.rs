@@ -5904,3 +5904,150 @@ async fn stand_ins_report_what_keeps_them_from_pasting() {
         .collect();
     assert_eq!(errors, expected);
 }
+
+/// The `firebrick-base` image's stand-in for runc, Docker's default runtime there (ADR 0068).
+const RUNC_WRAPPER: &[u8] = include_bytes!("../../../image/firebrick-runc");
+
+/// Installs the wrapper from stdin and a fake `/usr/bin/runc` that records its arguments, makes
+/// sure the Java trust store exists, writes `$1` as a container's `config.json`, next to a root
+/// filesystem with its own CA bundle at `/cacert.pem` and a symlink out of it at `/escape.pem`,
+/// and runs the wrapper's `create` on it. Prints the arguments runc got, then the container's
+/// variables and mounts, or the file itself when it isn't JSON anymore, and whether each merged
+/// bundle holds the container's bundle followed by the CA.
+const RUNC_CREATE_SCRIPT: &str = r#"set -e
+cat > /usr/local/sbin/firebrick-runc
+chmod 755 /usr/local/sbin/firebrick-runc
+cat > /usr/bin/runc <<'RUNC'
+#!/bin/sh
+echo "$*" > /tmp/runc-args
+RUNC
+chmod 755 /usr/bin/runc
+store=/etc/ssl/certs/java/firebrick.p12
+[ -f "$store" ] || { mkdir -p "${store%/*}"; touch "$store"; }
+rm -rf /tmp/bundle
+mkdir -p /tmp/bundle/rootfs
+printf 'IMAGE CA' > /tmp/bundle/rootfs/cacert.pem
+ln -s /etc/hostname /tmp/bundle/rootfs/escape.pem
+printf '%s' "$1" > /tmp/bundle/config.json
+/usr/local/sbin/firebrick-runc --root /run/runc create --bundle /tmp/bundle ctr
+cat /tmp/runc-args
+python3 - <<'PY'
+import json
+import os
+try:
+    config = json.load(open("/tmp/bundle/config.json"))
+except ValueError:
+    print(open("/tmp/bundle/config.json").read())
+    raise SystemExit
+for var in config["process"]["env"]:
+    print(var)
+ca = open("/.msb/tls/ca.pem").read() if os.path.exists("/.msb/tls/ca.pem") else ""
+for mount in config.get("mounts", []):
+    print(mount["source"], mount["destination"], ",".join(mount["options"]))
+    if mount["source"].startswith("/tmp/bundle/"):
+        print("merged:", open(mount["source"]).read() == "IMAGE CA\n" + ca)
+PY
+"#;
+
+/// A container's config with its own `JAVA_TOOL_OPTIONS`, a `CURL_CA_BUNDLE` naming its own
+/// bundle, and `REQUESTS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS` naming files that are missing or
+/// lead out of its root filesystem.
+const CONTAINER_CONFIG: &str = r#"{"root":{"path":"rootfs"},"process":{"env":["PATH=/usr/bin","CURL_CA_BUNDLE=/cacert.pem","REQUESTS_CA_BUNDLE=/missing.pem","NODE_EXTRA_CA_CERTS=/escape.pem","JAVA_TOOL_OPTIONS=-Xmx1g"]},"mounts":[]}"#;
+
+/// The arguments the wrapper hands to runc.
+const RUNC_ARGS: &str = "--root /run/runc create --bundle /tmp/bundle ctr";
+
+/// Starts a sandbox from [`PYTHON_IMAGE`], with TLS interception when `enforce`, and runs
+/// [`RUNC_CREATE_SCRIPT`] in it with each config. Returns the stdout and stderr of each run.
+async fn runc_create(name: &str, enforce: bool, configs: &[&str]) -> Vec<(String, String)> {
+    remove_sandbox(name).await;
+    let daemon = TestDaemon::start(name).await;
+    let mut client = daemon.client().await;
+    let request = StartSandboxRequest {
+        image: PYTHON_IMAGE.to_string(),
+        network: Some(allow_policy(enforce, &["example.com"])),
+        ..start_request(name)
+    };
+    start_and_wait(&mut client, request).await;
+    let sb = Sandbox::get(name)
+        .await
+        .expect("failed to get the sandbox")
+        .connect()
+        .await
+        .expect("failed to connect to the sandbox");
+
+    let mut outputs = Vec::new();
+    for config in configs {
+        let output = sb
+            .exec_with("sh", |exec| {
+                exec.args(["-c", RUNC_CREATE_SCRIPT, "runc-create", config])
+                    .user("root")
+                    .stdin_bytes(RUNC_WRAPPER)
+            })
+            .await
+            .expect("failed to run the wrapper");
+        let stderr = String::from_utf8_lossy(output.stderr_bytes()).into_owned();
+        assert!(output.status().success, "{stderr}");
+        let stdout = String::from_utf8_lossy(output.stdout_bytes()).into_owned();
+        outputs.push((stdout, stderr));
+    }
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    outputs
+}
+
+#[tokio::test]
+async fn runc_wrapper_lets_containers_trust_the_tls_interception_ca() {
+    let name: &str = &sandbox_name("runc-trust");
+    let outputs = runc_create(name, true, &[CONTAINER_CONFIG, "not json"]).await;
+
+    let bundle = "/etc/firebrick/ca-certificates.crt";
+    let options = "rbind,ro,nosuid,nodev";
+    let trusting = [
+        RUNC_ARGS.to_string(),
+        "PATH=/usr/bin".to_string(),
+        // The container's own bundle gets the CA appended.
+        "CURL_CA_BUNDLE=/cacert.pem".to_string(),
+        // Files it can't read are replaced by the guest's bundle.
+        format!("REQUESTS_CA_BUNDLE={bundle}"),
+        format!("NODE_EXTRA_CA_CERTS={bundle}"),
+        "JAVA_TOOL_OPTIONS=-Xmx1g -Djavax.net.ssl.trustStore=/etc/firebrick/firebrick.p12 \
+         -Djavax.net.ssl.trustStorePassword=changeit"
+            .to_string(),
+        format!("SSL_CERT_FILE={bundle}"),
+        format!("/etc/ssl/certs/ca-certificates.crt {bundle} {options}"),
+        format!("/tmp/bundle/firebrick-ca-1.pem /cacert.pem {options}"),
+        "merged: True".to_string(),
+        format!("/etc/ssl/certs/java/firebrick.p12 /etc/firebrick/firebrick.p12 {options}"),
+    ];
+    assert_eq!(lines_of(&outputs[0].0), trusting);
+    assert_eq!(outputs[0].1, "");
+    // A config it can't edit still reaches runc unchanged, with the reason on stderr.
+    assert_eq!(lines_of(&outputs[1].0), [RUNC_ARGS, "not json"]);
+    assert!(
+        outputs[1]
+            .1
+            .starts_with("firebrick-runc: the container doesn't trust the TLS interception CA: "),
+        "{}",
+        outputs[1].1
+    );
+}
+
+#[tokio::test]
+async fn runc_wrapper_leaves_containers_alone_without_tls_interception() {
+    let name: &str = &sandbox_name("runc-plain");
+    let outputs = runc_create(name, false, &[CONTAINER_CONFIG]).await;
+
+    let unchanged = [
+        RUNC_ARGS,
+        "PATH=/usr/bin",
+        "CURL_CA_BUNDLE=/cacert.pem",
+        "REQUESTS_CA_BUNDLE=/missing.pem",
+        "NODE_EXTRA_CA_CERTS=/escape.pem",
+        "JAVA_TOOL_OPTIONS=-Xmx1g",
+    ];
+    assert_eq!(lines_of(&outputs[0].0), unchanged);
+    assert_eq!(outputs[0].1, "");
+}

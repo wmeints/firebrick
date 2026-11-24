@@ -62,6 +62,16 @@ Keep in mind that:
   store. A `JAVA_TOOL_OPTIONS` from the image is hidden, so set it in `env`
   instead. A custom image needs OpenSSL 3.2 or newer to build the store; without
   it, `fbk start` prints a warning.
+- Docker containers in the sandbox trust that certificate authority too. In the
+  `firebrick-base` image, Docker mounts it into every container at
+  `/etc/firebrick/ca-certificates.crt` and points `SSL_CERT_FILE`,
+  `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and
+  `JAVA_TOOL_OPTIONS` at it, so upstream images and Testcontainers work without
+  changes. When the image or `docker run -e` sets one of these variables to its
+  own bundle, that bundle gets the certificate authority added. `docker exec`
+  sessions don't get the variables, and `docker build` `RUN` steps don't trust
+  the certificate authority. A sandbox created from an older image gets this
+  with `fbk upgrade`.
 - A secret's allowed hosts must be allowed by the network rules too. See
   [Secrets](/docs/secrets/).
 - `mise install` downloads its tools when the sandbox starts, so allow the hosts

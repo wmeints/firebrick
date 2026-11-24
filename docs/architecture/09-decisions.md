@@ -67,3 +67,4 @@
 - [ADR 0065 - Serve HTTPS on forwarded ports with a localhost CA](decisions/0065-serve-https-on-forwarded-ports-with-a-localhost-ca.md)
 - [ADR 0066 - Point the guest at the host's DNS servers](decisions/0066-point-the-guest-at-the-host-dns-servers.md)
 - [ADR 0067 - Publish the website with each release](decisions/0067-publish-the-website-with-each-release.md)
+- [ADR 0068 - Trust the interception CA in Docker containers through a runc wrapper](decisions/0068-trust-the-interception-ca-in-docker-containers-through-a-runc-wrapper.md)

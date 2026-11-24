@@ -1068,6 +1068,15 @@ adds:
   [Pasting from the host clipboard](06-runtime-view.md#pasting-from-the-host-clipboard)
   and
   [Copying to the host clipboard](06-runtime-view.md#copying-to-the-host-clipboard).
+- `/usr/local/sbin/firebrick-runc` and `/etc/docker/daemon.json` - a wrapper
+  around `/usr/bin/runc`, from `image/firebrick-runc`, that `daemon.json` makes
+  Docker's default runtime. It's a Python script that, in a sandbox with TLS
+  interception, mounts the guest's CA bundle and Java trust store into each
+  container it creates and points the CA variables and `JAVA_TOOL_OPTIONS` at
+  them. See
+  [Trusting the interception CA in Docker containers](06-runtime-view.md#trusting-the-interception-ca-in-docker-containers)
+  and
+  [ADR 0068](decisions/0068-trust-the-interception-ca-in-docker-containers-through-a-runc-wrapper.md).
 - `/usr/local/sbin/firebrick-netlog` - the network logger, a Python script that
   runs as root. It runs two `tcpdump`s on the interface of the default route:
   one for outgoing UDP datagrams and TCP SYNs, and one for the answers of DNS
